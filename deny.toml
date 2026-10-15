@@ -1,0 +1,29 @@
+[advisories]
+yanked = "deny"
+ignore = [
+    # Marvin timing side-channel in RSA *decryption* (unfixed upstream since
+    # 2023). We use the rsa crate only to sign GitHub App JWTs with our own
+    # key; the app performs no RSA decryption an attacker could time.
+    "RUSTSEC-2023-0071",
+]
+
+[licenses]
+# Our own crates are unpublished and proprietary; skip them, check dependencies.
+private = { ignore = true }
+allow = [
+    "CDLA-Permissive-2.0",   # webpki-roots CA certificate data
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+]
+
+[bans]
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

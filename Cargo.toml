@@ -1,0 +1,194 @@
+[package]
+name = "proofline-cli"
+version = "0.1.1"
+edition = "2024"
+rust-version = "1.95"
+description = "Proofline command-line client for the review API"
+license = "Apache-2.0"
+repository = "https://github.com/prooflinedev/cli"
+publish = false
+
+[[bin]]
+name = "proofline"
+path = "src/main.rs"
+
+# A workspace of its own: the customer binary is also called `proofline`, and it
+# shares no code, lockfile or build output with the server crate one directory up.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+flate2 = "1"
+sha2 = "0.10"
+tar = "0.4"
+keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "async-secret-service", "crypto-rust", "tokio"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+secrecy = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
+tempfile = "=3.27.0"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "macros", "time", "process", "io-std", "io-util", "fs"] }
+toml_edit = "=0.25.15"
+url = "2"
+uuid = { version = "1", features = ["serde"] }
+webbrowser = "1"
+
+[dev-dependencies]
+axum = "0.8"
+jsonschema = { version = "0.58.4", default-features = false }
+toml = "0.9"
+tokio = { version = "1", features = ["net", "test-util"] }
+
+[lints]
+workspace = true
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+ambiguous_negative_literals = "deny"
+explicit_outlives_requirements = "deny"
+ffi_unwind_calls = "deny"
+keyword_idents = { level = "deny", priority = -1 }
+macro_use_extern_crate = "deny"
+meta_variable_misuse = "deny"
+missing_abi = "deny"
+missing_debug_implementations = "deny"
+non_local_definitions = "deny"
+non_ascii_idents = "deny"
+redundant_imports = "deny"
+redundant_lifetimes = "deny"
+rust_2018_idioms = { level = "deny", priority = -1 }
+trivial_casts = "deny"
+trivial_numeric_casts = "deny"
+unit_bindings = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unused_lifetimes = "deny"
+unused_qualifications = "deny"
+
+[workspace.lints.clippy]
+# The default group is deny-by-default. Additional pedantic, nursery, and
+# restriction lints are selected explicitly so every enabled rule is actionable:
+# this policy has no source- or manifest-level Clippy suppressions.
+all = { level = "deny", priority = -1 }
+
+# Incomplete-code and runtime hygiene.
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+mem_forget = "deny"
+wildcard_dependencies = "deny"
+allow_attributes = "deny"
+create_dir = "deny"
+default_union_representation = "deny"
+empty_drop = "deny"
+empty_enum_variants_with_brackets = "deny"
+error_impl_error = "deny"
+exit = "deny"
+filetype_is_file = "deny"
+fn_to_numeric_cast_any = "deny"
+get_unwrap = "deny"
+host_endian_bytes = "deny"
+if_then_some_else_none = "deny"
+infinite_loop = "deny"
+large_include_file = "deny"
+lossy_float_literal = "deny"
+mutex_atomic = "deny"
+mutex_integer = "deny"
+path_buf_push_overwrite = "deny"
+rc_buffer = "deny"
+rest_pat_in_fully_bound_structs = "deny"
+same_name_method = "deny"
+semicolon_inside_block = "deny"
+str_to_string = "deny"
+string_lit_as_bytes = "deny"
+string_slice = "deny"
+suspicious_xor_used_as_pow = "deny"
+try_err = "deny"
+unnecessary_safety_comment = "deny"
+unnecessary_safety_doc = "deny"
+unneeded_field_pattern = "deny"
+verbose_file_reads = "deny"
+
+# High-signal pedantic rules.
+borrow_as_ptr = "deny"
+cast_lossless = "deny"
+cast_ptr_alignment = "deny"
+checked_conversions = "deny"
+doc_link_with_quotes = "deny"
+doc_markdown = "deny"
+enum_glob_use = "deny"
+explicit_into_iter_loop = "deny"
+explicit_iter_loop = "deny"
+filter_map_next = "deny"
+flat_map_option = "deny"
+fn_params_excessive_bools = "deny"
+format_push_string = "deny"
+implicit_clone = "deny"
+inefficient_to_string = "deny"
+invalid_upcast_comparisons = "deny"
+items_after_statements = "deny"
+large_digit_groups = "deny"
+large_stack_arrays = "deny"
+linkedlist = "deny"
+macro_use_imports = "deny"
+manual_assert = "deny"
+manual_let_else = "deny"
+map_unwrap_or = "deny"
+match_same_arms = "deny"
+mismatching_type_param_order = "deny"
+mut_mut = "deny"
+needless_bitwise_bool = "deny"
+needless_continue = "deny"
+needless_for_each = "deny"
+no_effect_underscore_binding = "deny"
+option_as_ref_cloned = "deny"
+pub_underscore_fields = "deny"
+range_minus_one = "deny"
+range_plus_one = "deny"
+redundant_closure_for_method_calls = "deny"
+ref_binding_to_reference = "deny"
+ref_option_ref = "deny"
+same_functions_in_if_condition = "deny"
+semicolon_if_nothing_returned = "deny"
+single_match_else = "deny"
+stable_sort_primitive = "deny"
+string_add_assign = "deny"
+struct_excessive_bools = "deny"
+trait_duplication_in_bounds = "deny"
+transmute_ptr_to_ref = "deny"
+unchecked_time_subtraction = "deny"
+unicode_not_nfc = "deny"
+uninhabited_references = "deny"
+unnecessary_box_returns = "deny"
+unnecessary_join = "deny"
+used_underscore_binding = "deny"
+verbose_bit_mask = "deny"
+wildcard_imports = "deny"
+zero_sized_map_values = "deny"
+
+# High-signal nursery rules.
+branches_sharing_code = "deny"
+clear_with_drain = "deny"
+collection_is_never_read = "deny"
+derive_partial_eq_without_eq = "deny"
+empty_line_after_doc_comments = "deny"
+equatable_if_let = "deny"
+fallible_impl_from = "deny"
+imprecise_flops = "deny"
+iter_on_empty_collections = "deny"
+iter_with_drain = "deny"
+large_const_arrays = "deny"
+literal_string_with_formatting_args = "deny"
+needless_collect = "deny"
+option_if_let_else = "deny"
+or_fun_call = "deny"
+read_zero_byte_vec = "deny"
+redundant_clone = "deny"
+significant_drop_in_scrutinee = "deny"
+suboptimal_flops = "deny"
+trailing_empty_array = "deny"
+transmute_undefined_repr = "deny"
+tuple_array_conversions = "deny"
+unnecessary_struct_initialization = "deny"
+use_self = "deny"

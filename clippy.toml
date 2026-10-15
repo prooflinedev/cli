@@ -1,0 +1,11 @@
+# ".." keeps clippy's default ident list; the rest are project terms of art.
+doc-valid-idents = ["SaaS", "GitHub", "OAuth", "PostgreSQL", "OpenAPI", "CloudFormation", ".."]
+
+disallowed-methods = [
+    { path = "std::thread::sleep", reason = "blocks the runtime; use tokio::time::sleep" },
+]
+
+# The reviewer pipeline carries several cohesive services as explicit inputs.
+# Twelve still catches accidental parameter sprawl without hiding the shape of
+# those state-machine boundaries behind lint attributes.
+too-many-arguments-threshold = 12

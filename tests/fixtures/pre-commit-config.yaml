@@ -1,0 +1,17 @@
+repos:
+  - repo: local
+    hooks:
+      - id: existing-local-check
+        name: Existing local check
+        entry: git diff --check
+        language: system
+      - id: proofline-pre-commit
+        name: Proofline staged review
+        entry: proofline hook run pre-commit
+        language: system
+        stages: [pre-commit]
+        minimum_pre_commit_version: '3.2.0'
+        pass_filenames: false
+        always_run: true
+        require_serial: true
+        verbose: true

@@ -1,0 +1,34 @@
+{
+  "code": [
+    "logic",
+    "edge_case",
+    "error_handling",
+    "state_transition",
+    "concurrency",
+    "resource_lifecycle",
+    "test_marker",
+    "removed_assertion",
+    "debug_residue",
+    "committed_secret"
+  ],
+  "environment": [
+    "artifact_identity",
+    "deployment_workflow",
+    "runtime_configuration",
+    "network_reachability",
+    "iam_permissions",
+    "datastore_compatibility",
+    "resource_capacity",
+    "rollout_topology",
+    "runtime_architecture",
+    "environment_binding",
+    "dependency_reachability",
+    "data_integrity",
+    "external_side_effects",
+    "application_security",
+    "scalability",
+    "availability_resilience",
+    "observability",
+    "source_coverage"
+  ]
+}
