@@ -12,8 +12,8 @@ publish = false
 name = "proofline"
 path = "src/main.rs"
 
-# A workspace of its own: the customer binary is also called `proofline`, and it
-# shares no code, lockfile or build output with the server crate one directory up.
+# The customer CLI owns its workspace, lockfile and build output.
+# It depends only on the bundled public API contract.
 [workspace]
 
 [dependencies]

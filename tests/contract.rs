@@ -1,5 +1,4 @@
-//! Holds the CLI's API types to the committed public contract, and its lint
-//! policy to the server crate's.
+//! Holds the CLI's API types to the bundled public contract.
 
 use std::path::PathBuf;
 use std::process::Command;
