@@ -487,6 +487,97 @@ async fn a_refused_review_request_names_the_reason_without_terminal_control() {
 }
 
 #[tokio::test]
+async fn stopping_uses_one_post_and_confirms_the_selected_stopped_review() {
+    let review_id = Uuid::parse_str(SELECTED_REVIEW).unwrap();
+    let acknowledgment = json!({
+        "review_id": SELECTED_REVIEW,
+        "status": "STOPPED",
+        "stopped_by": {"github_user_id": 123, "login": "reviewer"},
+        "stopped_at": "2026-01-01T00:00:00Z",
+        "a_compatible_addition": true,
+    });
+    let mut wrong_review = acknowledgment.clone();
+    wrong_review["review_id"] = json!(Uuid::nil());
+    let mut running = acknowledgment.clone();
+    running["status"] = json!("RUNNING");
+    for (status, body, json_output, success) in [
+        (StatusCode::OK, acknowledgment.clone(), false, true),
+        (StatusCode::OK, acknowledgment.clone(), true, true),
+        (StatusCode::OK, wrong_review, true, false),
+        (StatusCode::OK, running, true, false),
+        (
+            StatusCode::FORBIDDEN,
+            json!({"detail": "live read access is required\u{1b}[2J"}),
+            true,
+            false,
+        ),
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            json!({"detail": "GitHub could not confirm read access"}),
+            false,
+            false,
+        ),
+        (StatusCode::FOUND, json!({}), false, false),
+    ] {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&requests);
+        let response_body = body;
+        let app = Router::new().route(
+            &format!("/api/v1/organizations/{ORG}/reviews/{{id}}/stop"),
+            post(
+                move |Path(id): Path<Uuid>, headers: HeaderMap, body: Bytes| {
+                    let observed = Arc::clone(&observed);
+                    let response_body = response_body.clone();
+                    async move {
+                        assert_eq!(id, review_id);
+                        assert_eq!(headers[header::AUTHORIZATION], format!("Bearer {TOKEN}"));
+                        assert!(body.is_empty());
+                        observed.fetch_add(1, Ordering::SeqCst);
+                        (status, Json(response_body))
+                    }
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut args = vec!["stop", SELECTED_REVIEW];
+        if json_output {
+            args.push("--json");
+        }
+        let output = cli(&origin, &args).await;
+        assert_eq!(output.status.success(), success, "{status}: {output:?}");
+        assert_eq!(requests.load(Ordering::SeqCst), 1, "{status}: {output:?}");
+        assert!(
+            !output
+                .stdout
+                .windows(TOKEN.len())
+                .any(|bytes| bytes == TOKEN.as_bytes())
+        );
+        assert!(
+            !output
+                .stderr
+                .windows(TOKEN.len())
+                .any(|bytes| bytes == TOKEN.as_bytes())
+        );
+        assert!(!output.stderr.contains(&0x1b));
+        if success && json_output {
+            let returned: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(returned, acknowledgment);
+        } else if success {
+            let text = String::from_utf8(output.stdout).unwrap();
+            assert!(text.contains(SELECTED_REVIEW));
+        } else {
+            assert!(
+                output.stdout.is_empty(),
+                "a refused stop cannot acknowledge success"
+            );
+        }
+        server.abort();
+    }
+}
+
+#[tokio::test]
 async fn an_incomplete_review_is_not_success_in_either_output() {
     let origin = serve(Fake::default()).await.to_string();
     for json in [false, true] {

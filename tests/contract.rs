@@ -5,9 +5,10 @@ use std::process::Command;
 
 use proofline_cli::model::{
     Assessment, Check, Checks, CodeAssessment, CommitReviewRequest, CommitReviewResponse,
-    EvidenceRef, FilterChoice, Finding, OpenItems, PatchReviewRequest, PatchReviewResponse,
-    RepositoryName, RepositoryNames, ReviewDetail, ReviewFilters, ReviewPage, ReviewSummary,
-    RunNowMode, RunNowRequest, RunNowResponse,
+    EvidenceRef, FileReviewRequest, FileReviewResponse, FileScope, FilterChoice, Finding,
+    OpenItems, PatchReviewRequest, PatchReviewResponse, RepositoryName, RepositoryNames,
+    ReviewDetail, ReviewFilters, ReviewPage, ReviewSubject, ReviewSummary, RunNowMode,
+    RunNowRequest, RunNowResponse, StopResponse,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -165,6 +166,11 @@ fn types_match_the_public_contract() {
     holds::<PatchReviewResponse>("PatchReviewResponse");
     holds::<CommitReviewRequest>("CommitReviewRequest");
     holds::<CommitReviewResponse>("CommitReviewResponse");
+    holds::<StopResponse>("StopResponse");
+    holds::<FileReviewRequest>("FileReviewRequest");
+    holds::<FileReviewResponse>("FileReviewResponse");
+    holds::<FileScope>("FileScope");
+    holds::<ReviewSubject>("SubjectView");
 
     // Schema display has no console, credentials or checkout to read. It uses
     // the bundled public contract, even when the configured origin is invalid.
@@ -226,6 +232,10 @@ fn operations_the_cli_calls_exist() {
         ("get", "/api/v1/organizations/{org_id}/repository-names"),
         (
             "post",
+            "/api/v1/organizations/{org_id}/reviews/{review_id}/stop",
+        ),
+        (
+            "post",
             "/api/v1/organizations/{org_id}/repositories/{repo_id}/pull-requests/{number}/review",
         ),
         (
@@ -235,6 +245,10 @@ fn operations_the_cli_calls_exist() {
         (
             "post",
             "/api/v1/organizations/{org_id}/repositories/{repo_id}/commit-reviews",
+        ),
+        (
+            "post",
+            "/api/v1/organizations/{org_id}/repositories/{repo_id}/file-reviews",
         ),
     ] {
         assert!(

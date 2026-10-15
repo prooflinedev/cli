@@ -62,6 +62,22 @@ pub struct ReviewDetail {
     pub pull_request_number: Option<i64>,
     pub repository_full_name: Option<String>,
     pub run_number: Option<i64>,
+    #[serde(default)]
+    pub subjects: Vec<ReviewSubject>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ReviewSubject {
+    pub kind: String,
+    pub role: String,
+    pub file_scope: Option<FileScope>,
+}
+
+/// Selection identity at one commit, not a digest of file contents.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FileScope {
+    pub paths: Vec<String>,
+    pub paths_digest: String,
 }
 
 /// A malformed or newer CODE record cannot establish completeness. Keep it
@@ -194,6 +210,12 @@ pub struct RunNowResponse {
     pub automatic_reviews_paused: bool,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StopResponse {
+    pub review_id: Uuid,
+    pub status: String,
+}
+
 /// Whether the server may reuse a settled review of the live pull-request head.
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -239,6 +261,20 @@ pub struct PatchReviewResponse {
     pub review_id: Uuid,
     pub existing: bool,
     pub patch_digest: String,
+}
+
+/// Complete selected files at one exact pushed commit.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileReviewRequest {
+    pub commit_sha: String,
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FileReviewResponse {
+    pub review_id: Uuid,
+    pub existing: bool,
 }
 
 /// Pushed commits to review: two exact commits GitHub has, the base an

@@ -39,6 +39,10 @@ pub enum GitError {
     NoParent(String),
     #[error("{0:?} is not a range; write it as BASE..HEAD")]
     NotRange(String),
+    #[error("name between 1 and 20 exact repository-relative file paths")]
+    FileCount,
+    #[error("{0:?} is not a regular tracked file at commit {1}; no review was requested")]
+    NotTrackedFile(String, String),
 }
 
 /// Two exact commits of a pushed change: the head, and the base it is
@@ -64,6 +68,57 @@ async fn resolve(dir: &Path, revision: &str) -> Result<String, GitError> {
             error => error,
         })?;
     commit_sha(String::from_utf8_lossy(&output).trim())
+}
+
+/// Resolve a whole-file selection once, using only the named commit's tree.
+/// Working-tree and index contents never contribute to this request.
+pub async fn named_files(
+    dir: &Path,
+    revision: &str,
+    paths: &[String],
+) -> Result<(String, Vec<String>), GitError> {
+    if paths.is_empty() || paths.len() > 20 {
+        return Err(GitError::FileCount);
+    }
+    let commit = resolve(dir, revision).await?;
+    let mut selected = paths.to_vec();
+    selected.sort();
+    selected.dedup();
+    for path in &selected {
+        if path.chars().count() > 1_000
+            || path.contains('\0')
+            || path.split('/').any(|part| matches!(part, "" | "." | ".."))
+        {
+            return Err(GitError::NotTrackedFile(path.clone(), commit.clone()));
+        }
+        let entries = git_in(
+            dir,
+            None,
+            &[
+                "--literal-pathspecs",
+                "ls-tree",
+                "-z",
+                "--full-tree",
+                &commit,
+                "--",
+                path,
+            ],
+        )
+        .await?;
+        let found = entries.split(|byte| *byte == 0).any(|entry| {
+            let Some(separator) = entry.iter().position(|byte| *byte == b'\t') else {
+                return false;
+            };
+            let (metadata, remainder) = entry.split_at(separator);
+            let found = &remainder[1..];
+            found == path.as_bytes()
+                && (metadata.starts_with(b"100644 blob ") || metadata.starts_with(b"100755 blob "))
+        });
+        if !found {
+            return Err(GitError::NotTrackedFile(path.clone(), commit.clone()));
+        }
+    }
+    Ok((commit, selected))
 }
 
 /// The change one commit makes: the commit against its first parent.

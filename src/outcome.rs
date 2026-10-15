@@ -197,6 +197,7 @@ mod tests {
             assessment_count: count,
             assessments,
             code_assessment: None,
+            subjects: Vec::new(),
             base_commit_sha: None,
             head_commit_sha: None,
             open_items: None,

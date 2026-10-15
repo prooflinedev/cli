@@ -263,6 +263,22 @@
         ],
         "type": "string"
       },
+      "ApprovalGap": {
+        "properties": {
+          "assessment_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "assessment_id",
+          "code"
+        ],
+        "type": "object"
+      },
       "AssessmentProjection": {
         "properties": {
           "assessment_id": {
@@ -453,6 +469,36 @@
           {
             "const": "LIMITED",
             "description": "The record is verified but too large for this projection to carry.\n Siblings still render; nothing is inferred from the omitted detail.",
+            "type": "string"
+          }
+        ]
+      },
+      "CaptureState": {
+        "description": "How the capture ended.",
+        "oneOf": [
+          {
+            "const": "PENDING",
+            "description": "Still waiting for an authorized execution or a decidable look.",
+            "type": "string"
+          },
+          {
+            "const": "RECORDED",
+            "description": "World recorded every deferred question.",
+            "type": "string"
+          },
+          {
+            "const": "UNBOUND",
+            "description": "At least one deferred question is not bound to the execution.",
+            "type": "string"
+          },
+          {
+            "const": "NOT_EXECUTED",
+            "description": "The gate never authorized the execution.",
+            "type": "string"
+          },
+          {
+            "const": "INCOMPLETE",
+            "description": "The capture failed before it wrote its receipt. The gate is\n unchanged; nothing is inferred about the deferred questions.",
             "type": "string"
           }
         ]
@@ -1702,7 +1748,7 @@
             "type": "string"
           },
           "kind": {
-            "description": "`PULL_REQUEST`, `DEPLOYMENT`, `PATCH`, a review of local changes\n sent as a patch, or `COMMIT`, a review of pushed commits.",
+            "description": "`PULL_REQUEST`, `DEPLOYMENT`, `PATCH`, a review of local changes\n sent as a patch, `COMMIT`, a review of pushed commits, or `FILES`,\n complete selected files at one pushed commit.",
             "type": "string"
           },
           "merge_gate": {
@@ -2091,7 +2137,8 @@
           "PULL_REQUEST",
           "DEPLOYMENT",
           "PATCH",
-          "COMMIT"
+          "COMMIT",
+          "FILES"
         ],
         "type": "string"
       },
@@ -2169,6 +2216,67 @@
           "path",
           "depth",
           "passes"
+        ],
+        "type": "object"
+      },
+      "FileReviewRequest": {
+        "additionalProperties": false,
+        "description": "Whole files selected at one exact pushed commit.",
+        "properties": {
+          "commit_sha": {
+            "description": "The exact pushed commit whose whole files are reviewed.",
+            "type": "string"
+          },
+          "paths": {
+            "description": "Between one and twenty exact repository-relative file paths.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "commit_sha",
+          "paths"
+        ],
+        "type": "object"
+      },
+      "FileReviewResponse": {
+        "description": "What a named-file review request produced.",
+        "properties": {
+          "existing": {
+            "description": "True when this exact selection already had a review and that one is\n returned. Sending the same selection twice by the same person reviews it once.",
+            "type": "boolean"
+          },
+          "review_id": {
+            "description": "The review of this selection, readable through the review and findings\n routes.",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "existing"
+        ],
+        "type": "object"
+      },
+      "FileScope": {
+        "additionalProperties": false,
+        "description": "The retained selection, not a digest of file contents. Its identity uses\n a version prefix and length-framed UTF-8 paths in their sorted order.",
+        "properties": {
+          "paths": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "paths_digest": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "paths",
+          "paths_digest"
         ],
         "type": "object"
       },
@@ -3010,6 +3118,13 @@
       },
       "GateState": {
         "properties": {
+          "occurrence_captures": {
+            "description": "The occurrence questions the gate's approval deferred, as each\n observed execution of its deployment answered them. Outcome-only\n records: none of them changes the gate or grades a prediction.",
+            "items": {
+              "$ref": "#/components/schemas/OccurrenceCapture"
+            },
+            "type": "array"
+          },
           "override_record": {
             "anyOf": [
               {
@@ -3027,7 +3142,8 @@
           }
         },
         "required": [
-          "status"
+          "status",
+          "occurrence_captures"
         ],
         "type": "object"
       },
@@ -3058,6 +3174,91 @@
         },
         "required": [
           "environment_display_name"
+        ],
+        "type": "object"
+      },
+      "OccurrenceCapture": {
+        "description": "The capture of one observed execution of a gate's deployment.",
+        "properties": {
+          "approval_gaps": {
+            "description": "Assessments whose approval could defer nothing, with the reason.",
+            "items": {
+              "$ref": "#/components/schemas/ApprovalGap"
+            },
+            "type": "array"
+          },
+          "detail": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "occurrence_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "questions": {
+            "items": {
+              "$ref": "#/components/schemas/OccurrenceQuestion"
+            },
+            "type": "array"
+          },
+          "state": {
+            "$ref": "#/components/schemas/CaptureState"
+          }
+        },
+        "required": [
+          "state",
+          "approval_gaps",
+          "questions"
+        ],
+        "type": "object"
+      },
+      "OccurrenceQuestion": {
+        "description": "One deferred question as the gate presents it.",
+        "properties": {
+          "assessment_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "code": {
+            "description": "World's binding or refusal code, or the control plane's own gap.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "family_key": {
+            "type": "string"
+          },
+          "family_version": {
+            "format": "int32",
+            "type": "integer"
+          },
+          "observed_result": {
+            "description": "World's observed result once it recorded the question.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/QuestionState"
+          }
+        },
+        "required": [
+          "assessment_id",
+          "family_key",
+          "family_version",
+          "state"
         ],
         "type": "object"
       },
@@ -3589,6 +3790,31 @@
           "blocking_severity"
         ],
         "type": "object"
+      },
+      "QuestionState": {
+        "description": "Where one deferred question stands.",
+        "oneOf": [
+          {
+            "const": "PENDING",
+            "description": "World has stored no record yet: the execution is not yet decidable\n inside the question's window.",
+            "type": "string"
+          },
+          {
+            "const": "RECORDED",
+            "description": "World recorded what the execution was observed to do.",
+            "type": "string"
+          },
+          {
+            "const": "UNBOUND",
+            "description": "The question is not bound to the execution: World's binding code, its\n refusal of the replay, or the control plane's own gap says why.",
+            "type": "string"
+          },
+          {
+            "const": "NOT_EXECUTED",
+            "description": "The gate never authorized the execution, so nothing ran to observe.",
+            "type": "string"
+          }
+        ]
       },
       "RefusedEnvironment": {
         "description": "An environment a refusal names. `external_key` is how its pages are\n addressed.",
@@ -4151,7 +4377,7 @@
             "type": "string"
           },
           "kind": {
-            "description": "`PULL_REQUEST`, `DEPLOYMENT`, `PATCH`, a review of local changes\n sent as a patch, or `COMMIT`, a review of pushed commits.",
+            "description": "`PULL_REQUEST`, `DEPLOYMENT`, `PATCH`, a review of local changes\n sent as a patch, `COMMIT`, a review of pushed commits, or `FILES`,\n complete selected files at one pushed commit.",
             "type": "string"
           },
           "public_key": {
@@ -4377,7 +4603,7 @@
                 "$ref": "#/components/schemas/ExportReviewKind"
               }
             ],
-            "description": "Whether the review analyzes a pull request, a deployment, a local patch or pushed\n commits."
+            "description": "Whether the review analyzes a pull request, a deployment, a local patch, pushed\n commits or selected whole files."
           },
           "organization_id": {
             "description": "The organization that owns the review.",
@@ -5014,6 +5240,33 @@
         ],
         "type": "object"
       },
+      "StopResponse": {
+        "description": "What stopping a review recorded.",
+        "properties": {
+          "review_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "status": {
+            "description": "Always `STOPPED`: the review's status once the stop is committed.",
+            "type": "string"
+          },
+          "stopped_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "stopped_by": {
+            "$ref": "#/components/schemas/ActorView"
+          }
+        },
+        "required": [
+          "review_id",
+          "status",
+          "stopped_by",
+          "stopped_at"
+        ],
+        "type": "object"
+      },
       "SubjectAuthorization": {
         "description": "One assessment's authorization of one subject, by identity.\n\n The display name is not the answer on its own: an environment's external key\n is unique within its organization and a display name is mutable metadata,\n so two environments of one review can carry the same one.\n Collapsing to it would leave a reader unable to tell which assessment\n authorized the subject and which one gapped, which is the confusion this\n field exists to remove.",
         "properties": {
@@ -5066,6 +5319,17 @@
               "string",
               "null"
             ]
+          },
+          "file_scope": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FileScope"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Whole-file selection at the pinned revision; absent for comparisons."
           },
           "id": {
             "description": "The subject's stable identifier. It holds across a poll refresh even\n when a concurrently populated subject shifts this response's\n `(kind, id)` order: a client keying its own local UI state (an open\n disclosure, a focused control) by array index would otherwise lose\n that state to a reorder that changed nothing it owns.",
@@ -5810,6 +6074,84 @@
           }
         ],
         "summary": "Review pushed commits",
+        "x-proofline-token-scope": "reviews:request"
+      }
+    },
+    "/api/v1/organizations/{org_id}/repositories/{repo_id}/file-reviews": {
+      "post": {
+        "description": "Reviews up to twenty exact file paths at one pushed commit. Requires live GitHub read access and verifies every path at that commit. The retained selection is immutable; a repeat by the same person returns its review. Results remain in Proofline and are never posted to GitHub.",
+        "operationId": "request_file_review",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "org_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "style": "simple"
+          },
+          {
+            "in": "path",
+            "name": "repo_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "style": "simple"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileReviewRequest"
+              }
+            }
+          },
+          "description": "Whole files selected at one exact pushed commit.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileReviewResponse"
+                }
+              }
+            },
+            "description": "What a named-file review request produced."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunNowRefused"
+                }
+              }
+            },
+            "description": "A run-now request that created nothing, as the 400 it is answered with.\n\n The refusal is a configuration fact, not a failure, and it is still sent\n as an RFC 9457 problem: `title`, `status` and `detail` are what a client\n that knows only problems shows, and `repository_name` and `refusal` are\n the extension members a client that knows refusals links from. During a\n rollout a page loaded from the previous bundle keeps working against\n this server, because a refusal was a 400 with a `detail` before too."
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "An RFC 9457 problem; the HTTP status remains authoritative."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Review selected whole files",
         "x-proofline-token-scope": "reviews:request"
       }
     },
@@ -6823,6 +7165,63 @@
         ],
         "summary": "Get review routing",
         "x-proofline-token-scope": "reviews:read"
+      }
+    },
+    "/api/v1/organizations/{org_id}/reviews/{review_id}/stop": {
+      "post": {
+        "description": "Stops the holder's own pending or running withheld patch, commit or named-file review. Requires a personal or CLI device token with live GitHub read access to the review's repository. Organization, CI job and MCP OAuth tokens cannot stop reviews. The stopped review retains its findings and exact code identity; requesting the same input returns that stopped review.",
+        "operationId": "stop_review",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "org_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "style": "simple"
+          },
+          {
+            "in": "path",
+            "name": "review_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "style": "simple"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StopResponse"
+                }
+              }
+            },
+            "description": "What stopping a review recorded."
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "An RFC 9457 problem; the HTTP status remains authoritative."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Stop your local review",
+        "x-proofline-token-scope": "reviews:request"
       }
     }
   }
