@@ -15,7 +15,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
 
 fn saas() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).to_path_buf()
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
 fn contract() -> Value {
