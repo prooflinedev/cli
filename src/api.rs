@@ -11,8 +11,9 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::model::{
-    CommitReviewRequest, CommitReviewResponse, PatchReviewRequest, PatchReviewResponse,
-    RepositoryNames, ReviewDetail, ReviewPage, RunNowMode, RunNowRequest, RunNowResponse,
+    CommitReviewRequest, CommitReviewResponse, FileReviewRequest, FileReviewResponse,
+    PatchReviewRequest, PatchReviewResponse, RepositoryNames, ReviewDetail, ReviewPage, RunNowMode,
+    RunNowRequest, RunNowResponse, StopResponse,
 };
 use crate::origin::Origin;
 use crate::text::terminal_safe;
@@ -472,6 +473,24 @@ impl Api {
         Err(self.http.problem(&reply))
     }
 
+    /// Requests whole-file review of a selection at one pushed commit.
+    pub async fn request_file_review(
+        &self,
+        repository_id: Uuid,
+        request: &FileReviewRequest,
+    ) -> Result<FileReviewResponse, ApiError> {
+        let repository = repository_id.to_string();
+        let url = self.url(&["repositories", &repository, "file-reviews"]);
+        let (reply, _) = self
+            .http
+            .send(self.request(Method::POST, url).json(request))
+            .await?;
+        if reply.status.is_success() {
+            return self.decode(&reply.body);
+        }
+        Err(self.http.problem(&reply))
+    }
+
     /// Requests a review of the change from one pushed commit to another. One
     /// attempt; the server returns the existing review of the same commits.
     pub async fn request_commit_review(
@@ -489,6 +508,31 @@ impl Api {
             return self.decode(&reply.body);
         }
         Err(self.http.problem(&reply))
+    }
+
+    /// Stops the holder's own local review in one bounded attempt. A refusal
+    /// starts no replacement review, and the client never repeats the POST.
+    pub async fn stop_review(
+        &self,
+        review_id: Uuid,
+    ) -> Result<(serde_json::Value, StopResponse), ApiError> {
+        let id = review_id.to_string();
+        let (reply, _) = self
+            .http
+            .send(self.request(Method::POST, self.url(&["reviews", &id, "stop"])))
+            .await?;
+        if !reply.status.is_success() {
+            return Err(self.http.problem(&reply));
+        }
+        let raw: serde_json::Value = self.decode(&reply.body)?;
+        let stopped: StopResponse = serde_json::from_value(raw.clone())
+            .map_err(|error| self.http.protocol(error.to_string()))?;
+        if stopped.review_id != review_id || stopped.status != "STOPPED" {
+            return Err(self
+                .http
+                .protocol("the stop response does not confirm this review is STOPPED"));
+        }
+        Ok((raw, stopped))
     }
 
     /// The console page for a review, which resolves the organization and

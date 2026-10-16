@@ -25,6 +25,7 @@ struct Fixture {
     requests: Arc<AtomicUsize>,
     uploads: Arc<Mutex<Vec<Value>>>,
     commit_requests: Arc<Mutex<Vec<Value>>>,
+    file_requests: Arc<Mutex<Vec<Value>>>,
     authorized: bool,
 }
 
@@ -77,6 +78,17 @@ async fn commit_review(
     Json(json!({ "review_id": REVIEW, "existing": false }))
 }
 
+async fn file_review(
+    State(fixture): State<Fixture>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    assert!(fixture.authorized);
+    assert_eq!(headers[header::AUTHORIZATION], format!("Bearer {TOKEN}"));
+    fixture.file_requests.lock().unwrap().push(body);
+    Json(json!({ "review_id": REVIEW, "existing": false }))
+}
+
 struct Server {
     origin: String,
     fixture: Fixture,
@@ -90,6 +102,7 @@ impl Server {
             requests: Arc::default(),
             uploads: Arc::default(),
             commit_requests: Arc::default(),
+            file_requests: Arc::default(),
             authorized,
         };
         let app = Router::new()
@@ -104,6 +117,10 @@ impl Server {
             .route(
                 &format!("/api/v1/organizations/{ORG}/repositories/{REPOSITORY}/commit-reviews"),
                 post(commit_review),
+            )
+            .route(
+                &format!("/api/v1/organizations/{ORG}/repositories/{REPOSITORY}/file-reviews"),
+                post(file_review),
             )
             .fallback(|| async { StatusCode::NOT_FOUND })
             .with_state(fixture.clone())
@@ -613,6 +630,59 @@ async fn pushed_commits_send_two_exact_shas_and_no_patch() {
         vec![expected.clone(), expected]
     );
     assert!(server.fixture.uploads.lock().unwrap().is_empty());
+    server.close().await;
+}
+
+/// Even the root commit is a valid whole-file subject; the index and working
+/// tree cannot change its selected paths or contribute source bytes.
+#[tokio::test]
+async fn named_files_send_one_pinned_commit_and_ignore_local_changes() {
+    let checkout = Checkout::new(&[("kept.txt", "committed\n"), ("other.txt", "other\n")]).await;
+    checkout
+        .write("kept.txt", "unpushed text must not leave this checkout\n")
+        .await;
+    checkout.write("untracked.txt", "local only\n").await;
+    let before = checkout.index().await;
+    let server = Server::start(true).await;
+    for flags in [
+        vec!["--files", "kept.txt"],
+        vec!["--commit", "HEAD", "--files", "untracked.txt"],
+        vec!["--commit", "HEAD", "--files", "kept.txt", "--staged"],
+        vec!["--range", "HEAD~1..HEAD", "--files", "kept.txt"],
+        vec!["--commit", "HEAD", "--files", "../kept.txt"],
+    ] {
+        let output = checkout.review(&server, &[], &flags).await;
+        assert!(!output.status.success(), "{flags:?}");
+        server.assert_no_requests();
+    }
+    let output = checkout
+        .review(
+            &server,
+            &[],
+            &[
+                "--commit",
+                "HEAD",
+                "--files",
+                "other.txt",
+                "kept.txt",
+                "kept.txt",
+            ],
+        )
+        .await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        *server.fixture.file_requests.lock().unwrap(),
+        vec![json!({
+            "commit_sha": checkout.base, "paths": ["kept.txt", "other.txt"],
+        })]
+    );
+    assert!(server.fixture.uploads.lock().unwrap().is_empty());
+    assert!(server.fixture.commit_requests.lock().unwrap().is_empty());
+    assert_eq!(checkout.index().await, before);
     server.close().await;
 }
 

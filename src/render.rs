@@ -131,6 +131,23 @@ pub fn review(review: &ReviewDetail, state: Option<Outcome>, url: &Url) -> Strin
     );
     out.push(format!("{subject}{run}{head}: {status}"));
     out.push(url.to_string());
+    if review.kind == "FILES"
+        && let Some(scope) = review
+            .subjects
+            .iter()
+            .find(|subject| subject.role == "PRIMARY" && subject.kind == "GIT_REVISION")
+            .and_then(|subject| subject.file_scope.as_ref())
+    {
+        out.push(format!(
+            "Selected files: {}",
+            scope
+                .paths
+                .iter()
+                .map(|path| one_line(path))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
     if let Some(code) = outcome::code_assessment(review) {
         out.push(String::new());
         code_assessment(&mut out, code);
@@ -160,6 +177,7 @@ mod tests {
             status: "COMPLETED".to_owned(),
             assessment_count: 1,
             code_assessment: None,
+            subjects: Vec::new(),
             assessments: vec![Assessment {
                 id: uuid::Uuid::nil(),
                 environment_display_name: "production".to_owned(),

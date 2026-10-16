@@ -33,7 +33,8 @@ use uuid::Uuid;
 use crate::api::{Api, ApiError, Http};
 use crate::credentials::{Credential, Source};
 use crate::model::{
-    CodeAssessment, CommitReviewRequest, OpenItems, PatchReviewRequest, ReviewDetail, ReviewSummary,
+    CodeAssessment, CommitReviewRequest, FileReviewRequest, OpenItems, PatchReviewRequest,
+    ReviewDetail, ReviewSummary,
 };
 use crate::origin::{DEFAULT_ORIGIN, Origin};
 use crate::outcome::Outcome;
@@ -42,7 +43,7 @@ use crate::severity::Severity;
 const FIRST_POLL_SECONDS: u64 = 5;
 const LONGEST_POLL_SECONDS: u64 = 60;
 const SEARCH_PAGES: usize = 10;
-/// What `findings` and `review` need. The approval page shows each one
+/// What `findings`, `review` and `stop` need. The approval page shows each one
 /// and can narrow them.
 const DEFAULT_SCOPES: [&str; 3] = ["reviews:read", "findings:read", "reviews:request"];
 
@@ -50,7 +51,7 @@ const DEFAULT_SCOPES: [&str; 3] = ["reviews:read", "findings:read", "reviews:req
 #[command(
     name = "proofline",
     version,
-    about = "Read and request Proofline reviews from a terminal"
+    about = "Read, request and stop Proofline reviews from a terminal"
 )]
 pub struct Cli {
     /// Proofline console origin.
@@ -84,6 +85,8 @@ enum Command {
     /// Review the checkout's local changes, pushed commits, or an open pull
     /// request's current head.
     Review(ReviewArgs),
+    /// Stop your own pending or running local patch, pushed-commit or named-file review.
+    Stop(StopArgs),
     /// Show the findings of the latest review of a commit or pull request.
     Findings(FindingsArgs),
     /// Forward a coding agent's stdio messages to this console's MCP server.
@@ -166,6 +169,15 @@ struct OutputArgs {
 }
 
 #[derive(Debug, Args)]
+struct StopArgs {
+    /// The review ID returned by `review --no-wait`.
+    review_id: Uuid,
+    /// Print the server's stop acknowledgment as JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
 struct LocalSelectionArgs {
     /// Review the original index against the base, excluding unstaged changes.
     #[arg(long, conflicts_with_all = ["pr", "include_untracked"])]
@@ -188,12 +200,17 @@ struct ReviewArgs {
     local_selection: LocalSelectionArgs,
     /// Review the change this pushed commit makes against its first parent.
     /// The name is resolved once in the checkout; GitHub must have both commits.
+    /// With --files, review complete selected files at that commit instead.
     #[arg(
         long,
         value_name = "REVISION",
         conflicts_with_all = ["pr", "range", "staged", "include_untracked", "allow_path"]
     )]
     commit: Option<String>,
+    /// Review the complete contents of up to twenty tracked files at --commit.
+    #[arg(long, value_name = "PATH", num_args = 1..=20, requires = "commit",
+        conflicts_with_all = ["pr", "range", "staged", "include_untracked", "allow_path"])]
+    files: Vec<String>,
     /// Review the change from BASE to HEAD, both pushed, BASE an ancestor of
     /// HEAD. The names are resolved once in the checkout.
     #[arg(
@@ -319,6 +336,17 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
         Command::Review(args) => {
             let api = connect(Http::new(origin)?, token, cli.org).await?;
             review(&api, &args).await
+        }
+        Command::Stop(args) => {
+            let api = connect(Http::new(origin)?, token, cli.org).await?;
+            let (raw, stopped) = api.stop_review(args.review_id).await?;
+            let mut stdout = std::io::stdout().lock();
+            if args.json {
+                writeln!(stdout, "{}", serde_json::to_string(&raw)?)?;
+            } else {
+                writeln!(stdout, "Stopped review {}.", stopped.review_id)?;
+            }
+            Ok(Verdict::Done)
         }
         Command::Findings(args) => {
             if let Some(head) = &args.selector.head {
@@ -568,6 +596,9 @@ async fn latest(
 
 async fn review(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
     let Some(number) = args.pr else {
+        if !args.files.is_empty() {
+            return review_files(api, args).await;
+        }
         if args.commit.is_some() || args.range.is_some() {
             return review_pushed(api, args).await;
         }
@@ -647,6 +678,29 @@ async fn review_local(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
         },
         if files == 1 { "file" } else { "files" },
         request.base_commit_sha
+    ));
+    finish(api, requested.review_id, args).await
+}
+
+async fn review_files(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
+    let revision = args
+        .commit
+        .as_deref()
+        .context("--files requires --commit")?;
+    let (commit_sha, paths) =
+        git::named_files(std::path::Path::new("."), revision, &args.files).await?;
+    let (name, repository_id) = connected_repository(api, &args.repository).await?;
+    let request = FileReviewRequest { commit_sha, paths };
+    let requested = api.request_file_review(repository_id, &request).await?;
+    say(&format!(
+        "{} whole-file review of {} selected files in {name} at {}.",
+        if requested.existing {
+            "Found the existing"
+        } else {
+            "Requested a"
+        },
+        request.paths.len(),
+        request.commit_sha
     ));
     finish(api, requested.review_id, args).await
 }
