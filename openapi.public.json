@@ -622,6 +622,80 @@
         ],
         "type": "object"
       },
+      "ChangeDiagramKindView": {
+        "enum": [
+          "FLOWCHART",
+          "SEQUENCE"
+        ],
+        "type": "string"
+      },
+      "ChangeDiagramOutcome": {
+        "oneOf": [
+          {
+            "enum": [
+              "DRAWN"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "NO_INTERACTION",
+            "description": "No interaction between three or more components survived selection.",
+            "type": "string"
+          },
+          {
+            "const": "INDEX_INCOMPLETE",
+            "description": "The head's code index could not vouch for every edge.",
+            "type": "string"
+          },
+          {
+            "const": "OVER_CAPS",
+            "description": "The changed call path is larger than a diagram shows.",
+            "type": "string"
+          },
+          {
+            "const": "DECISION_UNAVAILABLE",
+            "description": "A decision the diagram depends on gave no answer.",
+            "type": "string"
+          }
+        ]
+      },
+      "ChangeDiagramView": {
+        "description": "The change-level diagram recorded for a review, or why there is none.",
+        "properties": {
+          "kind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChangeDiagramKindView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "legend": {
+            "description": "Markdown lines under the diagram: which environment and snapshot its\n dashed relations come from, or which environment was not read.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "mermaid": {
+            "description": "Mermaid source the server generated from the stored graph. Every\n label is escaped, and no model wrote any of it. Absent unless\n `outcome` is `DRAWN`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/ChangeDiagramOutcome"
+          }
+        },
+        "required": [
+          "outcome",
+          "legend"
+        ],
+        "type": "object"
+      },
       "CheckLifecycle": {
         "description": "World's lifecycle disclosure for the evaluator version that answered, as\n the receipt recorded it. A deployment gate counts only `GATING` results\n (`DeterministicCoverage::gate_effective_status`), and only when it\n evaluates a deployment; the lifecycle alone permits or blocks nothing.",
         "oneOf": [
@@ -841,6 +915,17 @@
             ],
             "description": "The retained decision disclosure, which grants no deployment\n authorization. Absent when none is recorded and the review kind\n records no decision basis."
           },
+          "declared_reach": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeclaredReachView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What World declares depends on what this change deploys in this\n environment, at the assessment's pinned snapshot. Absent when the\n assessment's kind records no declared reach."
+          },
           "domains": {
             "description": "The risk domains the assessment evaluated, each with its status and\n reason, ordered by domain.",
             "items": {
@@ -939,6 +1024,17 @@
               }
             ],
             "description": "The retained decision disclosure, which grants no deployment\n authorization. Absent when none is recorded and the review kind\n records no decision basis."
+          },
+          "declared_reach": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeclaredReachView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What World declares depends on what this change deploys in this\n environment, at the assessment's pinned snapshot. Absent when the\n assessment's kind records no declared reach."
           },
           "domains": {
             "description": "The risk domains the assessment evaluated, each with its status and\n reason, ordered by domain.",
@@ -1642,6 +1738,17 @@
               "null"
             ]
           },
+          "change_diagram": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChangeDiagramView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The change-level diagram: the changed call path from the pinned code\n index and the relations World declares. Absent when the review\n recorded none."
+          },
           "check_run_url": {
             "description": "The GitHub check run Proofline published for this review. Null when\n none was published.",
             "type": [
@@ -1857,6 +1964,17 @@
               "null"
             ]
           },
+          "refresh": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RefreshView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How this review decided what it reviews after a push or a full-review\n request. Absent for a review that refreshes nothing, and while a\n refresh has not decided yet."
+          },
           "related_reviews": {
             "description": "Every other run for this pull request the caller can see, plus reviews\n joined to this one by supersession or rerun.",
             "items": {
@@ -2020,6 +2138,68 @@
           "findings"
         ],
         "type": "string"
+      },
+      "DeclaredReachOutcome": {
+        "enum": [
+          "READ",
+          "NO_ROOTS",
+          "ROOTS_UNKNOWN",
+          "UNAVAILABLE"
+        ],
+        "type": "string"
+      },
+      "DeclaredReachView": {
+        "description": "One assessment's declared reach receipt. A reached entity declares a\n dependency on what the change deploys; it is never a claim that the change\n breaks it.",
+        "properties": {
+          "complete": {
+            "description": "Whether World's walk ended with no gap. An empty, incomplete reach\n says nothing about what depends on the change.",
+            "type": "boolean"
+          },
+          "entities": {
+            "description": "Every reached entity, shorter paths first, then by kind.",
+            "items": {
+              "$ref": "#/components/schemas/ReachedEntityView"
+            },
+            "type": "array"
+          },
+          "gaps": {
+            "description": "Where World's walk or its evidence stopped.",
+            "items": {
+              "$ref": "#/components/schemas/ReachGapView"
+            },
+            "type": "array"
+          },
+          "outcome": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DeclaredReachOutcome"
+              }
+            ],
+            "description": "`READ` when World answered, `NO_ROOTS` when no evidence bound a\n deployed artifact or workload to the repository, `ROOTS_UNKNOWN` when\n World's evidence does not establish which revision runs, and\n `UNAVAILABLE` when World gave no answer. Only `READ` carries entities or gaps."
+          },
+          "receipt_digest": {
+            "description": "World's digest of its full answer. Null unless `READ`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "snapshot_id": {
+            "description": "The World snapshot the reach was read at. Null unless `READ`.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "outcome",
+          "complete",
+          "entities",
+          "gaps"
+        ],
+        "type": "object"
       },
       "DeepReviewEscalation": {
         "properties": {
@@ -3671,7 +3851,7 @@
             ]
           },
           "blocking_severity": {
-            "description": "The frozen blocking threshold, either SERIOUS or WARNING; later settings do not restamp it.",
+            "description": "The frozen blocking threshold, either SERIOUS (serious and critical findings) or WARNING (every\n supported finding); later settings do not restamp it.",
             "type": "string"
           },
           "bypassed_at": {
@@ -3815,6 +3995,115 @@
             "type": "string"
           }
         ]
+      },
+      "ReachGapView": {
+        "properties": {
+          "code": {
+            "description": "`COVERAGE_INCOMPLETE`, `SOURCE_CAPABILITY_MISSING` or `BOUND_REACHED`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code"
+        ],
+        "type": "object"
+      },
+      "ReachStepView": {
+        "properties": {
+          "assertion_id": {
+            "description": "The World relation assertion behind this step.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "direction": {
+            "description": "`OUT` when the step follows the relation from its subject, `IN` when\n it follows it back to the subject.",
+            "type": "string"
+          },
+          "relation": {
+            "description": "The relation key, such as `proofline.relation.consumes_api`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "assertion_id",
+          "relation",
+          "direction"
+        ],
+        "type": "object"
+      },
+      "ReachedEntityView": {
+        "properties": {
+          "entity_id": {
+            "description": "World's entity ID.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "description": "The entity's kind, such as `service` or `queue`.",
+            "type": "string"
+          },
+          "label": {
+            "description": "World's display label for the entity: environment evidence for\n readers of this organization, never published to GitHub.",
+            "type": "string"
+          },
+          "path": {
+            "description": "The recorded relation assertions from the deployed root to the entity.",
+            "items": {
+              "$ref": "#/components/schemas/ReachStepView"
+            },
+            "type": "array"
+          },
+          "type_keys": {
+            "description": "World's registry type keys for the entity.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "entity_id",
+          "kind",
+          "type_keys",
+          "label",
+          "path"
+        ],
+        "type": "object"
+      },
+      "RefreshView": {
+        "description": "A recorded refresh decision, as the console shows it.",
+        "properties": {
+          "decided_by": {
+            "description": "What decided: `FLOOR`, a refresh rule that always reviews the whole\n change; `JEV`, Proofline's decision model within those rules; or\n `FALLBACK`, the refresh rules because the model did not decide.\n Absent for a full review a person requested, and for reviews decided\n before it was recorded.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mode": {
+            "description": "`INCREMENTAL` reviews only the files the push touched and carries the\n earlier review's untouched findings forward; `FULL` reviews the whole change.",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why, in words. Server text that may name repository paths.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "refreshes_review_id": {
+            "description": "The review this one refreshes. Absent for a full review a person requested.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "type": "object"
       },
       "RefusedEnvironment": {
         "description": "An environment a refusal names. `external_key` is how its pages are\n addressed.",
@@ -4452,6 +4741,17 @@
               "string",
               "null"
             ]
+          },
+          "refresh": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RefreshView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How this review decided what it reviews after a push or a full-review\n request. Absent for a review that refreshes nothing, and while a\n refresh has not decided yet."
           },
           "repository_full_name": {
             "description": "The repository's `owner/name`. Absent when the review names no repository.",

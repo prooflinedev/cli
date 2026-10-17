@@ -22,7 +22,7 @@ clap = { version = "4", features = ["derive", "env"] }
 flate2 = "1"
 sha2 = "0.10"
 tar = "0.4"
-keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "async-secret-service", "crypto-rust", "tokio"] }
+keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 secrecy = "0.10"
 serde = { version = "1", features = ["derive"] }
