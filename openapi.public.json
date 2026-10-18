@@ -3362,6 +3362,7 @@
             "description": "Each deterministic check the finding cited and its result on the\n patched head. Empty until an outcome is recorded."
           },
           "finding_id": {
+            "description": "The finding being re-verified against this patch.",
             "format": "uuid",
             "type": "string"
           },
@@ -3371,7 +3372,12 @@
             "type": "integer"
           },
           "outcome": {
-            "$ref": "#/components/schemas/LocalReverificationOutcome"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/LocalReverificationOutcome"
+              }
+            ],
+            "description": "The local re-verification result; it does not change the original finding."
           }
         },
         "required": [
@@ -3843,6 +3849,7 @@
         "description": "One finding a patch review re-verifies against the patch.",
         "properties": {
           "finding_id": {
+            "description": "The finding being re-verified against this patch.",
             "format": "uuid",
             "type": "string"
           },
