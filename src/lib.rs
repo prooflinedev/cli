@@ -667,6 +667,7 @@ async fn review_local(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
         base_commit_sha: changes.base_commit_sha,
         patch: changes.patch,
         trigger_source: None,
+        verify_finding_ids: Vec::new(),
     };
     let requested = api.request_patch_review(repository_id, &request).await?;
     say(&format!(
