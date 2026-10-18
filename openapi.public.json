@@ -266,10 +266,12 @@
       "ApprovalGap": {
         "properties": {
           "assessment_id": {
+            "description": "Assessment whose approval could not supply deferred occurrence questions.",
             "format": "uuid",
             "type": "string"
           },
           "code": {
+            "description": "Reason the assessment's approval could not supply deferred occurrence questions.",
             "type": "string"
           }
         },
@@ -670,7 +672,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Diagram format when a diagram was drawn; otherwise null."
           },
           "legend": {
             "description": "Markdown lines under the diagram: which environment and snapshot its\n dashed relations come from, or which environment was not read.",
@@ -687,7 +690,12 @@
             ]
           },
           "outcome": {
-            "$ref": "#/components/schemas/ChangeDiagramOutcome"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ChangeDiagramOutcome"
+              }
+            ],
+            "description": "Whether the diagram was drawn, or why no diagram is available."
           }
         },
         "required": [
@@ -2445,12 +2453,14 @@
         "description": "The retained selection, not a digest of file contents. Its identity uses\n a version prefix and length-framed UTF-8 paths in their sorted order.",
         "properties": {
           "paths": {
+            "description": "Sorted, unique repository-relative paths selected for whole-file review.",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
           "paths_digest": {
+            "description": "Digest of the selected paths, not the file contents.",
             "type": "string"
           }
         },
@@ -3368,25 +3378,33 @@
             "type": "array"
           },
           "detail": {
+            "description": "Explanation of the capture's outcome, when available.",
             "type": [
               "string",
               "null"
             ]
           },
           "occurrence_key": {
+            "description": "Retained identity of the deployment occurrence, when available.",
             "type": [
               "string",
               "null"
             ]
           },
           "questions": {
+            "description": "Deferred questions and their binding or observed results for this occurrence.",
             "items": {
               "$ref": "#/components/schemas/OccurrenceQuestion"
             },
             "type": "array"
           },
           "state": {
-            "$ref": "#/components/schemas/CaptureState"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/CaptureState"
+              }
+            ],
+            "description": "Whether the capture is pending, recorded, unbound, not executed, or incomplete."
           }
         },
         "required": [
@@ -3400,6 +3418,7 @@
         "description": "One deferred question as the gate presents it.",
         "properties": {
           "assessment_id": {
+            "description": "Assessment whose approval deferred this question.",
             "format": "uuid",
             "type": "string"
           },
@@ -3411,9 +3430,11 @@
             ]
           },
           "family_key": {
+            "description": "Hypothesis family key for the deferred question.",
             "type": "string"
           },
           "family_version": {
+            "description": "Hypothesis family version for the deferred question.",
             "format": "int32",
             "type": "integer"
           },
@@ -3425,13 +3446,19 @@
             ]
           },
           "outcome_id": {
+            "description": "World outcome record identifier, when an observed result was recorded.",
             "type": [
               "string",
               "null"
             ]
           },
           "state": {
-            "$ref": "#/components/schemas/QuestionState"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/QuestionState"
+              }
+            ],
+            "description": "Whether the question is pending, recorded, unbound, or not executed."
           }
         },
         "required": [
@@ -5544,6 +5571,7 @@
         "description": "What stopping a review recorded.",
         "properties": {
           "review_id": {
+            "description": "Identifier of the stopped review.",
             "format": "uuid",
             "type": "string"
           },
@@ -5552,11 +5580,17 @@
             "type": "string"
           },
           "stopped_at": {
+            "description": "Time when the review was stopped.",
             "format": "date-time",
             "type": "string"
           },
           "stopped_by": {
-            "$ref": "#/components/schemas/ActorView"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ActorView"
+              }
+            ],
+            "description": "Person who stopped the review."
           }
         },
         "required": [
