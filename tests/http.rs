@@ -236,6 +236,7 @@ async fn asynchronous_pull_request_acknowledgment_respects_json_without_polling(
 struct Fake {
     polls: Arc<AtomicUsize>,
     report_organization: bool,
+    summary: Option<Value>,
 }
 
 async fn code() -> Json<Value> {
@@ -274,7 +275,7 @@ async fn token(State(fake): State<Fake>, Json(body): Json<Value>) -> Response {
     Json(issued).into_response()
 }
 
-async fn review(headers: HeaderMap) -> Response {
+async fn review(State(fake): State<Fake>, headers: HeaderMap) -> Response {
     if headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -286,7 +287,7 @@ async fn review(headers: HeaderMap) -> Response {
         )
             .into_response();
     }
-    Json(json!({
+    let mut body = json!({
         "id": "0190f3a0-0000-7000-8000-0000000000aa",
         "public_key": "rev_0190f3a00000700080000000000000aa",
         "kind": "PULL_REQUEST",
@@ -332,8 +333,11 @@ async fn review(headers: HeaderMap) -> Response {
         "pull_request_number": 42,
         "repository_full_name": "acme/web",
         "an_added_field": true,
-    }))
-    .into_response()
+    });
+    if let Some(summary) = fake.summary {
+        body["change_summary"] = summary;
+    }
+    Json(body).into_response()
 }
 
 async fn serve(fake: Fake) -> Origin {
@@ -420,44 +424,76 @@ async fn a_server_that_omits_the_organization_needs_one_named() {
 
 #[tokio::test]
 async fn a_review_reads_with_unknown_fields_and_keeps_its_gap() {
-    let origin = serve(Fake::default()).await;
-    let console = origin.to_string();
-    let api = Api::new(Http::new(origin).unwrap(), SecretString::from(TOKEN), org());
-    let id = "0190f3a0-0000-7000-8000-0000000000aa".parse().unwrap();
-    let (raw, detail) = api.review(id).await.unwrap();
-    assert_eq!(raw["an_added_field"], true);
-    let state = proofline_cli::outcome::terminal(&detail);
-    assert_eq!(state, Some(proofline_cli::outcome::Outcome::Incomplete));
+    let published = json!({
+        "head_sha": "89abcdef0123456789abcdef0123456789abcdef",
+        "base_sha": "0123456789abcdef0123456789abcdef01234567",
+        "files": [{
+            "path": "src/new.rs", "previous_path": "src/old.rs", "status": "renamed",
+            "additions": 3, "deletions": 1, "depth": "STANDARD",
+        }],
+        "route": "SHORT",
+        "prose_outcome": "PUBLISHED",
+        "prose": {
+            "headline": "[withheld] <script>literal text</script>",
+            "paragraphs": ["Moves the request handler."],
+            "notable_paths": ["src/new.rs"],
+        },
+    });
+    let mut withheld = published.clone();
+    withheld["prose"] = Value::Null;
+    for summary in [None, Some(Value::Null), Some(published), Some(withheld)] {
+        let origin = serve(Fake {
+            summary: summary.clone(),
+            ..Fake::default()
+        })
+        .await;
+        let console = origin.to_string();
+        let api = Api::new(Http::new(origin).unwrap(), SecretString::from(TOKEN), org());
+        let id = "0190f3a0-0000-7000-8000-0000000000aa".parse().unwrap();
+        let (raw, detail) = api.review(id).await.unwrap();
+        assert_eq!(raw["an_added_field"], true);
+        assert_eq!(raw.get("change_summary"), summary.as_ref());
+        assert_eq!(
+            raw["head_commit_sha"],
+            "89abcdef0123456789abcdef0123456789abcdef"
+        );
+        assert_eq!(
+            raw["base_commit_sha"],
+            "0123456789abcdef0123456789abcdef01234567"
+        );
+        let state = proofline_cli::outcome::terminal(&detail);
+        assert_eq!(state, Some(proofline_cli::outcome::Outcome::Incomplete));
 
-    let output = cli(
-        &console,
-        &[
-            "findings",
-            "--review",
-            "0190f3a0-0000-7000-8000-0000000000aa",
-            "--json",
-        ],
-    )
-    .await;
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(result["schema"], "proofline.review-result.v1");
-    assert_eq!(result["outcome"], "INCOMPLETE");
-    assert_eq!(result["review"], raw);
-    let schema_output = cli(&console, &["review", "--schema"]).await;
-    assert!(schema_output.status.success(), "{schema_output:?}");
-    let result_schema: Value = serde_json::from_slice(&schema_output.stdout).unwrap();
-    jsonschema::validator_for(&result_schema)
-        .unwrap()
-        .validate(&result)
-        .unwrap();
+        let output = cli(
+            &console,
+            &[
+                "findings",
+                "--review",
+                "0190f3a0-0000-7000-8000-0000000000aa",
+                "--json",
+            ],
+        )
+        .await;
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["schema"], "proofline.review-result.v1");
+        assert_eq!(result["outcome"], "INCOMPLETE");
+        assert_eq!(result["review"], raw);
+        let schema_output = cli(&console, &["review", "--schema"]).await;
+        assert!(schema_output.status.success(), "{schema_output:?}");
+        let result_schema: Value = serde_json::from_slice(&schema_output.stdout).unwrap();
+        jsonschema::validator_for(&result_schema)
+            .unwrap()
+            .validate(&result)
+            .unwrap();
 
-    let wrong = Api::new(
-        Http::new(serve(Fake::default()).await).unwrap(),
-        SecretString::from("pld_other"),
-        org(),
-    );
-    assert_eq!(wrong.review(id).await.unwrap_err().status(), Some(401));
+        let wrong = Api::new(
+            Http::new(serve(Fake::default()).await).unwrap(),
+            SecretString::from("pld_other"),
+            org(),
+        );
+        assert_eq!(wrong.review(id).await.unwrap_err().status(), Some(401));
+    }
 }
 
 #[tokio::test]

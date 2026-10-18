@@ -704,6 +704,60 @@
         ],
         "type": "object"
       },
+      "ChangeSummary": {
+        "description": "What a review recorded about its change.",
+        "properties": {
+          "base_sha": {
+            "description": "The compared base commit. Null when the review pinned none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "files": {
+            "description": "The changed files the review read, by path, with the depth it read\n them at. Empty when the review recorded no change digest. Files the\n review's filters kept from review are listed apart, with their reason.",
+            "items": {
+              "$ref": "#/components/schemas/FileFact"
+            },
+            "type": "array"
+          },
+          "head_sha": {
+            "description": "The reviewed head commit.",
+            "type": "string"
+          },
+          "prose": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Prose"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Model-written prose. Present only when `prose_outcome` is `PUBLISHED`.\n It is untrusted text: render it inert."
+          },
+          "prose_outcome": {
+            "$ref": "#/components/schemas/ProseOutcome"
+          },
+          "route": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SummaryRoute"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The route the summary applied. Null when the review recorded no change\n digest, so no route was asked."
+          }
+        },
+        "required": [
+          "head_sha",
+          "files",
+          "prose_outcome"
+        ],
+        "type": "object"
+      },
       "CheckLifecycle": {
         "description": "World's lifecycle disclosure for the evaluator version that answered, as\n the receipt recorded it. A deployment gate counts only `GATING` results\n (`DeterministicCoverage::gate_effective_status`), and only when it\n evaluates a deployment; the lifecycle alone permits or blocks nothing.",
         "oneOf": [
@@ -1757,6 +1811,17 @@
             ],
             "description": "The change-level diagram: the changed call path from the pinned code\n index and the relations World declares. Absent when the review\n recorded none."
           },
+          "change_summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChangeSummary"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the change does and which files the review read at which depth\n (§55). Null until the review's publication records it, and for a\n review that is not of a pull request. Generated text has current\n credentials and recorded protected values withheld; missing or expired\n provenance withholds the generated text whole."
+          },
           "check_run_url": {
             "description": "The GitHub check run Proofline published for this review. Null when\n none was published.",
             "type": [
@@ -2399,6 +2464,43 @@
           "proofline"
         ],
         "type": "string"
+      },
+      "FileFact": {
+        "properties": {
+          "additions": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "deletions": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "depth": {
+            "$ref": "#/components/schemas/ReviewDepth"
+          },
+          "path": {
+            "type": "string"
+          },
+          "previous_path": {
+            "description": "The path before a rename.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "GitHub's file status: `added`, `modified`, `removed`, `renamed` and so on.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "status",
+          "additions",
+          "deletions",
+          "depth"
+        ],
+        "type": "object"
       },
       "FileProjection": {
         "properties": {
@@ -3965,6 +4067,75 @@
         "title": "Problem",
         "type": "object"
       },
+      "Prose": {
+        "properties": {
+          "headline": {
+            "description": "At most 120 characters.",
+            "type": "string"
+          },
+          "notable_paths": {
+            "description": "Paths in the pinned diff the prose calls out.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "paragraphs": {
+            "description": "At most three of at most 400 characters; one on the `SHORT` route.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "headline",
+          "paragraphs",
+          "notable_paths"
+        ],
+        "type": "object"
+      },
+      "ProseOutcome": {
+        "description": "Why the summary carries prose or does not.",
+        "oneOf": [
+          {
+            "enum": [
+              "PUBLISHED"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "NO_CHANGE_DIGEST",
+            "description": "The review recorded no change digest to summarize.",
+            "type": "string"
+          },
+          {
+            "const": "NOT_REQUESTED",
+            "description": "The applied route was `DETERMINISTIC_ONLY`.",
+            "type": "string"
+          },
+          {
+            "const": "MODEL_UNAVAILABLE",
+            "description": "No fast-tier model was bound, priced or funded, or it did not answer.",
+            "type": "string"
+          },
+          {
+            "const": "MALFORMED",
+            "description": "The answer did not fit the tool's schema or its limits.",
+            "type": "string"
+          },
+          {
+            "const": "REJECTED",
+            "description": "The prose used a word a summary never uses (\"safe\", \"no risk\",\n \"approved\") or named a path outside the diff.",
+            "type": "string"
+          },
+          {
+            "const": "UNGROUNDED",
+            "description": "Jev answered that a statement does not follow from the diff slices.",
+            "type": "string"
+          }
+        ]
+      },
       "PullRequestMergeGate": {
         "properties": {
           "assessment_count": {
@@ -4445,6 +4616,13 @@
           "validate_findings"
         ],
         "type": "object"
+      },
+      "ReviewDepth": {
+        "description": "The depth the applied route plan read a file at.",
+        "enum": [
+          "STANDARD"
+        ],
+        "type": "string"
       },
       "ReviewDiffStats": {
         "properties": {
@@ -5836,6 +6014,14 @@
           "release_authorizations"
         ],
         "type": "object"
+      },
+      "SummaryRoute": {
+        "enum": [
+          "DETERMINISTIC_ONLY",
+          "SHORT",
+          "FULL"
+        ],
+        "type": "string"
       },
       "TerraformPlanView": {
         "enum": [
