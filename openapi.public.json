@@ -2206,6 +2206,17 @@
               "string",
               "null"
             ]
+          },
+          "terraform": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TerraformRootsView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The Terraform addresses the reach also started from, or why it took\n none. Absent when the assessment read reach only from the deployed\n revision."
           }
         },
         "required": [
@@ -5823,6 +5834,48 @@
           "kind",
           "role",
           "release_authorizations"
+        ],
+        "type": "object"
+      },
+      "TerraformPlanView": {
+        "enum": [
+          "TAKEN",
+          "NOT_DECLARED",
+          "NOT_PINNED",
+          "HEAD_DIFFERS",
+          "ADDRESSES_UNREPORTED"
+        ],
+        "type": "string"
+      },
+      "TerraformRootsView": {
+        "description": "The Terraform roots of one declared reach read.",
+        "properties": {
+          "addresses": {
+            "description": "The changed resource instance addresses taken as roots.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "omitted": {
+            "description": "Changed addresses left out at World's limit of 100 roots per read.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "plan": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TerraformPlanView"
+              }
+            ],
+            "description": "`TAKEN` when the plan pinned for the reviewed commit named the roots,\n `NOT_DECLARED` when the environment captures no Terraform plan for this\n review, `NOT_PINNED` when it declares one and none was pinned,\n `HEAD_DIFFERS` when the pinned plan is for another commit, and\n `ADDRESSES_UNREPORTED` when the pinned plan records no changed\n addresses because it was pinned before World reported them."
+          }
+        },
+        "required": [
+          "plan",
+          "addresses",
+          "omitted"
         ],
         "type": "object"
       },
