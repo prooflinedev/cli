@@ -219,6 +219,16 @@ struct ReviewArgs {
         conflicts_with_all = ["pr", "staged", "include_untracked", "allow_path"]
     )]
     range: Option<String>,
+    /// Re-verify these open findings of one pull request against the local
+    /// changes, and print each one's outcome. The outcome is local: the pull
+    /// request's findings are unchanged. Needs an API token.
+    #[arg(
+        long,
+        value_name = "FINDING_ID",
+        num_args = 1..,
+        conflicts_with_all = ["pr", "commit", "range"]
+    )]
+    verify: Vec<Uuid>,
     /// Request a fresh full review of the pull request after settlement. An
     /// active review is reused with its recorded scope unchanged.
     #[arg(long, requires = "pr")]
@@ -654,6 +664,12 @@ async fn review_local(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
     )
     .await?;
     let files = changes.files();
+    if files == 0 && !args.verify.is_empty() {
+        bail!(
+            "nothing to re-verify against: the selected local changes match {}; --verify re-verifies findings against uncommitted changes",
+            changes.base_commit_sha
+        );
+    }
     if files == 0 {
         say(&format!(
             "Nothing to review: the selected local changes match {}.",
@@ -667,6 +683,7 @@ async fn review_local(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
         base_commit_sha: changes.base_commit_sha,
         patch: changes.patch,
         trigger_source: None,
+        verify_finding_ids: args.verify.clone(),
     };
     let requested = api.request_patch_review(repository_id, &request).await?;
     say(&format!(
@@ -679,6 +696,12 @@ async fn review_local(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
         if files == 1 { "file" } else { "files" },
         request.base_commit_sha
     ));
+    for verifying in &requested.verify {
+        say(&format!(
+            "Re-verifying finding {} against the local changes (request {} of 3).",
+            verifying.finding_id, verifying.iteration
+        ));
+    }
     finish(api, requested.review_id, args).await
 }
 

@@ -204,6 +204,7 @@ mod tests {
             pull_request_number: Some(7),
             repository_full_name: Some("acme/web".to_owned()),
             run_number: Some(1),
+            local_reverifications: Vec::new(),
         }
     }
 
