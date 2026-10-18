@@ -737,7 +737,12 @@
             "description": "Model-written prose. Present only when `prose_outcome` is `PUBLISHED`.\n It is untrusted text: render it inert."
           },
           "prose_outcome": {
-            "$ref": "#/components/schemas/ProseOutcome"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProseOutcome"
+              }
+            ],
+            "description": "The recorded prose-generation outcome, before response-time withholding."
           },
           "route": {
             "anyOf": [
@@ -2468,17 +2473,25 @@
       "FileFact": {
         "properties": {
           "additions": {
+            "description": "Lines added in this file's recorded diff.",
             "format": "int64",
             "type": "integer"
           },
           "deletions": {
+            "description": "Lines deleted in this file's recorded diff.",
             "format": "int64",
             "type": "integer"
           },
           "depth": {
-            "$ref": "#/components/schemas/ReviewDepth"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ReviewDepth"
+              }
+            ],
+            "description": "The review depth recorded for this file."
           },
           "path": {
+            "description": "The repository-relative path of the changed file.",
             "type": "string"
           },
           "previous_path": {
