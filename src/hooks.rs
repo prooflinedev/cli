@@ -490,6 +490,7 @@ async fn request(
             base_commit_sha: changes.base_commit_sha,
             patch: changes.patch,
             trigger_source: Some(hook.trigger_source()),
+            verify_finding_ids: Vec::new(),
         };
         let requested = api.request_patch_review(repository_id, &request).await?;
         let (_, detail, state) =

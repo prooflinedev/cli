@@ -246,6 +246,9 @@ pub struct PatchReviewRequest {
     /// that predates the field still accepts a plain review.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger_source: Option<TriggerSource>,
+    /// Open findings to re-verify against the patch. Omitted for a plain review.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verify_finding_ids: Vec<Uuid>,
 }
 
 /// The git hook that asked for a patch review.

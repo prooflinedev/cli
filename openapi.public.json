@@ -1866,6 +1866,13 @@
             "description": "`PULL_REQUEST`, `DEPLOYMENT`, `PATCH`, a review of local changes\n sent as a patch, `COMMIT`, a review of pushed commits, or `FILES`,\n complete selected files at one pushed commit.",
             "type": "string"
           },
+          "local_reverifications": {
+            "description": "For a patch review requested with `verify_finding_ids`, each finding\n it re-verifies against the patch and the outcome. The outcome is\n local: the pull request's finding is unchanged whatever it is. Absent\n otherwise.",
+            "items": {
+              "$ref": "#/components/schemas/LocalReverification"
+            },
+            "type": "array"
+          },
           "merge_gate": {
             "anyOf": [
               {
@@ -3348,6 +3355,43 @@
         ],
         "type": "string"
       },
+      "LocalReverification": {
+        "description": "One finding a patch review re-verified against the patch. The outcome is\n local: the pull request's finding is unchanged whatever it is.",
+        "properties": {
+          "checks": {
+            "description": "Each deterministic check the finding cited and its result on the\n patched head. Empty until an outcome is recorded."
+          },
+          "finding_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "iteration": {
+            "description": "The request's number among the requests to re-verify the finding's\n series on this patch, at most 3.",
+            "format": "int32",
+            "type": "integer"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/LocalReverificationOutcome"
+          }
+        },
+        "required": [
+          "finding_id",
+          "iteration",
+          "outcome",
+          "checks"
+        ],
+        "type": "object"
+      },
+      "LocalReverificationOutcome": {
+        "description": "`RESOLVED_VERIFIED` needs the re-investigation to reject the finding's\n hypothesis and every cited check to pass. `STILL_PRESENT`: the hypothesis\n is supported, or a check still finds the mechanism. `NOT_VERIFIED`:\n anything else, including a review that ended without an answer.\n `PENDING`: the review is still running.",
+        "enum": [
+          "RESOLVED_VERIFIED",
+          "STILL_PRESENT",
+          "NOT_VERIFIED",
+          "PENDING"
+        ],
+        "type": "string"
+      },
       "NotAssessedView": {
         "properties": {
           "environment_display_name": {
@@ -3738,6 +3782,15 @@
             ],
             "default": null,
             "description": "The git hook that sent this request, when one did. A review recorded\n by an earlier identical request keeps the source it recorded."
+          },
+          "verify_finding_ids": {
+            "default": [],
+            "description": "Open findings of one pull request in this repository to re-verify\n against the patch, at most 20. The review re-investigates each one\n and reports its outcome in `local_reverifications`; the pull\n request's findings are unchanged whatever it is. Requires an API\n token. Each finding's series takes at most 3 requests per patch, and\n the pull request at most 10 re-verification requests per hour,\n counted with those a coding agent makes through MCP.",
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -3761,12 +3814,20 @@
             "description": "The review of this patch on this base, readable through the review\n and findings routes.",
             "format": "uuid",
             "type": "string"
+          },
+          "verify": {
+            "description": "Each finding of `verify_finding_ids` the review re-verifies, one per\n finding series. Empty without `verify_finding_ids`.",
+            "items": {
+              "$ref": "#/components/schemas/PatchVerification"
+            },
+            "type": "array"
           }
         },
         "required": [
           "review_id",
           "existing",
-          "patch_digest"
+          "patch_digest",
+          "verify"
         ],
         "type": "object"
       },
@@ -3777,6 +3838,25 @@
           "HOOK_PRE_PUSH"
         ],
         "type": "string"
+      },
+      "PatchVerification": {
+        "description": "One finding a patch review re-verifies against the patch.",
+        "properties": {
+          "finding_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "iteration": {
+            "description": "This request's number among the requests to re-verify the finding's\n series on this patch, at most 3.",
+            "format": "int32",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "finding_id",
+          "iteration"
+        ],
+        "type": "object"
       },
       "PermissionView": {
         "enum": [
@@ -6491,7 +6571,7 @@
     },
     "/api/v1/organizations/{org_id}/repositories/{repo_id}/patch-reviews": {
       "post": {
-        "description": "Reviews a unified diff against a commit GitHub has in the repository, and returns that patch's review when one exists. The review reads only that commit and the patch, and is never posted to a pull request. Requires live GitHub read access; the same patch on the same base always returns the same review.",
+        "description": "Reviews a unified diff against a commit GitHub has in the repository, and returns that patch's review when one exists. The review reads only that commit and the patch, and is never posted to a pull request. With `verify_finding_ids`, the review also re-verifies those open findings of one pull request against the patch and reports each outcome on the review, without changing the pull request's findings. Requires live GitHub read access; the same patch on the same base, re-verifying the same findings, always returns the same review.",
         "operationId": "request_patch_review",
         "parameters": [
           {
