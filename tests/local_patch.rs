@@ -18,6 +18,7 @@ use tokio::sync::oneshot;
 const ORG: &str = "0190f3a0-0000-7000-8000-000000000001";
 const REPOSITORY: &str = "0190f3a0-0000-7000-8000-000000000022";
 const REVIEW: &str = "0190f3a0-0000-7000-8000-000000000033";
+const FINDING: &str = "0190f3a0-0000-7000-8000-000000000044";
 const TOKEN: &str = "local-patch-test-token";
 
 #[derive(Clone)]
@@ -60,11 +61,52 @@ async fn upload(
 ) -> Json<Value> {
     assert!(fixture.authorized);
     assert_eq!(headers[header::AUTHORIZATION], format!("Bearer {TOKEN}"));
+    let verify: Vec<Value> = body["verify_finding_ids"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|id| json!({ "finding_id": id, "iteration": 1 }))
+        .collect();
     fixture.uploads.lock().unwrap().push(body);
     Json(json!({
         "review_id": REVIEW,
         "existing": false,
         "patch_digest": "a".repeat(64),
+        "verify": verify,
+    }))
+}
+
+/// A settled patch review that re-verified `FINDING` against the patch.
+async fn settled_review(headers: HeaderMap) -> Json<Value> {
+    assert_eq!(headers[header::AUTHORIZATION], format!("Bearer {TOKEN}"));
+    Json(json!({
+        "id": REVIEW,
+        "kind": "PATCH",
+        "status": "COMPLETED",
+        "assessment_count": 1,
+        "assessments": [{
+            "id": REVIEW,
+            "environment_display_name": "production",
+            "status": "COMPLETED",
+            "findings": [],
+            "checks": { "receipt_recorded": true, "status": "READY", "families": [] },
+            "incompleteness_kind": null,
+            "reason_codes": null,
+            "release_evidence_gap": null,
+        }],
+        "code_assessment": null,
+        "base_commit_sha": "b".repeat(40),
+        "head_commit_sha": "c".repeat(40),
+        "open_items": null,
+        "pull_request_number": null,
+        "repository_full_name": "acme/web",
+        "run_number": null,
+        "local_reverifications": [{
+            "finding_id": FINDING,
+            "iteration": 1,
+            "outcome": "RESOLVED_VERIFIED",
+            "checks": [],
+        }],
     }))
 }
 
@@ -121,6 +163,10 @@ impl Server {
             .route(
                 &format!("/api/v1/organizations/{ORG}/repositories/{REPOSITORY}/file-reviews"),
                 post(file_review),
+            )
+            .route(
+                &format!("/api/v1/organizations/{ORG}/reviews/{REVIEW}"),
+                get(settled_review),
             )
             .fallback(|| async { StatusCode::NOT_FOUND })
             .with_state(fixture.clone())
@@ -239,6 +285,12 @@ impl Checkout {
     }
 
     async fn review(&self, server: &Server, allowed: &[&str], flags: &[&str]) -> Output {
+        let mut flags = flags.to_vec();
+        flags.push("--no-wait");
+        self.review_and_wait(server, allowed, &flags).await
+    }
+
+    async fn review_and_wait(&self, server: &Server, allowed: &[&str], flags: &[&str]) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_proofline"));
         command
             .current_dir(self.root())
@@ -251,7 +303,6 @@ impl Checkout {
                 "review",
                 "--repo",
                 "acme/web",
-                "--no-wait",
             ])
             .args(flags);
         self.git_environment(&mut command);
@@ -340,6 +391,35 @@ async fn asynchronous_patch_acknowledgment_respects_json_without_polling() {
     }
 }
 
+/// `--verify` sends the named findings with the local patch and, once the
+/// review settles, prints each one's local outcome.
+#[tokio::test]
+async fn verify_sends_the_findings_and_prints_their_local_outcomes() {
+    let checkout = Checkout::new(&[("kept.txt", "base\n")]).await;
+    checkout.write("kept.txt", "fixed\n").await;
+    let server = Server::start(true).await;
+    let output = checkout
+        .review_and_wait(&server, &[], &["--verify", FINDING])
+        .await;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
+    let uploads = server.fixture.uploads.lock().unwrap().clone();
+    assert_eq!(uploads.len(), 1);
+    assert_eq!(uploads[0]["verify_finding_ids"], json!([FINDING]));
+    assert!(
+        stderr.contains(&format!(
+            "Re-verifying finding {FINDING} against the local changes (request 1 of 3)."
+        )),
+        "{stderr}"
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains(&format!("  {FINDING}  RESOLVED_VERIFIED  (request 1 of 3)")),
+        "{stdout}"
+    );
+    server.close().await;
+}
+
 #[tokio::test]
 async fn local_selection_uploads_only_selected_bytes_and_refuses_before_http() {
     let github = format!("ghp_{}", "S".repeat(36));
@@ -362,6 +442,7 @@ async fn local_selection_uploads_only_selected_bytes_and_refuses_before_http() {
         vec!["--staged", "--include-untracked"],
         vec!["--staged", "--pr", "7"],
         vec!["--include-untracked", "--pr", "7"],
+        vec!["--verify", FINDING, "--pr", "7"],
     ] {
         let output = checkout.review(&server, &[], &flags).await;
         assert_eq!(output.status.code(), Some(1));

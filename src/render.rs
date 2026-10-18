@@ -161,6 +161,21 @@ pub fn review(review: &ReviewDetail, state: Option<Outcome>, url: &Url) -> Strin
         out.push(String::new());
         assessment(&mut out, item);
     }
+    if !review.local_reverifications.is_empty() {
+        out.push(String::new());
+        out.push(
+            "Re-verified against the local changes (the pull request's findings are unchanged):"
+                .to_owned(),
+        );
+        for item in &review.local_reverifications {
+            out.push(format!(
+                "  {}  {}  (request {} of 3)",
+                item.finding_id,
+                one_line(&item.outcome),
+                item.iteration
+            ));
+        }
+    }
     out.push(String::new());
     out.join("\n")
 }
@@ -199,6 +214,7 @@ mod tests {
             pull_request_number: Some(42),
             repository_full_name: Some("acme/web".to_owned()),
             run_number: Some(2),
+            local_reverifications: Vec::new(),
         }
     }
 
