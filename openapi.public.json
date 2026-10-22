@@ -1932,6 +1932,10 @@
             "format": "uuid",
             "type": "string"
           },
+          "is_deep_review": {
+            "description": "Present and true when this run is a Deep Review.",
+            "type": "boolean"
+          },
           "kind": {
             "description": "`PULL_REQUEST`, `DEPLOYMENT`, `PATCH`, a review of local changes\n sent as a patch, `COMMIT`, a review of pushed commits, or `FILES`,\n complete selected files at one pushed commit.",
             "type": "string"
