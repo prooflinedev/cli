@@ -2197,6 +2197,17 @@
               }
             ],
             "description": "The git hook that asked for this patch review: `HOOK_PRE_COMMIT` or\n `HOOK_PRE_PUSH`. Null for any other review, and for a patch review\n requested without naming a hook."
+          },
+          "walkthrough": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WalkthroughView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The reviewed head's changed files in reading groups, with a line per\n file. Absent until the walkthrough is stored, and for a review that\n has none."
           }
         },
         "required": [
@@ -6199,6 +6210,111 @@
         },
         "required": [
           "untrusted_text"
+        ],
+        "type": "object"
+      },
+      "WalkthroughFileView": {
+        "properties": {
+          "additions": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "change": {
+            "description": "GitHub's change status, upper case, such as `ADDED` or `RENAMED`.",
+            "type": "string"
+          },
+          "deletions": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "depth": {
+            "description": "The route plan's depth tier. Absent for a file the review did not\n evaluate.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "generated": {
+            "description": "Whether `line` is model-authored.",
+            "type": "boolean"
+          },
+          "line": {
+            "description": "A model sentence, or the deterministic line when there is none.",
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "previous_path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "skip_class": {
+            "description": "Why the review did not evaluate the file, such as `LOCKFILE` or\n `REPOSITORY_FILTER`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "change",
+          "additions",
+          "deletions",
+          "line",
+          "generated"
+        ],
+        "type": "object"
+      },
+      "WalkthroughGroupView": {
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "files": {
+            "items": {
+              "$ref": "#/components/schemas/WalkthroughFileView"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "description": "`FEATURE`, `FIX`, `REFACTOR`, `CONFIGURATION`, `INFRASTRUCTURE`,\n `DATA`, `DEPENDENCIES`, `TESTS` or `DOCS`.",
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "kind",
+          "files"
+        ],
+        "type": "object"
+      },
+      "WalkthroughView": {
+        "description": "One review's walkthrough of its pinned head. Titles and lines are model\n text over untrusted repository content: render them as text.",
+        "properties": {
+          "groups": {
+            "description": "Groups in reading order.",
+            "items": {
+              "$ref": "#/components/schemas/WalkthroughGroupView"
+            },
+            "type": "array"
+          },
+          "head_sha": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "head_sha",
+          "groups"
         ],
         "type": "object"
       }
