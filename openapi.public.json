@@ -6216,6 +6216,7 @@
       "WalkthroughFileView": {
         "properties": {
           "additions": {
+            "description": "Lines added.",
             "format": "int64",
             "type": "integer"
           },
@@ -6224,6 +6225,7 @@
             "type": "string"
           },
           "deletions": {
+            "description": "Lines deleted.",
             "format": "int64",
             "type": "integer"
           },
@@ -6243,9 +6245,11 @@
             "type": "string"
           },
           "path": {
+            "description": "The file's path at the head commit.",
             "type": "string"
           },
           "previous_path": {
+            "description": "The file's path before a rename. Absent otherwise.",
             "type": [
               "string",
               "null"
@@ -6272,12 +6276,14 @@
       "WalkthroughGroupView": {
         "properties": {
           "description": {
+            "description": "What the group changes. Absent when the group has no description.",
             "type": [
               "string",
               "null"
             ]
           },
           "files": {
+            "description": "The group's files.",
             "items": {
               "$ref": "#/components/schemas/WalkthroughFileView"
             },
@@ -6288,6 +6294,7 @@
             "type": "string"
           },
           "title": {
+            "description": "The group's title.",
             "type": "string"
           }
         },
@@ -6309,6 +6316,7 @@
             "type": "array"
           },
           "head_sha": {
+            "description": "The head commit SHA the walkthrough describes.",
             "type": "string"
           }
         },
