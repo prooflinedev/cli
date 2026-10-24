@@ -5,6 +5,7 @@ use std::io::{self, BufRead, Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Barrier};
+use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink};
@@ -523,10 +524,20 @@ fn a_separate_writer_lock_refuses_without_replacement_and_retry_converges() {
     assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 2);
     #[cfg(unix)]
     let lock_inode = fs::metadata(&lock_path).unwrap().ino();
-    assert_eq!(
-        confirmed(home.path(), Client::Cursor).result.unwrap(),
-        Outcome::Installed
-    );
+    // Another test in this process can spawn a process while the worker holds
+    // the lease. The child keeps an inherited copy of the lock descriptor
+    // until its exec, so the first retry can still find the lock taken. Retry
+    // within a bound; a lock that stays held still fails.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let retried = loop {
+        match confirmed(home.path(), Client::Cursor).result {
+            Err(InstallError::Busy(_)) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            result => break result,
+        }
+    };
+    assert_eq!(retried.unwrap(), Outcome::Installed);
     assert_eq!(
         confirmed(home.path(), Client::Cursor).result.unwrap(),
         Outcome::Existing
