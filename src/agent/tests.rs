@@ -532,7 +532,7 @@ fn a_separate_writer_lock_refuses_without_replacement_and_retry_converges() {
     let retried = loop {
         match confirmed(home.path(), Client::Cursor).result {
             Err(InstallError::Busy(_)) if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(20));
+                std::thread::park_timeout(Duration::from_millis(20));
             }
             result => break result,
         }
