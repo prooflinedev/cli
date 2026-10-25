@@ -64,6 +64,24 @@ pub struct ReviewDetail {
     pub run_number: Option<i64>,
     #[serde(default)]
     pub subjects: Vec<ReviewSubject>,
+    /// The findings a `--verify` patch review re-verified locally. Absent on
+    /// every other review.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_reverifications: Vec<LocalReverification>,
+}
+
+/// One finding a patch review re-verified against the local changes. The
+/// outcome is local: the pull request's finding is unchanged.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct LocalReverification {
+    pub finding_id: Uuid,
+    pub iteration: i32,
+    /// `RESOLVED_VERIFIED`, `STILL_PRESENT`, `NOT_VERIFIED` or `PENDING`.
+    pub outcome: String,
+    /// Each check the finding cited and its result on the patched head, kept
+    /// as the API returned it for `--json`.
+    #[serde(default)]
+    pub checks: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -246,7 +264,9 @@ pub struct PatchReviewRequest {
     /// that predates the field still accepts a plain review.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger_source: Option<TriggerSource>,
-    /// Open findings to re-verify against the patch. Omitted for a plain review.
+    /// Open findings of one pull request to re-verify against the patch.
+    /// Omitted when empty, so a server that predates the field still accepts
+    /// a plain review.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub verify_finding_ids: Vec<Uuid>,
 }
@@ -264,6 +284,16 @@ pub struct PatchReviewResponse {
     pub review_id: Uuid,
     pub existing: bool,
     pub patch_digest: String,
+    #[serde(default)]
+    pub verify: Vec<PatchVerification>,
+}
+
+/// One finding a patch review re-verifies, and the request's number among
+/// those for its series on this patch.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct PatchVerification {
+    pub finding_id: Uuid,
+    pub iteration: i32,
 }
 
 /// Complete selected files at one exact pushed commit.
