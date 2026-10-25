@@ -1,0 +1,4 @@
+[env]
+# Vendored D-Bus must not call libgcc outline-atomic helpers when statically
+# linked with Rust's self-contained musl runtime. Keep baseline ARMv8 atomics.
+CFLAGS_aarch64_unknown_linux_musl = "-mno-outline-atomics"
