@@ -1878,3 +1878,100 @@ async fn ci_review_fail_on_exits_three_for_an_open_finding_of_a_complete_review(
     assert!(String::from_utf8_lossy(&output.stderr).contains("warning, serious"));
     assert!(requests.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn native_tools_keep_tenant_paths_and_reruns_make_one_attempt() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&requests);
+    let app = Router::new().fallback(move |request: axum::extract::Request| {
+        let seen = Arc::clone(&seen);
+        async move {
+            assert_eq!(
+                request.headers()[header::AUTHORIZATION],
+                format!("Bearer {TOKEN}")
+            );
+            let path = request.uri().path().to_owned();
+            assert!(path.starts_with(&format!("/api/v1/organizations/{ORG}/")));
+            seen.lock()
+                .unwrap()
+                .push((request.method().clone(), path.clone()));
+            if path.ends_with("/rerun") {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    [(header::RETRY_AFTER, "0")],
+                    Json(json!({"detail":"unavailable"})),
+                )
+                    .into_response();
+            }
+            if path.ends_with("/exports/reviews") {
+                return (
+                    [
+                        ("content-type", "text/csv"),
+                        ("x-proofline-export-version", "1"),
+                        ("x-proofline-export-settled-until", "2026-10-25T00:00:00Z"),
+                        ("x-proofline-export-next-cursor", "opaque-next"),
+                    ],
+                    "dataset_version,claim\r\n1,\"a,b\"\r\n",
+                )
+                    .into_response();
+            }
+            if path.ends_with("repository-names") {
+                return Json(
+                    json!({"repositories": [{"id": REPOSITORY, "full_name":"owner/repo"}]}),
+                )
+                .into_response();
+            }
+            Json(json!({"untrusted_text":"literal\u{001b}[2J", "items":[]})).into_response()
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    for args in [
+        vec!["history", "--pr", "7", "--repo", "owner/repo"],
+        vec!["fix-prompt", SELECTED_REVIEW],
+    ] {
+        let output = cli(&origin, &args).await;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!output.stdout.contains(&27));
+    }
+    let output = cli(&origin, &["rerun", SELECTED_REVIEW, "--no-wait"]).await;
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, path)| path.ends_with("/rerun"))
+            .count(),
+        1
+    );
+    let output = cli(
+        &origin,
+        &[
+            "export",
+            "reviews",
+            "--from",
+            "2026-10-01T00:00:00Z",
+            "--to",
+            "2026-10-25T00:00:00Z",
+            "--format",
+            "csv",
+        ],
+    )
+    .await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout, b"dataset_version,claim\r\n1,\"a,b\"\r\n");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("next-cursor: opaque-next"));
+    server.abort();
+}

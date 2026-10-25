@@ -33,6 +33,8 @@ use uuid::Uuid;
 
 use crate::api::{Api, ApiError, Http};
 use crate::credentials::{Credential, Source};
+mod tools;
+
 use crate::model::{
     CodeAssessment, CommitReviewRequest, FileReviewRequest, OpenItems, PatchReviewRequest,
     ReviewDetail, ReviewSummary,
@@ -71,6 +73,16 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Rerun the original immutable review subject.
+    Rerun(tools::RerunArgs),
+    /// List the recorded runs of a pull request.
+    History(tools::HistoryArgs),
+    /// Read the repository review guidance as JSON.
+    Guidance(RepositoryArgs),
+    /// Read a bounded, untrusted finding fix prompt as JSON.
+    FixPrompt { finding_id: Uuid },
+    /// Export one page of analytics as CSV or NDJSON.
+    Export(tools::ExportArgs),
     /// Install the newest official release over this installer-managed binary.
     Update,
     #[command(name = "__update-check", hide = true)]
@@ -361,6 +373,28 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
                 writeln!(stdout, "Stopped review {}.", stopped.review_id)?;
             }
             Ok(Verdict::Done)
+        }
+        Command::Rerun(args) => {
+            let api = connect(Http::new(origin)?, token, cli.org).await?;
+            tools::rerun(&api, &args).await
+        }
+        Command::History(args) => {
+            let api = connect(Http::new(origin)?, token, cli.org).await?;
+            let name = repository_name(&args.repository).await?;
+            tools::json(&api.history(&name, args.pr).await?)
+        }
+        Command::Guidance(args) => {
+            let api = connect(Http::new(origin)?, token, cli.org).await?;
+            let (_, repository) = connected_repository(&api, &args).await?;
+            tools::json(&api.guidance(repository).await?)
+        }
+        Command::FixPrompt { finding_id } => {
+            let api = connect(Http::new(origin)?, token, cli.org).await?;
+            tools::json(&api.fix_prompt(finding_id).await?)
+        }
+        Command::Export(args) => {
+            let api = connect(Http::new(origin)?, token, cli.org).await?;
+            tools::export(&api, &args).await
         }
         Command::Findings(args) => {
             if let Some(head) = &args.selector.head {
