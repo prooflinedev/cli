@@ -108,7 +108,11 @@ pub fn on_invocation() {
 fn suggestion(cache: &Cache, args: &[std::ffi::OsString], interactive: bool) -> Option<String> {
     if !interactive
         || args.iter().any(|arg| {
-            arg == "--json"
+            arg == "history"
+                || arg == "guidance"
+                || arg == "fix-prompt"
+                || arg == "export"
+                || arg == "--json"
                 || arg == "--schema"
                 || arg == "--sarif"
                 || arg == "mcp"

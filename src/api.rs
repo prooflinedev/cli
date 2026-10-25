@@ -122,6 +122,7 @@ struct Problem {
 
 /// A response that arrived with an HTTP status, and its bounded body.
 pub struct Reply {
+    pub headers: header::HeaderMap,
     pub status: StatusCode,
     pub body: Vec<u8>,
 }
@@ -189,6 +190,7 @@ impl Http {
             .await
             .map_err(|error| self.transport(&error))?;
         let status = response.status();
+        let headers = response.headers().clone();
         let retry_after = response.headers().get(header::RETRY_AFTER).map(|value| {
             value
                 .to_str()
@@ -205,7 +207,14 @@ impl Http {
             Some(Some(seconds)) => Some(seconds),
             Some(None) => Some(u64::MAX),
         };
-        Ok((Reply { status, body }, retry_after))
+        Ok((
+            Reply {
+                status,
+                body,
+                headers,
+            },
+            retry_after,
+        ))
     }
 
     /// Sends one MCP POST to this origin. Check the transport metadata before
@@ -329,15 +338,18 @@ impl Api {
 
     /// GET with up to three retries on 429 and 503, honoring `Retry-After` up
     /// to 60 seconds and doubling from one second without it.
-    async fn get(&self, url: Url) -> Result<serde_json::Value, ApiError> {
+    async fn read(&self, url: Url, accept: &str) -> Result<Reply, ApiError> {
         let mut delay = 1;
         for attempt in 1..=READ_ATTEMPTS {
             let (reply, retry_after) = self
                 .http
-                .send(self.request(Method::GET, url.clone()))
+                .send(
+                    self.request(Method::GET, url.clone())
+                        .header(header::ACCEPT, accept),
+                )
                 .await?;
             if reply.status.is_success() {
-                return self.decode(&reply.body);
+                return Ok(reply);
             }
             let retryable = matches!(
                 reply.status,
@@ -353,6 +365,56 @@ impl Api {
         Err(self
             .http
             .protocol("the retry budget ended without a response"))
+    }
+
+    async fn get(&self, url: Url) -> Result<serde_json::Value, ApiError> {
+        let reply = self.read(url, "application/json").await?;
+        self.decode(&reply.body)
+    }
+
+    pub(crate) async fn history(
+        &self,
+        repository: &str,
+        number: u64,
+    ) -> Result<serde_json::Value, ApiError> {
+        self.get(self.url(&["reviews", "pr", repository, &number.to_string()]))
+            .await
+    }
+
+    pub(crate) async fn guidance(&self, repository: Uuid) -> Result<serde_json::Value, ApiError> {
+        self.get(self.url(&["repositories", &repository.to_string(), "review-guidance"]))
+            .await
+    }
+
+    pub(crate) async fn fix_prompt(&self, finding: Uuid) -> Result<serde_json::Value, ApiError> {
+        self.get(self.url(&["findings", &finding.to_string(), "fix-prompt"]))
+            .await
+    }
+
+    pub(crate) async fn rerun(&self, review: Uuid) -> Result<serde_json::Value, ApiError> {
+        let (reply, _) = self
+            .http
+            .send(self.request(
+                Method::POST,
+                self.url(&["reviews", &review.to_string(), "rerun"]),
+            ))
+            .await?;
+        if !reply.status.is_success() {
+            return Err(self.http.problem(&reply));
+        }
+        self.decode(&reply.body)
+    }
+
+    pub(crate) async fn export(
+        &self,
+        dataset: &str,
+        query: &[(&str, String)],
+        accept: &str,
+    ) -> Result<Reply, ApiError> {
+        let mut url = self.url(&["exports", dataset]);
+        url.query_pairs_mut()
+            .extend_pairs(query.iter().map(|(key, value)| (*key, value.as_str())));
+        self.read(url, accept).await
     }
 
     fn decode<T: DeserializeOwned>(&self, body: &[u8]) -> Result<T, ApiError> {
