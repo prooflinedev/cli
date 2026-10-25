@@ -704,6 +704,65 @@
         ],
         "type": "object"
       },
+      "ChangeSummary": {
+        "description": "What a review recorded about its change.",
+        "properties": {
+          "base_sha": {
+            "description": "The compared base commit. Null when the review pinned none.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "files": {
+            "description": "The changed files the review read, by path, with the depth it read\n them at. Empty when the review recorded no change digest. Files the\n review's filters kept from review are listed apart, with their reason.",
+            "items": {
+              "$ref": "#/components/schemas/FileFact"
+            },
+            "type": "array"
+          },
+          "head_sha": {
+            "description": "The reviewed head commit.",
+            "type": "string"
+          },
+          "prose": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Prose"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Model-written prose. Present only when `prose_outcome` is `PUBLISHED`.\n It is untrusted text: render it inert."
+          },
+          "prose_outcome": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProseOutcome"
+              }
+            ],
+            "description": "The recorded prose-generation outcome, before response-time withholding."
+          },
+          "route": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SummaryRoute"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The route the summary applied. Null when the review recorded no change\n digest, so no route was asked."
+          }
+        },
+        "required": [
+          "head_sha",
+          "files",
+          "prose_outcome"
+        ],
+        "type": "object"
+      },
       "CheckLifecycle": {
         "description": "World's lifecycle disclosure for the evaluator version that answered, as\n the receipt recorded it. A deployment gate counts only `GATING` results\n (`DeterministicCoverage::gate_effective_status`), and only when it\n evaluates a deployment; the lifecycle alone permits or blocks nothing.",
         "oneOf": [
@@ -1757,6 +1816,17 @@
             ],
             "description": "The change-level diagram: the changed call path from the pinned code\n index and the relations World declares. Absent when the review\n recorded none."
           },
+          "change_summary": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ChangeSummary"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the change does and which files the review read at which depth\n (§55). Null until the review's publication records it, and for a\n review that is not of a pull request. Generated text has current\n credentials and recorded protected values withheld; missing or expired\n provenance withholds the generated text whole."
+          },
           "check_run_url": {
             "description": "The GitHub check run Proofline published for this review. Null when\n none was published.",
             "type": [
@@ -1836,6 +1906,10 @@
             "format": "int64",
             "type": "integer"
           },
+          "fix_generation_enabled": {
+            "description": "Whether fix generation is configured for this deployment and organization.\n Write authorization is checked again when a fix is requested.",
+            "type": "boolean"
+          },
           "head_commit_sha": {
             "description": "The head commit this review is pinned to. For a patch review, the\n revision ID Proofline derives from its base commit and patch digest,\n which is not a commit. Absent when the review recorded none.",
             "type": [
@@ -1861,6 +1935,10 @@
             "description": "The review's identifier.",
             "format": "uuid",
             "type": "string"
+          },
+          "is_deep_review": {
+            "description": "Present and true when this run is a Deep Review.",
+            "type": "boolean"
           },
           "kind": {
             "description": "`PULL_REQUEST`, `DEPLOYMENT`, `PATCH`, a review of local changes\n sent as a patch, `COMMIT`, a review of pushed commits, or `FILES`,\n complete selected files at one pushed commit.",
@@ -2123,6 +2201,17 @@
               }
             ],
             "description": "The git hook that asked for this patch review: `HOOK_PRE_COMMIT` or\n `HOOK_PRE_PUSH`. Null for any other review, and for a patch review\n requested without naming a hook."
+          },
+          "walkthrough": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WalkthroughView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The reviewed head's changed files in reading groups, with a line per\n file. Absent until the walkthrough is stored, and for a review that\n has none."
           }
         },
         "required": [
@@ -2206,6 +2295,17 @@
               "string",
               "null"
             ]
+          },
+          "terraform": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TerraformRootsView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The Terraform addresses the reach also started from, or why it took\n none. Absent when the assessment read reach only from the deployed\n revision."
           }
         },
         "required": [
@@ -2388,6 +2488,51 @@
           "proofline"
         ],
         "type": "string"
+      },
+      "FileFact": {
+        "properties": {
+          "additions": {
+            "description": "Lines added in this file's recorded diff.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "deletions": {
+            "description": "Lines deleted in this file's recorded diff.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "depth": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ReviewDepth"
+              }
+            ],
+            "description": "The review depth recorded for this file."
+          },
+          "path": {
+            "description": "The repository-relative path of the changed file.",
+            "type": "string"
+          },
+          "previous_path": {
+            "description": "The path before a rename.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "GitHub's file status: `added`, `modified`, `removed`, `renamed` and so on.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "status",
+          "additions",
+          "deletions",
+          "depth"
+        ],
+        "type": "object"
       },
       "FileProjection": {
         "properties": {
@@ -3362,6 +3507,7 @@
             "description": "Each deterministic check the finding cited and its result on the\n patched head. Empty until an outcome is recorded."
           },
           "finding_id": {
+            "description": "The finding being re-verified against this patch.",
             "format": "uuid",
             "type": "string"
           },
@@ -3371,7 +3517,12 @@
             "type": "integer"
           },
           "outcome": {
-            "$ref": "#/components/schemas/LocalReverificationOutcome"
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/LocalReverificationOutcome"
+              }
+            ],
+            "description": "The local re-verification result; it does not change the original finding."
           }
         },
         "required": [
@@ -3843,6 +3994,7 @@
         "description": "One finding a patch review re-verifies against the patch.",
         "properties": {
           "finding_id": {
+            "description": "The finding being re-verified against this patch.",
             "format": "uuid",
             "type": "string"
           },
@@ -3946,6 +4098,75 @@
         ],
         "title": "Problem",
         "type": "object"
+      },
+      "Prose": {
+        "properties": {
+          "headline": {
+            "description": "At most 120 characters.",
+            "type": "string"
+          },
+          "notable_paths": {
+            "description": "Paths in the pinned diff the prose calls out.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "paragraphs": {
+            "description": "At most three of at most 400 characters; one on the `SHORT` route.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "headline",
+          "paragraphs",
+          "notable_paths"
+        ],
+        "type": "object"
+      },
+      "ProseOutcome": {
+        "description": "Why the summary carries prose or does not.",
+        "oneOf": [
+          {
+            "enum": [
+              "PUBLISHED"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "NO_CHANGE_DIGEST",
+            "description": "The review recorded no change digest to summarize.",
+            "type": "string"
+          },
+          {
+            "const": "NOT_REQUESTED",
+            "description": "The applied route was `DETERMINISTIC_ONLY`.",
+            "type": "string"
+          },
+          {
+            "const": "MODEL_UNAVAILABLE",
+            "description": "No fast-tier model was bound, priced or funded, or it did not answer.",
+            "type": "string"
+          },
+          {
+            "const": "MALFORMED",
+            "description": "The answer did not fit the tool's schema or its limits.",
+            "type": "string"
+          },
+          {
+            "const": "REJECTED",
+            "description": "The prose used a word a summary never uses (\"safe\", \"no risk\",\n \"approved\") or named a path outside the diff.",
+            "type": "string"
+          },
+          {
+            "const": "UNGROUNDED",
+            "description": "Jev answered that a statement does not follow from the diff slices.",
+            "type": "string"
+          }
+        ]
       },
       "PullRequestMergeGate": {
         "properties": {
@@ -4427,6 +4648,13 @@
           "validate_findings"
         ],
         "type": "object"
+      },
+      "ReviewDepth": {
+        "description": "The depth the applied route plan read a file at.",
+        "enum": [
+          "STANDARD"
+        ],
+        "type": "string"
       },
       "ReviewDiffStats": {
         "properties": {
@@ -5819,6 +6047,56 @@
         ],
         "type": "object"
       },
+      "SummaryRoute": {
+        "enum": [
+          "DETERMINISTIC_ONLY",
+          "SHORT",
+          "FULL"
+        ],
+        "type": "string"
+      },
+      "TerraformPlanView": {
+        "enum": [
+          "TAKEN",
+          "NOT_DECLARED",
+          "NOT_PINNED",
+          "HEAD_DIFFERS",
+          "ADDRESSES_UNREPORTED"
+        ],
+        "type": "string"
+      },
+      "TerraformRootsView": {
+        "description": "The Terraform roots of one declared reach read.",
+        "properties": {
+          "addresses": {
+            "description": "The changed resource instance addresses taken as roots.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "omitted": {
+            "description": "Changed addresses left out at World's limit of 100 roots per read.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "plan": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TerraformPlanView"
+              }
+            ],
+            "description": "`TAKEN` when the plan pinned for the reviewed commit named the roots,\n `NOT_DECLARED` when the environment captures no Terraform plan for this\n review, `NOT_PINNED` when it declares one and none was pinned,\n `HEAD_DIFFERS` when the pinned plan is for another commit, and\n `ADDRESSES_UNREPORTED` when the pinned plan records no changed\n addresses because it was pinned before World reported them."
+          }
+        },
+        "required": [
+          "plan",
+          "addresses",
+          "omitted"
+        ],
+        "type": "object"
+      },
       "ThreadObservationFreshness": {
         "enum": [
           "FRESH",
@@ -5936,6 +6214,119 @@
         },
         "required": [
           "untrusted_text"
+        ],
+        "type": "object"
+      },
+      "WalkthroughFileView": {
+        "properties": {
+          "additions": {
+            "description": "Lines added.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "change": {
+            "description": "GitHub's change status, upper case, such as `ADDED` or `RENAMED`.",
+            "type": "string"
+          },
+          "deletions": {
+            "description": "Lines deleted.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "depth": {
+            "description": "The route plan's depth tier. Absent for a file the review did not\n evaluate.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "generated": {
+            "description": "Whether `line` is model-authored.",
+            "type": "boolean"
+          },
+          "line": {
+            "description": "A model sentence, or the deterministic line when there is none.",
+            "type": "string"
+          },
+          "path": {
+            "description": "The file's path at the head commit.",
+            "type": "string"
+          },
+          "previous_path": {
+            "description": "The file's path before a rename. Absent otherwise.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "skip_class": {
+            "description": "Why the review did not evaluate the file, such as `LOCKFILE` or\n `REPOSITORY_FILTER`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "path",
+          "change",
+          "additions",
+          "deletions",
+          "line",
+          "generated"
+        ],
+        "type": "object"
+      },
+      "WalkthroughGroupView": {
+        "properties": {
+          "description": {
+            "description": "What the group changes. Absent when the group has no description.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "files": {
+            "description": "The group's files.",
+            "items": {
+              "$ref": "#/components/schemas/WalkthroughFileView"
+            },
+            "type": "array"
+          },
+          "kind": {
+            "description": "`FEATURE`, `FIX`, `REFACTOR`, `CONFIGURATION`, `INFRASTRUCTURE`,\n `DATA`, `DEPENDENCIES`, `TESTS` or `DOCS`.",
+            "type": "string"
+          },
+          "title": {
+            "description": "The group's title.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "kind",
+          "files"
+        ],
+        "type": "object"
+      },
+      "WalkthroughView": {
+        "description": "One review's walkthrough of its pinned head. Titles and lines are model\n text over untrusted repository content: render them as text.",
+        "properties": {
+          "groups": {
+            "description": "Groups in reading order.",
+            "items": {
+              "$ref": "#/components/schemas/WalkthroughGroupView"
+            },
+            "type": "array"
+          },
+          "head_sha": {
+            "description": "The head commit SHA the walkthrough describes.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "head_sha",
+          "groups"
         ],
         "type": "object"
       }
