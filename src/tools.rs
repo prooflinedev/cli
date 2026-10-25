@@ -69,7 +69,7 @@ pub(crate) struct ExportArgs {
     /// Opaque continuation from the preceding page; keep the same filters.
     #[arg(long)]
     cursor: Option<String>,
-    /// Grouping for finding_outcomes only.
+    /// Grouping for `finding_outcomes` only.
     #[arg(long)]
     group_by: Option<String>,
 }
