@@ -26,9 +26,16 @@ const SELECTED_REVIEW: &str = "0190f3a0-0000-7000-8000-000000000033";
 #[tokio::test]
 async fn coverage_upload_preserves_the_tested_commit_and_reports_refusals() {
     let directory = tempfile::tempdir().unwrap();
-    let report = directory.path().join("lcov.info");
+    let report = directory.path().join("packages/a/coverage/lcov.info");
     let content = "TN:\nSF:src/lib.rs\nDA:1,1\nDA:2,0\nend_of_record\n";
-    std::fs::write(&report, content).unwrap();
+    for path in [
+        "packages/a/coverage/lcov.info",
+        "packages/b/coverage/lcov.info",
+    ] {
+        let path = directory.path().join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
     let requests = Arc::new(AtomicUsize::new(0));
     let observed = Arc::clone(&requests);
     let sha = "a".repeat(40);
@@ -44,7 +51,10 @@ async fn coverage_upload_preserves_the_tested_commit_and_reports_refusals() {
                     body,
                     json!({
                         "tested_sha": expected_sha,
-                        "reports": [{ "name": "lcov.info", "content": content }],
+                        "reports": [
+                            { "name": "packages/a/coverage/lcov.info", "content": content },
+                            { "name": "packages/b/coverage/lcov.info", "content": content },
+                        ],
                     })
                 );
                 let attempt = observed.fetch_add(1, Ordering::SeqCst);
@@ -83,11 +93,13 @@ async fn coverage_upload_preserves_the_tested_commit_and_reports_refusals() {
         "--commit",
         &sha,
         "--report",
-        report.to_str().unwrap(),
+        "./packages/a/coverage/lcov.info",
+        "--report",
+        "packages/b/coverage/lcov.info",
         "--json",
     ];
     for created in [true, false] {
-        let output = cli(&origin, &args).await;
+        let output = cli_in(&origin, &args, directory.path()).await;
         assert!(
             output.status.success(),
             "{}",
@@ -99,7 +111,7 @@ async fn coverage_upload_preserves_the_tested_commit_and_reports_refusals() {
         assert_eq!(result["covered_lines"], 1);
         assert_eq!(result["instrumented_lines"], 2);
     }
-    let output = cli(&origin, &args).await;
+    let output = cli_in(&origin, &args, directory.path()).await;
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("HTTP 422"));
     assert!(!String::from_utf8_lossy(&output.stderr).contains(TOKEN));
@@ -146,7 +158,7 @@ async fn coverage_upload_rejects_ambiguous_and_oversized_files_before_http() {
     ];
     let output = cli("http://127.0.0.1:1", &args).await;
     assert_eq!(output.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("file names must be distinct"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("report names must be distinct"));
     std::fs::File::create(&report)
         .unwrap()
         .set_len((64 << 20) + 1)
@@ -158,6 +170,10 @@ async fn coverage_upload_rejects_ambiguous_and_oversized_files_before_http() {
 
 async fn cli(origin: &str, args: &[&str]) -> std::process::Output {
     let directory = tempfile::tempdir().unwrap();
+    cli_in(origin, args, directory.path()).await
+}
+
+async fn cli_in(origin: &str, args: &[&str], directory: &std::path::Path) -> std::process::Output {
     tokio::time::timeout(
         std::time::Duration::from_secs(15),
         tokio::process::Command::new(env!("CARGO_BIN_EXE_proofline"))
@@ -165,7 +181,7 @@ async fn cli(origin: &str, args: &[&str]) -> std::process::Output {
             .args(args)
             .env("PROOFLINE_TOKEN", TOKEN)
             .env("PATH", "")
-            .current_dir(directory.path())
+            .current_dir(directory)
             .kill_on_drop(true)
             .output(),
     )

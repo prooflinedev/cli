@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context as _, bail};
 use clap::{Args, Subcommand};
@@ -29,7 +29,8 @@ pub(crate) struct UploadArgs {
     /// Proofline repository ID receiving the reports.
     #[arg(long, value_name = "UUID")]
     repository_id: Uuid,
-    /// Report file. Repeat for up to 50 files with distinct file names.
+    /// Report file. Relative paths name reports; absolute paths use the file name.
+    /// Repeat for up to 50 reports with distinct names.
     #[arg(long = "report", value_name = "FILE", required = true)]
     reports: Vec<PathBuf>,
     /// Print the recorded upload as JSON.
@@ -53,13 +54,9 @@ pub(crate) async fn request(args: &UploadArgs) -> anyhow::Result<CoverageUploadR
     let mut reports = Vec::with_capacity(args.reports.len());
     let mut remaining = MAX_BODY_BYTES;
     for path in &args.reports {
-        let name = path
-            .file_name()
-            .and_then(|value| value.to_str())
-            .filter(|value| !value.contains(['\\', ':']))
-            .context("each coverage report needs a UTF-8 file name without a backslash or colon")?;
-        if !names.insert(name) {
-            bail!("coverage report file names must be distinct: {name:?}");
+        let name = report_name(path)?;
+        if !names.insert(name.clone()) {
+            bail!("coverage report names must be distinct: {name:?}");
         }
         let file = tokio::fs::File::open(path)
             .await
@@ -74,7 +71,7 @@ pub(crate) async fn request(args: &UploadArgs) -> anyhow::Result<CoverageUploadR
         }
         remaining -= bytes.len();
         reports.push(UploadedReport {
-            name: name.to_owned(),
+            name,
             content: String::from_utf8(bytes)
                 .with_context(|| format!("coverage report {} is not UTF-8", path.display()))?,
         });
@@ -87,6 +84,35 @@ pub(crate) async fn request(args: &UploadArgs) -> anyhow::Result<CoverageUploadR
         bail!("the coverage upload body is larger than 64 MiB after JSON encoding");
     }
     Ok(request)
+}
+
+fn report_name(path: &Path) -> anyhow::Result<String> {
+    let path = if path.is_absolute() {
+        Path::new(
+            path.file_name()
+                .context("a coverage report needs a file name")?,
+        )
+    } else {
+        path
+    };
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(part) => {
+                let part = part
+                    .to_str()
+                    .filter(|value| !value.contains(['\\', ':']))
+                    .context("coverage report names must be UTF-8 without a backslash or colon")?;
+                parts.push(part);
+            }
+            _ => bail!("relative coverage report paths cannot contain parent directories"),
+        }
+    }
+    if parts.is_empty() {
+        bail!("a coverage report needs a file name");
+    }
+    Ok(parts.join("/"))
 }
 
 pub(crate) async fn upload(
