@@ -953,6 +953,100 @@
         ],
         "type": "object"
       },
+      "CoverageRefused": {
+        "description": "An upload refused for its content: a symbolic or unknown commit, or a\n report that cannot be read. Nothing is stored.",
+        "properties": {
+          "detail": {
+            "description": "One sentence naming what was refused and why.",
+            "type": "string"
+          },
+          "status": {
+            "description": "Always 422.",
+            "format": "uint16",
+            "maximum": 65535,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "title": {
+            "description": "Always `unprocessable coverage upload`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "status",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "CoverageUploadRequest": {
+        "additionalProperties": false,
+        "description": "The coverage reports a CI run produced for one commit.",
+        "properties": {
+          "reports": {
+            "description": "One to 50 reports, each LCOV, Cobertura XML, `JaCoCo` XML or a Go\n cover profile, in a JSON body of at most 64 MiB.",
+            "items": {
+              "$ref": "#/components/schemas/UploadedReport"
+            },
+            "type": "array"
+          },
+          "tested_sha": {
+            "description": "The full 40-character commit the tests ran on. GitHub must have it in\n this repository. A merge commit counts for a pull request head that is\n one of its two parents.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tested_sha",
+          "reports"
+        ],
+        "type": "object"
+      },
+      "CoverageUploadResponse": {
+        "description": "The report the upload recorded, or the one an identical upload recorded.",
+        "properties": {
+          "covered_lines": {
+            "description": "Covered lines among those instrumented lines.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "created": {
+            "description": "False when the same reports for this commit were already recorded.",
+            "type": "boolean"
+          },
+          "formats": {
+            "description": "The format of each report, in upload order.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "instrumented_lines": {
+            "description": "Instrumented lines across the reports, a file two reports name under\n one path counted once.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "report_id": {
+            "description": "The recorded report.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "tested_sha": {
+            "description": "The commit the reports tested, as the upload named it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "report_id",
+          "tested_sha",
+          "created",
+          "formats",
+          "instrumented_lines",
+          "covered_lines"
+        ],
+        "type": "object"
+      },
       "CustomerAssessment": {
         "properties": {
           "checks": {
@@ -6217,6 +6311,24 @@
         ],
         "type": "object"
       },
+      "UploadedReport": {
+        "additionalProperties": false,
+        "properties": {
+          "content": {
+            "description": "The report text, exactly as the coverage tool wrote it.",
+            "type": "string"
+          },
+          "name": {
+            "description": "A relative name for the report, such as `web/lcov.info`, unique in\n the upload.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "content"
+        ],
+        "type": "object"
+      },
       "WalkthroughFileView": {
         "properties": {
           "additions": {
@@ -6880,6 +6992,94 @@
         ],
         "summary": "Review pushed commits",
         "x-proofline-token-scope": "reviews:request"
+      }
+    },
+    "/api/v1/organizations/{org_id}/repositories/{repo_id}/coverage-reports": {
+      "post": {
+        "description": "Records the LCOV, Cobertura, JaCoCo or Go coverage reports a CI run produced for one exact commit GitHub has in the repository, for COVERAGE checks that accept uploads. A branch, tag or abbreviated SHA, or a report that cannot be read, gets 422 and stores nothing. Requires a repository-restricted token and live GitHub write access; the same reports for the same commit return the report already recorded.",
+        "operationId": "upload_coverage_reports",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "org_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "style": "simple"
+          },
+          {
+            "in": "path",
+            "name": "repo_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "style": "simple"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CoverageUploadRequest"
+              }
+            }
+          },
+          "description": "The coverage reports a CI run produced for one commit.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoverageUploadResponse"
+                }
+              }
+            },
+            "description": "The report the upload recorded, or the one an identical upload recorded."
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoverageUploadResponse"
+                }
+              }
+            },
+            "description": "The report the upload recorded, or the one an identical upload recorded."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CoverageRefused"
+                }
+              }
+            },
+            "description": "An upload refused for its content: a symbolic or unknown commit, or a\n report that cannot be read. Nothing is stored."
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "An RFC 9457 problem; the HTTP status remains authoritative."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Upload coverage reports",
+        "x-proofline-token-scope": "coverage:write"
       }
     },
     "/api/v1/organizations/{org_id}/repositories/{repo_id}/file-reviews": {

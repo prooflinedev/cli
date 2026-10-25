@@ -27,6 +27,27 @@ is installed by rustup. Run `cargo fmt --check`, `cargo clippy --locked --all-ta
 `openapi.public.json` is the public API contract pinned for this revision.
 Server compatibility is checked in the Proofline control plane.
 
+## Coverage uploads
+
+Upload reports your CI produced for an exact commit:
+
+```sh
+proofline --org "$PROOFLINE_ORGANIZATION_ID" coverage upload \
+  --repository-id "$PROOFLINE_REPOSITORY_ID" \
+  --commit "$TESTED_COMMIT_SHA" --report coverage/lcov.info --json
+```
+
+Set `PROOFLINE_TOKEN` to a repository-restricted token with `coverage:write`.
+The token holder needs current GitHub write access to the repository. Uploads
+accept LCOV, Cobertura XML, JaCoCo XML and Go cover profiles. Repeat `--report`
+for up to 50 UTF-8 files with distinct report names. Relative paths retain their
+directories, so `packages/a/lcov.info` and `packages/b/lcov.info` are distinct.
+Leading `./` is removed; relative paths cannot contain `..`. Absolute paths use
+only the file name. The JSON body cannot exceed 64 MiB. The command sends the exact
+40-character lowercase SHA supplied by CI and does not resolve a branch or run tests.
+An identical upload returns the recorded report. Upload success records evidence;
+the server evaluates the coverage check separately.
+
 Licensed under Apache-2.0.
 
 ## Publishing
