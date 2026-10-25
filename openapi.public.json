@@ -1906,6 +1906,10 @@
             "format": "int64",
             "type": "integer"
           },
+          "fix_generation_enabled": {
+            "description": "Whether fix generation is configured for this deployment and organization.\n Write authorization is checked again when a fix is requested.",
+            "type": "boolean"
+          },
           "head_commit_sha": {
             "description": "The head commit this review is pinned to. For a patch review, the\n revision ID Proofline derives from its base commit and patch digest,\n which is not a commit. Absent when the review recorded none.",
             "type": [
