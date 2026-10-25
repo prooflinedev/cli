@@ -23,6 +23,139 @@ const TOKEN: &str = "pld_secretsecretsecret";
 const REPOSITORY: &str = "0190f3a0-0000-7000-8000-000000000022";
 const SELECTED_REVIEW: &str = "0190f3a0-0000-7000-8000-000000000033";
 
+#[tokio::test]
+async fn coverage_upload_preserves_the_tested_commit_and_reports_refusals() {
+    let directory = tempfile::tempdir().unwrap();
+    let report = directory.path().join("lcov.info");
+    let content = "TN:\nSF:src/lib.rs\nDA:1,1\nDA:2,0\nend_of_record\n";
+    std::fs::write(&report, content).unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&requests);
+    let sha = "a".repeat(40);
+    let expected_sha = sha.clone();
+    let app = Router::new().route(
+        &format!("/api/v1/organizations/{ORG}/repositories/{REPOSITORY}/coverage-reports"),
+        post(move |headers: HeaderMap, Json(body): Json<Value>| {
+            let observed = Arc::clone(&observed);
+            let expected_sha = expected_sha.clone();
+            async move {
+                assert_eq!(headers[header::AUTHORIZATION], format!("Bearer {TOKEN}"));
+                assert_eq!(
+                    body,
+                    json!({
+                        "tested_sha": expected_sha,
+                        "reports": [{ "name": "lcov.info", "content": content }],
+                    })
+                );
+                let attempt = observed.fetch_add(1, Ordering::SeqCst);
+                if attempt >= 2 {
+                    return (
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        Json(
+                            json!({"title": "unprocessable coverage upload", "status": 422,
+                            "detail": "GitHub has no commit at the tested SHA"}),
+                        ),
+                    );
+                }
+                (
+                    if attempt == 0 {
+                        StatusCode::CREATED
+                    } else {
+                        StatusCode::OK
+                    },
+                    Json(
+                        json!({ "report_id": SELECTED_REVIEW, "tested_sha": expected_sha,
+                        "created": attempt == 0, "formats": ["LCOV"],
+                        "instrumented_lines": 2, "covered_lines": 1 }),
+                    ),
+                )
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let args = [
+        "coverage",
+        "upload",
+        "--repository-id",
+        REPOSITORY,
+        "--commit",
+        &sha,
+        "--report",
+        report.to_str().unwrap(),
+        "--json",
+    ];
+    for created in [true, false] {
+        let output = cli(&origin, &args).await;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["created"], created);
+        assert_eq!(result["tested_sha"], sha);
+        assert_eq!(result["covered_lines"], 1);
+        assert_eq!(result["instrumented_lines"], 2);
+    }
+    let output = cli(&origin, &args).await;
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("HTTP 422"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains(TOKEN));
+    assert_eq!(requests.load(Ordering::SeqCst), 3);
+    let output = cli(
+        &origin,
+        &[
+            "coverage",
+            "upload",
+            "--repository-id",
+            REPOSITORY,
+            "--commit",
+            "main",
+            "--report",
+            report.to_str().unwrap(),
+        ],
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("full lowercase 40-character SHA"));
+    assert_eq!(requests.load(Ordering::SeqCst), 3);
+    server.abort();
+}
+
+#[tokio::test]
+async fn coverage_upload_rejects_ambiguous_and_oversized_files_before_http() {
+    let directory = tempfile::tempdir().unwrap();
+    let report = directory.path().join("lcov.info");
+    std::fs::write(&report, "SF:lib.rs\nDA:1,1\nend_of_record\n").unwrap();
+    let path = report.to_str().unwrap();
+    let sha = "a".repeat(40);
+    // This origin has no server: validation must fail before HTTP or credentials.
+    let args = [
+        "coverage",
+        "upload",
+        "--repository-id",
+        REPOSITORY,
+        "--commit",
+        &sha,
+        "--report",
+        path,
+        "--report",
+        path,
+    ];
+    let output = cli("http://127.0.0.1:1", &args).await;
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("file names must be distinct"));
+    std::fs::File::create(&report)
+        .unwrap()
+        .set_len((64 << 20) + 1)
+        .unwrap();
+    let output = cli("http://127.0.0.1:1", &args[..8]).await;
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("larger than 64 MiB"));
+}
+
 async fn cli(origin: &str, args: &[&str]) -> std::process::Output {
     let directory = tempfile::tempdir().unwrap();
     tokio::time::timeout(

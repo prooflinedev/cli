@@ -7,6 +7,28 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct CoverageUploadRequest {
+    pub tested_sha: String,
+    pub reports: Vec<UploadedReport>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UploadedReport {
+    pub name: String,
+    pub content: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CoverageUploadResponse {
+    pub report_id: Uuid,
+    pub tested_sha: String,
+    pub created: bool,
+    pub formats: Vec<String>,
+    pub instrumented_lines: u64,
+    pub covered_lines: u64,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ReviewPage {
     pub items: Vec<ReviewSummary>,
     pub next_cursor: Option<String>,

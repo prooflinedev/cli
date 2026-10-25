@@ -4,6 +4,7 @@
 
 mod agent;
 pub mod api;
+mod coverage;
 pub mod credentials;
 pub mod device;
 pub mod git;
@@ -94,6 +95,9 @@ enum Command {
     /// Commands for a CI job.
     #[command(subcommand)]
     Ci(CiCommand),
+    /// Upload coverage reports produced by your CI.
+    #[command(subcommand)]
+    Coverage(coverage::Command),
     /// Install or remove Git hooks that review each commit and push.
     Hooks(hooks::HooksArgs),
     /// Run an installed Git hook. Git calls this from the hook script.
@@ -386,6 +390,12 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
             }
         }
         Command::Hooks(args) => hooks::manage(args).await.map(|()| Verdict::Done),
+        Command::Coverage(coverage::Command::Upload(args)) => {
+            let request = coverage::request(&args).await?;
+            let api = connect(Http::new(origin)?, token, cli.org).await?;
+            coverage::upload(&api, &args, &request).await?;
+            Ok(Verdict::Done)
+        }
         Command::Hook(args) => hooks::run(args, origin, token, cli.org).await,
     }
 }
