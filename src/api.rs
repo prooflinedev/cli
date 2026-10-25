@@ -11,9 +11,10 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::model::{
-    CommitReviewRequest, CommitReviewResponse, FileReviewRequest, FileReviewResponse,
-    PatchReviewRequest, PatchReviewResponse, RepositoryNames, ReviewDetail, ReviewPage, RunNowMode,
-    RunNowRequest, RunNowResponse, StopResponse,
+    CommitReviewRequest, CommitReviewResponse, CoverageUploadRequest, CoverageUploadResponse,
+    FileReviewRequest, FileReviewResponse, PatchReviewRequest, PatchReviewResponse,
+    RepositoryNames, ReviewDetail, ReviewPage, RunNowMode, RunNowRequest, RunNowResponse,
+    StopResponse,
 };
 use crate::origin::Origin;
 use crate::text::terminal_safe;
@@ -530,6 +531,25 @@ impl Api {
             .send(self.request(Method::POST, url).json(request))
             .await?;
         if reply.status.is_success() {
+            return self.decode(&reply.body);
+        }
+        Err(self.http.problem(&reply))
+    }
+
+    /// Uploads reports for one exact tested commit. Both a new report and an
+    /// identical upload return the recorded report. One HTTP attempt.
+    pub async fn upload_coverage_reports(
+        &self,
+        repository_id: Uuid,
+        request: &CoverageUploadRequest,
+    ) -> Result<CoverageUploadResponse, ApiError> {
+        let repository = repository_id.to_string();
+        let url = self.url(&["repositories", &repository, "coverage-reports"]);
+        let (reply, _) = self
+            .http
+            .send(self.request(Method::POST, url).json(request))
+            .await?;
+        if matches!(reply.status, StatusCode::OK | StatusCode::CREATED) {
             return self.decode(&reply.body);
         }
         Err(self.http.problem(&reply))
