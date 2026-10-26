@@ -2102,3 +2102,89 @@ async fn setup_handoff_uses_customer_routes_without_a_token() {
         "https://proofline.sh/orgs/github/example-org/settings/installation"
     );
 }
+
+#[tokio::test]
+async fn fix_commands_preserve_context_and_never_retry_verification() {
+    let calls = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let observed = Arc::clone(&calls);
+    let app = Router::new().route("/mcp", post(move |headers: HeaderMap, Json(body): Json<Value>| {
+        let observed = Arc::clone(&observed);
+        async move {
+            assert_eq!(headers[header::AUTHORIZATION], format!("Bearer {TOKEN}"));
+            if body["method"] == "initialize" {
+                return Json(json!({"jsonrpc":"2.0", "id":1, "result":{"protocolVersion":"2025-11-25"}})).into_response();
+            }
+            if body["method"] == "notifications/initialized" {
+                return StatusCode::ACCEPTED.into_response();
+            }
+            observed.lock().unwrap().push(body["params"].clone());
+            if body["params"]["name"] == "request_reverification" {
+                return (StatusCode::SERVICE_UNAVAILABLE, [(header::RETRY_AFTER, "0")], "private failure").into_response();
+            }
+            Json(json!({"jsonrpc":"2.0", "id":2, "result":{"content":[], "structuredContent":{"status":"UNAVAILABLE", "items":null}}})).into_response()
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    for args in [
+        vec!["fix", "list", "--repo", "owner/name", "--pr", "7"],
+        vec!["fix", "context", SELECTED_REVIEW],
+        vec!["fix", "status", SELECTED_REVIEW],
+    ] {
+        let output = cli(&origin, &args).await;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["structuredContent"]["status"], "UNAVAILABLE");
+        assert!(result["structuredContent"]["items"].is_null());
+    }
+    let sha = "a".repeat(40);
+    let output = cli(
+        &origin,
+        &[
+            "fix",
+            "verify",
+            "--review",
+            SELECTED_REVIEW,
+            "--findings",
+            SELECTED_REVIEW,
+            "--commit",
+            &sha,
+            "--note",
+            "fixed code",
+        ],
+    )
+    .await;
+    assert!(!output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("private failure"));
+    assert_eq!(
+        *calls.lock().unwrap(),
+        vec![
+            json!({"name":"list_open_findings", "arguments":{"repository":"owner/name", "pull_request_number":7}}),
+            json!({"name":"get_fix_context", "arguments":{"finding_id":SELECTED_REVIEW}}),
+            json!({"name":"get_reverification", "arguments":{"request_id":SELECTED_REVIEW}}),
+            json!({"name":"request_reverification", "arguments":{"review_id":SELECTED_REVIEW, "finding_ids":[SELECTED_REVIEW], "commit_sha":sha, "note":"fixed code"}}),
+        ]
+    );
+    let output = cli(
+        &origin,
+        &[
+            "fix",
+            "verify",
+            "--review",
+            SELECTED_REVIEW,
+            "--findings",
+            SELECTED_REVIEW,
+            "--commit",
+            "main",
+        ],
+    )
+    .await;
+    assert!(!output.status.success());
+    assert_eq!(calls.lock().unwrap().len(), 4);
+    server.abort();
+}
