@@ -33,6 +33,7 @@ use uuid::Uuid;
 
 use crate::api::{Api, ApiError, Http};
 use crate::credentials::{Credential, Source};
+mod knowledge;
 mod tools;
 
 use crate::model::{
@@ -73,6 +74,30 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// List one page of reviews, retaining its continuation cursor.
+    Reviews(tools::ListArgs),
+    /// Read the routing decisions of a review as JSON.
+    Routing { review_id: Uuid },
+    /// Read a specific recorded pull-request run.
+    Run(tools::RunArgs),
+    /// Preview, start or inspect a vendor coding-agent session.
+    #[command(subcommand)]
+    Session(tools::SessionCommand),
+    /// Read published wiki pages.
+    #[command(subcommand)]
+    Wiki(knowledge::WikiCommand),
+    /// Ask a codebase question at an optional indexed commit.
+    Ask(knowledge::AskArgs),
+    /// Read an environment's published architecture document.
+    Architecture { environment_id: Uuid },
+    /// Read a plan or start and inspect its approved implementation.
+    #[command(subcommand)]
+    Plan(knowledge::PlanCommand),
+    /// Open browser onboarding; cloud trust requires browser sign-in.
+    Setup {
+        #[arg(long)]
+        print: bool,
+    },
     /// Rerun the original immutable review subject.
     Rerun(tools::RerunArgs),
     /// List the recorded runs of a pull request.
@@ -345,6 +370,66 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
         Command::UpdateCheck => {
             update::check().await;
             Ok(Verdict::Done)
+        }
+        Command::Setup { print } => {
+            let url = origin.join(["onboarding"]);
+            writeln!(std::io::stdout().lock(), "{url}")?;
+            if !print {
+                webbrowser::open(url.as_str())?;
+            }
+            Ok(Verdict::Done)
+        }
+        Command::Wiki(command) => knowledge::run(origin, token, cli.org, command.request()?).await,
+        Command::Ask(args) => knowledge::run(origin, token, cli.org, args.request()?).await,
+        Command::Architecture { environment_id } => {
+            knowledge::run(
+                origin,
+                token,
+                cli.org,
+                (
+                    "get_architecture_document",
+                    serde_json::json!({"environment_id": environment_id}),
+                ),
+            )
+            .await
+        }
+        Command::Plan(command) => knowledge::run(origin, token, cli.org, command.request()).await,
+        Command::Reviews(args) => {
+            let api = connect(Http::new(origin)?, token, cli.org).await?;
+            tools::json(
+                &api.list_page(
+                    args.repository_id,
+                    args.search.as_deref(),
+                    args.cursor.as_deref(),
+                )
+                .await?,
+            )
+        }
+        Command::Routing { review_id } => {
+            let api = connect(Http::new(origin)?, token, cli.org).await?;
+            tools::json(
+                &api.tool_get(&["reviews", &review_id.to_string(), "routing"])
+                    .await?,
+            )
+        }
+        Command::Run(args) => {
+            let api = connect(Http::new(origin)?, token, cli.org).await?;
+            let name = repository_name(&args.repository).await?;
+            tools::json(
+                &api.tool_get(&[
+                    "reviews",
+                    "pr",
+                    &name,
+                    &args.pr.to_string(),
+                    "runs",
+                    &args.run.to_string(),
+                ])
+                .await?,
+            )
+        }
+        Command::Session(command) => {
+            let api = connect(Http::new(origin)?, token, cli.org).await?;
+            tools::session(&api, command).await
         }
         Command::Agent(args) => agent::run(args, origin).await.map(|()| Verdict::Done),
         Command::Login(args) => {

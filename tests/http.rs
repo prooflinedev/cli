@@ -1975,3 +1975,64 @@ async fn native_tools_keep_tenant_paths_and_reruns_make_one_attempt() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("next-cursor: opaque-next"));
     server.abort();
 }
+
+#[tokio::test]
+async fn native_session_and_collection_keep_scope_cursor_and_single_start() {
+    let starts = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&starts);
+    let app = Router::new()
+        .route(
+            &format!("/api/v1/organizations/{ORG}/reviews"),
+            get(|uri: axum::http::Uri| async move {
+                assert!(uri.query().unwrap().contains("cursor=a%2Fb%2B"));
+                Json(json!({"items":[], "truncated":true, "next_cursor":"next"}))
+            }),
+        )
+        .route(
+            &format!("/api/v1/organizations/{ORG}/findings/{SELECTED_REVIEW}/agent-sessions"),
+            post(move |headers: HeaderMap, Json(body): Json<Value>| {
+                let observed = Arc::clone(&observed);
+                async move {
+                    assert_eq!(headers[header::AUTHORIZATION], format!("Bearer {TOKEN}"));
+                    assert_eq!(
+                        body,
+                        json!({"connection_id": REPOSITORY, "prompt_digest":"confirmed-digest"})
+                    );
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        Json(json!({"detail":"start uncertain; inspect vendor"})),
+                    )
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let listed = cli(&origin, &["reviews", "--cursor", "a/b+"]).await;
+    assert!(
+        listed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&listed.stdout).unwrap()["next_cursor"],
+        "next"
+    );
+    let started = cli(
+        &origin,
+        &[
+            "session",
+            "start",
+            SELECTED_REVIEW,
+            "--connection-id",
+            REPOSITORY,
+            "--prompt-digest",
+            "confirmed-digest",
+        ],
+    )
+    .await;
+    assert!(!started.status.success());
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    server.abort();
+}

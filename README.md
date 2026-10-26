@@ -64,3 +64,44 @@ The bucket-scoped credential is the `CLI_RELEASE_R2_CREDENTIALS` environment sec
 `CLOUDFLARE_ACCOUNT_ID` is an environment variable. R2 versions are reserved
 with a conditional write. A failed publication retains its reservation; raise
 the package version before another release. Install and update URLs stay on proofline.sh.
+
+## Review and knowledge tools
+
+`proofline reviews --repository-id UUID --cursor CURSOR` returns one page with its
+continuation metadata. All flags are optional. `proofline routing REVIEW_ID` reads
+recorded routing. `proofline run --repo owner/name --pr 7 --run 2` reads one retained run.
+
+`proofline session prompt FINDING_ID` returns the protected prompt and eligible
+connections. After reviewing it, use `proofline session start FINDING_ID
+--connection-id UUID --prompt-digest DIGEST`. This starts once and can incur vendor
+charges. `proofline session get SESSION_ID` reads status. These commands need a
+personal token with `agent_sessions:start`; device sign-in cannot grant this authority.
+
+Knowledge commands return the MCP tool result as JSON, including untrusted-text
+wrappers, citations and `isError`. A refused tool exits nonzero. They use the same
+origin and credential as the MCP bridge and never retry a tool call.
+
+```sh
+proofline wiki list --repo owner/name
+proofline wiki get index --repo owner/name --commit FULL_COMMIT_SHA
+proofline ask --repo owner/name 'Where is authentication enforced?'
+proofline architecture ENVIRONMENT_ID
+proofline plan get PLAN_ID
+proofline plan implement PLAN_ID
+proofline plan implementation IMPLEMENTATION_ID
+```
+
+Knowledge reads need `reviews:read` and `knowledge:read`. Implementation also needs
+`plans:implement`, a personal token and approval of the exact published plan version.
+`proofline setup` opens browser onboarding; `--print` only prints its address.
+Cloud trust and connection changes still require a signed-in administrator browser.
+
+## Windows
+
+Official releases include `proofline-x86_64-pc-windows-msvc.tar.gz` with `proofline.exe`.
+Download it and `SHA256SUMS` from the same GitHub release. Compare its SHA-256 using
+`Get-FileHash -Algorithm SHA256`, then extract with `tar -xzf` and put `proofline.exe`
+in a directory on PATH. Run `proofline login` to store credentials in Windows
+Credential Manager. To update, close running Proofline processes and replace the
+executable from a verified release. The Unix shell installer and self-update command
+do not install Windows binaries.
