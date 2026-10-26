@@ -19,16 +19,16 @@ unset CLI_RELEASE_R2_CREDENTIALS
 
 temporary=$(mktemp -d)
 trap 'rm -rf "$temporary"' EXIT
-targets='aarch64-apple-darwin aarch64-unknown-linux-musl x86_64-apple-darwin x86_64-unknown-linux-musl'
+targets='aarch64-apple-darwin aarch64-unknown-linux-musl x86_64-apple-darwin x86_64-pc-windows-msvc x86_64-unknown-linux-musl'
 # Verify every archive before the first upload. The manifest names exactly
-# the four files the installer can download, with their actual digests.
+# the five files the installer can download, with their actual digests.
 for target in $targets; do
   archive="proofline-$target.tar.gz"
   [ -f "$dist/$archive" ] || refuse "missing $archive"
   digest=$(sha256sum "$dist/$archive" | cut -d ' ' -f 1)
   printf '%s  %s\n' "$digest" "$archive" >> "$temporary/SHA256SUMS"
 done
-cmp -s "$temporary/SHA256SUMS" "$dist/SHA256SUMS" || refuse 'SHA256SUMS does not match the four release archives'
+cmp -s "$temporary/SHA256SUMS" "$dist/SHA256SUMS" || refuse 'SHA256SUMS does not match the five release archives'
 
 put() {
   local key=$1 source=$2 content_type=$3 cache_control=$4 condition=${5:-} digest
@@ -77,7 +77,7 @@ for target in $targets; do
   put "$version/$archive" "$dist/$archive" application/gzip "$immutable"
 done
 put "$version/SHA256SUMS" "$dist/SHA256SUMS" 'text/plain; charset=utf-8' "$immutable"
-# Installers see the version only after all five release objects exist.
+# Installers see the version only after all six release objects exist.
 printf '%s\n' "$version" > "$temporary/latest"
 put latest "$temporary/latest" 'text/plain; charset=utf-8' 'public, max-age=60'
 printf 'cli publish: uploaded CLI %s\n' "$version"

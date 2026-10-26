@@ -340,3 +340,35 @@ pub(crate) async fn run(http: &Http, token: &SecretString) -> Result<(), McpErro
         }
     }
 }
+
+/// One native command uses the same negotiated, bounded transport as the bridge.
+pub(crate) async fn call(
+    http: &Http,
+    token: &SecretString,
+    name: &str,
+    arguments: Value,
+) -> Result<Value, McpError> {
+    let mut session = Session::New;
+    let frames = [
+        json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{
+            "protocolVersion":PROTOCOL, "capabilities":{},
+            "clientInfo":{"name":"proofline-cli", "version":env!("CARGO_PKG_VERSION")}}}),
+        json!({"jsonrpc":"2.0", "method":"notifications/initialized"}),
+        json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":name, "arguments":arguments}}),
+    ];
+    let mut result = None;
+    for value in frames {
+        let frame = serde_json::to_vec(&value).map_err(|_| McpError::Parse)?;
+        if frame.len() > FRAME_LIMIT {
+            return Err(McpError::TooLarge);
+        }
+        let message = Message::parse(&frame)?;
+        result = relay(http, token, &mut session, &message, frame).await?;
+        if result.as_ref().is_some_and(|r| r.get("error").is_some()) {
+            return Err(McpError::Response);
+        }
+    }
+    result
+        .and_then(|mut r| r.get_mut("result").map(Value::take))
+        .ok_or(McpError::Response)
+}

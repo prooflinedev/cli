@@ -372,6 +372,48 @@ impl Api {
         self.decode(&reply.body)
     }
 
+    pub(crate) async fn tool_get(&self, path: &[&str]) -> Result<serde_json::Value, ApiError> {
+        self.get(self.url(path)).await
+    }
+
+    pub(crate) async fn tool_post(
+        &self,
+        path: &[&str],
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value, ApiError> {
+        let (reply, _) = self
+            .http
+            .send(self.request(Method::POST, self.url(path)).json(body))
+            .await?;
+        if !reply.status.is_success() {
+            return Err(self.http.problem(&reply));
+        }
+        self.decode(&reply.body)
+    }
+
+    pub(crate) async fn list_page(
+        &self,
+        repository: Option<Uuid>,
+        search: Option<&str>,
+        cursor: Option<&str>,
+    ) -> Result<serde_json::Value, ApiError> {
+        let mut url = self.url(&["reviews"]);
+        {
+            let mut query = url.query_pairs_mut();
+            query.append_pair("limit", "50");
+            if let Some(repository) = repository {
+                query.append_pair("repository", &repository.to_string());
+            }
+            if let Some(search) = search {
+                query.append_pair("search", search);
+            }
+            if let Some(cursor) = cursor {
+                query.append_pair("cursor", cursor);
+            }
+        }
+        self.get(url).await
+    }
+
     pub(crate) async fn history(
         &self,
         repository: &str,

@@ -40,10 +40,15 @@ jobs:
             target: aarch64-unknown-linux-musl
           - runner: macos-15-intel
             target: x86_64-apple-darwin
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
           - runner: macos-15
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -63,7 +68,9 @@ jobs:
           TARGET: ${{ matrix.target }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
-          test "$(target/"$TARGET"/release/proofline --version)" = "proofline $VERSION"
+          binary=proofline
+          if [[ "$TARGET" == *windows* ]]; then binary=proofline.exe; fi
+          test "$(target/"$TARGET"/release/"$binary" --version)" = "proofline $VERSION"
           python3 scripts/archive.py "$TARGET"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -94,7 +101,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          test "$(find artifacts -name '*.tar.gz' | wc -l)" -eq 4
+          test "$(find artifacts -name '*.tar.gz' | wc -l)" -eq 5
           (cd artifacts && LC_ALL=C sha256sum proofline-*.tar.gz > SHA256SUMS)
           printf '%s\n' "$VERSION" > artifacts/latest
           # Creating the draft reserves the GitHub version atomically.

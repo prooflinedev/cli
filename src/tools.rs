@@ -2,7 +2,7 @@
 use std::io::{IsTerminal as _, Write as _};
 
 use anyhow::{Context as _, bail};
-use clap::{Args, ValueEnum};
+use clap::{Args, Subcommand, ValueEnum};
 use uuid::Uuid;
 
 use crate::{OutputArgs, OutputFormat, RepositoryArgs, Verdict, api::Api, say, show};
@@ -164,4 +164,52 @@ pub(crate) async fn export(api: &Api, args: &ExportArgs) -> anyhow::Result<Verdi
         ));
     }
     Ok(Verdict::Done)
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ListArgs {
+    #[arg(long)]
+    pub repository_id: Option<Uuid>,
+    #[arg(long)]
+    pub search: Option<String>,
+    #[arg(long)]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct RunArgs {
+    #[arg(long)]
+    pub pr: u64,
+    #[arg(long)]
+    pub run: u64,
+    #[command(flatten)]
+    pub repository: RepositoryArgs,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum SessionCommand {
+    /// Read the protected prompt and eligible vendor connections before starting.
+    Prompt { finding_id: Uuid },
+    /// Start once with the digest of the prompt you reviewed. Vendor charges apply.
+    Start {
+        finding_id: Uuid,
+        #[arg(long)]
+        connection_id: Uuid,
+        #[arg(long)]
+        prompt_digest: String,
+    },
+    /// Read the recorded vendor session status.
+    Get { session_id: Uuid },
+}
+
+pub(crate) async fn session(api: &Api, command: SessionCommand) -> anyhow::Result<Verdict> {
+    let value = match command {
+        SessionCommand::Prompt { finding_id } => api.tool_get(&["findings", &finding_id.to_string(), "agent-session-prompt"]).await?,
+        SessionCommand::Get { session_id } => api.tool_get(&["agent-sessions", &session_id.to_string()]).await?,
+        SessionCommand::Start { finding_id, connection_id, prompt_digest } => api.tool_post(
+            &["findings", &finding_id.to_string(), "agent-sessions"],
+            &serde_json::json!({"connection_id": connection_id, "prompt_digest": prompt_digest}),
+        ).await?,
+    };
+    json(&value)
 }
