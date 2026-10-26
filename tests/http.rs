@@ -2036,3 +2036,54 @@ async fn native_session_and_collection_keep_scope_cursor_and_single_start() {
     assert_eq!(starts.load(Ordering::SeqCst), 1);
     server.abort();
 }
+
+#[tokio::test]
+async fn native_knowledge_negotiates_and_reports_a_tool_refusal() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&calls);
+    let app = Router::new().route("/mcp", post(move |headers: HeaderMap, Json(body): Json<Value>| {
+        let observed = Arc::clone(&observed);
+        async move {
+            assert_eq!(headers[header::AUTHORIZATION], format!("Bearer {TOKEN}"));
+            match observed.fetch_add(1, Ordering::SeqCst) {
+                0 => {
+                    assert_eq!(body["method"], "initialize");
+                    Json(json!({"jsonrpc":"2.0", "id":1, "result":{"protocolVersion":"2025-11-25"}})).into_response()
+                }
+                1 => {
+                    assert_eq!(body["method"], "notifications/initialized");
+                    StatusCode::ACCEPTED.into_response()
+                }
+                2 => {
+                    assert_eq!(headers["mcp-protocol-version"], "2025-11-25");
+                    assert_eq!(body["params"], json!({"name":"get_wiki_page", "arguments":{"repository":"owner/name", "page_key":"index", "commit":"a".repeat(40)}}));
+                    Json(json!({"jsonrpc":"2.0", "id":2, "result":{"isError":true, "content":[{"type":"text", "text":"RESOURCE_NOT_FOUND"}]}})).into_response()
+                }
+                _ => panic!("tool call retried"),
+            }
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let output = cli(
+        &origin,
+        &[
+            "wiki",
+            "get",
+            "index",
+            "--repo",
+            "owner/name",
+            "--commit",
+            &"a".repeat(40),
+        ],
+    )
+    .await;
+    assert!(!output.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["isError"],
+        true
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    server.abort();
+}

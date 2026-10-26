@@ -22,7 +22,7 @@ ACCESS = "b" * 32
 SECRET = "c" * 64
 TARGETS = sorted([
     "x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl",
-    "x86_64-apple-darwin", "aarch64-apple-darwin",
+    "x86_64-apple-darwin", "aarch64-apple-darwin", "x86_64-pc-windows-msvc",
 ])
 
 
