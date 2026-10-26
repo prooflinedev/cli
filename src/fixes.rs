@@ -27,7 +27,7 @@ pub(crate) enum FixCommand {
         #[arg(long)]
         note: Option<String>,
     },
-    /// Read recorded outcomes. PENDING and NOT_VERIFIED do not establish a fix.
+    /// Read recorded outcomes. `PENDING` and `NOT_VERIFIED` do not establish a fix.
     Status { request_id: Uuid },
 }
 
