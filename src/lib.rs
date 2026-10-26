@@ -32,6 +32,7 @@ use uuid::Uuid;
 
 use crate::api::{Api, ApiError, Http};
 use crate::credentials::{Credential, Source};
+mod fixes;
 mod knowledge;
 mod tools;
 
@@ -73,6 +74,9 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Read fix context and verify fixes at an explicitly pushed commit.
+    #[command(subcommand)]
+    Fix(fixes::FixCommand),
     /// List one page of reviews, retaining its continuation cursor.
     Reviews(tools::ListArgs),
     /// Read the routing decisions of a review as JSON.
@@ -384,6 +388,7 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
             }
             Ok(Verdict::Done)
         }
+        Command::Fix(command) => knowledge::run(origin, token, cli.org, command.request()?).await,
         Command::Wiki(command) => knowledge::run(origin, token, cli.org, command.request()?).await,
         Command::Ask(args) => knowledge::run(origin, token, cli.org, args.request()?).await,
         Command::Architecture { environment_id } => {

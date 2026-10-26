@@ -85,3 +85,26 @@ in a directory on PATH. Run `proofline login` to store credentials in Windows
 Credential Manager. To update, close running Proofline processes and replace the
 executable from a verified release. The Unix shell installer and self-update command
 do not install Windows binaries.
+
+## Fix context and pushed fixes
+
+```sh
+proofline fix list --repo owner/repository --pr 42
+proofline fix context FINDING_ID
+proofline fix verify --review REVIEW_ID --findings FINDING_ID --commit FULL_PUSHED_SHA
+proofline fix status REQUEST_ID
+```
+
+`fix list` returns open ENV findings at the live pull-request head, including
+availability, assessment gaps and truncation. `fix context` reads captured source
+excerpts and untrusted remediation. `fix verify` requests re-verification of 1–20
+distinct findings from one review at the exact commit you pushed; the server
+confirms that it is the live head. Optional `--note` accepts 1–2,000 characters.
+The command makes one attempt. After an ambiguous failure, inspect the review
+before requesting again.
+
+These commands return MCP tool results as JSON. `isError: true` exits nonzero.
+A successful read is not a verdict: `PENDING`, `UNAVAILABLE` and `NOT_VERIFIED`
+retain their meaning. Only the server's recorded re-verification establishes a
+fix. Reads need `reviews:read`; verification also needs `reviews:request` and
+current repository write access. For unpushed local changes, use `review --verify`.
