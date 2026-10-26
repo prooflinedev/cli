@@ -96,6 +96,9 @@ enum Command {
     Setup {
         #[arg(long)]
         print: bool,
+        /// GitHub organization slug; omit to open the authorized organization selector.
+        #[arg(long)]
+        organization: Option<String>,
     },
     /// Rerun the original immutable review subject.
     Rerun(tools::RerunArgs),
@@ -367,8 +370,14 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
             update::check().await;
             Ok(Verdict::Done)
         }
-        Command::Setup { print } => {
-            let url = origin.join(["onboarding"]);
+        Command::Setup {
+            print,
+            organization,
+        } => {
+            let url = organization.as_deref().map_or_else(
+                || origin.join(["orgs"]),
+                |slug| origin.join(["orgs", "github", slug, "settings", "installation"]),
+            );
             writeln!(std::io::stdout().lock(), "{url}")?;
             if !print {
                 webbrowser::open(url.as_str())?;

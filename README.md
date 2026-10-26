@@ -72,7 +72,8 @@ proofline plan implementation IMPLEMENTATION_ID
 
 Knowledge reads need `reviews:read` and `knowledge:read`. Implementation also needs
 `plans:implement`, a personal token and approval of the exact published plan version.
-`proofline setup` opens browser onboarding; `--print` only prints its address.
+`proofline setup` opens the browser organization selector. `--organization NAME`
+opens that GitHub organization's installation page; `--print` only prints its address.
 Cloud trust and connection changes still require a signed-in administrator browser.
 
 ## Windows

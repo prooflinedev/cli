@@ -1938,3 +1938,18 @@ async fn native_knowledge_negotiates_and_reports_a_tool_refusal() {
     assert_eq!(calls.load(Ordering::SeqCst), 3);
     server.abort();
 }
+
+#[tokio::test]
+async fn setup_handoff_uses_customer_routes_without_a_token() {
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_proofline"))
+        .env_remove("PROOFLINE_TOKEN")
+        .args(["setup", "--print", "--organization", "example-org"])
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap().trim(),
+        "https://proofline.sh/orgs/github/example-org/settings/installation"
+    );
+}
