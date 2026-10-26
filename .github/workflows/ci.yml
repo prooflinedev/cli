@@ -24,3 +24,25 @@ jobs:
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
       - run: cargo install cargo-deny --locked --version 0.20.2 && cargo deny check
+
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cargo build --release --locked --target x86_64-pc-windows-msvc
+      - run: python scripts/archive.py x86_64-pc-windows-msvc
+      - shell: pwsh
+        run: |
+          tar -xzf artifacts/proofline-x86_64-pc-windows-msvc.tar.gz -C artifacts
+          & ./artifacts/proofline.exe --version
+          if ($LASTEXITCODE -ne 0) { throw "Windows executable failed" }
+          & ./artifacts/proofline.exe setup --print
+          if ($LASTEXITCODE -ne 0) { throw "Setup handoff failed" }
+          & ./artifacts/proofline.exe review --schema | ConvertFrom-Json | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "Review schema failed" }
