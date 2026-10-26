@@ -2105,7 +2105,7 @@ async fn setup_handoff_uses_customer_routes_without_a_token() {
 
 #[tokio::test]
 async fn fix_commands_preserve_context_and_never_retry_verification() {
-    let calls = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let calls = Arc::new(Mutex::new(Vec::<Value>::new()));
     let observed = Arc::clone(&calls);
     let app = Router::new().route("/mcp", post(move |headers: HeaderMap, Json(body): Json<Value>| {
         let observed = Arc::clone(&observed);
