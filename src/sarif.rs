@@ -32,14 +32,17 @@ const DOMAINS: [&str; 18] = [
     "observability",
     "source_coverage",
 ];
-// code-categories-v1 and the four deterministic CODE diff rule categories.
-const CODE_DOMAINS: [&str; 10] = [
+// code-categories-v2, the three deterministic CODE diff rule categories, and
+// committed_secret, which the reviewer no longer produces but recorded
+// findings keep.
+const CODE_DOMAINS: [&str; 11] = [
     "logic",
     "edge_case",
     "error_handling",
     "state_transition",
     "concurrency",
     "resource_lifecycle",
+    "credential_exposure",
     "test_marker",
     "removed_assertion",
     "debug_residue",

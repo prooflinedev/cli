@@ -6,6 +6,7 @@
     "state_transition",
     "concurrency",
     "resource_lifecycle",
+    "credential_exposure",
     "test_marker",
     "removed_assertion",
     "debug_residue",
