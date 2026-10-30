@@ -2462,6 +2462,43 @@
         ],
         "type": "object"
       },
+      "EarlierOpenFinding": {
+        "description": "A published occurrence of an unresolved series absent from the current run.",
+        "properties": {
+          "finding_id": {
+            "description": "The occurrence in the series' first published review.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "finding_series_id": {
+            "description": "The unresolved environment finding series counted for this run.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "review_id": {
+            "description": "The first published review containing this occurrence.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "run_number": {
+            "description": "The earlier pull-request run that contains this occurrence.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "severity": {
+            "description": "Severity used by the series count; the linked occurrence may be less severe.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "finding_series_id",
+          "finding_id",
+          "review_id",
+          "run_number",
+          "severity"
+        ],
+        "type": "object"
+      },
       "EvidenceView": {
         "enum": [
           "REQUIRED_PROPERTIES_ESTABLISHED",
@@ -3921,6 +3958,13 @@
             "minimum": 0,
             "type": "integer"
           },
+          "earlier_findings": {
+            "description": "Exact published occurrences of earlier unresolved environment findings.",
+            "items": {
+              "$ref": "#/components/schemas/EarlierOpenFinding"
+            },
+            "type": "array"
+          },
           "not_assessed": {
             "description": "Recorded assessment gaps, including explicit policy exclusions.",
             "items": {
@@ -4822,6 +4866,13 @@
               "string",
               "null"
             ]
+          },
+          "earlier_findings": {
+            "description": "Exact published occurrences of earlier unresolved environment findings.\n Absent from observations recorded before destinations were captured.",
+            "items": {
+              "$ref": "#/components/schemas/EarlierOpenFinding"
+            },
+            "type": "array"
           },
           "environments": {
             "description": "This review's environment assessments that are not `COMPLETED`, ordered\n by environment key.",
