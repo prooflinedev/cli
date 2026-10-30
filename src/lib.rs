@@ -267,6 +267,9 @@ struct ReviewArgs {
         conflicts_with_all = ["pr", "staged", "include_untracked", "allow_path"]
     )]
     range: Option<String>,
+    /// Review only this literal repository-relative file in the local patch.
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["pr", "commit", "range", "files"])]
+    path: Option<String>,
     /// Re-verify these open findings of one pull request against the local
     /// changes, and print each one's outcome. The outcome is local: the pull
     /// request's findings are unchanged. Needs an API token.
@@ -804,6 +807,7 @@ async fn review_local(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
         std::path::Path::new("."),
         &args.repository.remote,
         selection,
+        args.path.as_deref(),
     )
     .await?;
     let files = changes.files();

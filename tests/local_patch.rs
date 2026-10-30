@@ -786,3 +786,111 @@ async fn a_local_override_still_requires_repository_authorization() {
     assert_eq!(checkout.index().await, index);
     server.close().await;
 }
+
+#[tokio::test]
+async fn local_path_selects_one_literal_file_and_preserves_the_index() {
+    let checkout = Checkout::new(&[("[file].txt", "base\n"), ("f.txt", "other\n")]).await;
+    checkout.write("[file].txt", "staged\n").await;
+    checkout.git(&["add", "--all"]).await;
+    checkout.write("[file].txt", "working\n").await;
+    checkout.write("f.txt", "excluded\n").await;
+    let index = checkout.index().await;
+    for (flags, expected) in [
+        (vec!["--path", "[file].txt"], "+working"),
+        (vec!["--path", "[file].txt", "--staged"], "+staged"),
+    ] {
+        let server = Server::start(true).await;
+        let output = checkout.review(&server, &[], &flags).await;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        {
+            let uploads = server.fixture.uploads.lock().unwrap();
+            assert_eq!(uploads.len(), 1);
+            assert_eq!(uploads[0]["base_commit_sha"], checkout.base);
+            let patch = uploads[0]["patch"].as_str().unwrap();
+            assert!(patch.contains(expected), "{patch}");
+            assert!(!patch.contains("excluded"), "{patch}");
+            assert_eq!(patch.matches("diff --git ").count(), 1);
+        }
+        assert_eq!(checkout.index().await, index);
+        server.close().await;
+    }
+}
+
+#[tokio::test]
+async fn local_path_refuses_directory_glob_and_traversal_before_http() {
+    let checkout = Checkout::new(&[("nested/file.txt", "base\n")]).await;
+    checkout.write("nested/file.txt", "changed\n").await;
+    let server = Server::start(true).await;
+    for path in [
+        "nested",
+        "nested/*.txt",
+        "../file.txt",
+        "nested/../nested/file.txt",
+        "missing.txt",
+    ] {
+        let output = checkout.review(&server, &[], &["--path", path]).await;
+        assert!(!output.status.success(), "{path}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("exact repository-relative tracked file")
+        );
+    }
+    server.assert_no_requests();
+    server.close().await;
+}
+
+#[tokio::test]
+async fn local_path_keeps_secret_preflight_and_can_select_a_deleted_file() {
+    let checkout = Checkout::new(&[("selected.txt", "base\n"), ("other.txt", "base\n")]).await;
+    let server = Server::start(true).await;
+    let secret = "-----BEGIN PRIVATE KEY-----";
+    checkout.write("selected.txt", secret).await;
+    let refused = checkout
+        .review(&server, &[], &["--path", "selected.txt"])
+        .await;
+    assert!(!refused.status.success());
+    assert!(!String::from_utf8_lossy(&refused.stderr).contains(secret));
+    server.assert_no_requests();
+    tokio::fs::remove_file(checkout.root().join("selected.txt"))
+        .await
+        .unwrap();
+    checkout.write("other.txt", "excluded\n").await;
+    let result = checkout
+        .review(&server, &[], &["--path", "selected.txt"])
+        .await;
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    {
+        let uploads = server.fixture.uploads.lock().unwrap();
+        let patch = uploads[0]["patch"].as_str().unwrap();
+        assert!(patch.contains("deleted file mode"));
+        assert!(!patch.contains("excluded"));
+    }
+    server.close().await;
+}
+
+#[tokio::test]
+async fn local_path_never_expands_a_file_replaced_by_a_directory() {
+    let checkout = Checkout::new(&[("selected", "base\n")]).await;
+    tokio::fs::remove_file(checkout.root().join("selected"))
+        .await
+        .unwrap();
+    checkout
+        .write("selected/other.txt", "must not leave the checkout\n")
+        .await;
+    checkout.git(&["add", "--all"]).await;
+    let index = checkout.index().await;
+    let server = Server::start(true).await;
+    let output = checkout.review(&server, &[], &["--path", "selected"]).await;
+    assert!(!output.status.success());
+    server.assert_no_requests();
+    assert_eq!(checkout.index().await, index);
+    server.close().await;
+}

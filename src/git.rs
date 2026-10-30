@@ -41,6 +41,8 @@ pub enum GitError {
     NotRange(String),
     #[error("name between 1 and 20 exact repository-relative file paths")]
     FileCount,
+    #[error("{0:?} is not one exact repository-relative tracked file; no review was requested")]
+    InvalidLocalPath(String),
     #[error("{0:?} is not a regular tracked file at commit {1}; no review was requested")]
     NotTrackedFile(String, String),
 }
@@ -254,6 +256,7 @@ pub async fn local_changes(
     dir: &Path,
     remote: &str,
     selection: LocalSelection,
+    path: Option<&str>,
 ) -> Result<LocalChanges, GitError> {
     let root = line_in(dir, &["rev-parse", "--show-toplevel"]).await?;
     let root = Path::new(&root);
@@ -289,7 +292,46 @@ pub async fn local_changes(
         )
         .await?;
     }
-    diff(root, Some(&index), base_commit_sha, None).await
+    if let Some(path) = path {
+        if path.contains('\0') || path.split('/').any(|part| matches!(part, "" | "." | "..")) {
+            return Err(GitError::InvalidLocalPath(path.to_owned()));
+        }
+        let indexed = git_in(
+            root,
+            Some(&index),
+            &["--literal-pathspecs", "ls-files", "-z", "--", path],
+        )
+        .await?;
+        let base_paths = git_in(
+            root,
+            None,
+            &[
+                "--literal-pathspecs",
+                "ls-tree",
+                "-r",
+                "--name-only",
+                "-z",
+                &base_commit_sha,
+                "--",
+                path,
+            ],
+        )
+        .await?;
+        let exact = |entries: &[u8]| {
+            entries
+                .split(|byte| *byte == 0)
+                .any(|entry| entry == path.as_bytes())
+        };
+        let prefix = format!("{path}/");
+        let descendants = indexed
+            .split(|byte| *byte == 0)
+            .chain(base_paths.split(|byte| *byte == 0))
+            .any(|entry| entry.starts_with(prefix.as_bytes()));
+        if descendants || (!exact(&indexed) && !exact(&base_paths)) {
+            return Err(GitError::InvalidLocalPath(path.to_owned()));
+        }
+    }
+    diff(root, Some(&index), base_commit_sha, None, path).await
 }
 
 /// The commits a push sends: `head` against `base`, under the same fixed
@@ -298,7 +340,7 @@ pub async fn local_changes(
 pub async fn range_changes(dir: &Path, base: &str, head: &str) -> Result<LocalChanges, GitError> {
     let root = line_in(dir, &["rev-parse", "--show-toplevel"]).await?;
     let head = commit_sha(head)?;
-    diff(Path::new(&root), None, commit_sha(base)?, Some(&head)).await
+    diff(Path::new(&root), None, commit_sha(base)?, Some(&head), None).await
 }
 
 /// The base of a branch the remote does not have yet: its merge-base with
@@ -315,8 +357,10 @@ async fn diff(
     index: Option<&Path>,
     base_commit_sha: String,
     head: Option<&str>,
+    path: Option<&str>,
 ) -> Result<LocalChanges, GitError> {
     let mut args = vec![
+        "--literal-pathspecs",
         "-c",
         "core.quotePath=false",
         // The server accepts renames and refuses copies, whatever the
@@ -347,6 +391,7 @@ async fn diff(
     ]);
     args.extend(head);
     args.push("--");
+    args.extend(path);
     let output = git_in(root, index, &args).await?;
     let (paths, patch) = diff_paths(&output)?;
     if patch.len() > MAX_PATCH_BYTES {
@@ -628,7 +673,7 @@ mod tests {
             ],
         );
 
-        let unchanged = local_changes(dir, "origin", LocalSelection::Tracked)
+        let unchanged = local_changes(dir, "origin", LocalSelection::Tracked, None)
             .await
             .unwrap();
         assert_eq!(
@@ -668,7 +713,7 @@ mod tests {
                 ],
             ),
         ] {
-            let changes = local_changes(dir, "origin", selection).await.unwrap();
+            let changes = local_changes(dir, "origin", selection, None).await.unwrap();
             assert_eq!(changes.base_commit_sha, base);
             let mut expected = vec![
                 "diff --git a/committed.txt b/committed.txt",
