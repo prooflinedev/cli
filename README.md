@@ -5,6 +5,13 @@ The command-line client for the [Proofline review API](https://proofline.sh/docs
 Install with `curl -fsSL https://proofline.sh/cli | sh`, then run `proofline login`.
 See the [CLI documentation](https://proofline.sh/docs/cli/) for commands.
 
+`proofline review --path src/main.rs` reviews only that file's local changes
+against the normal merge-base. The path is literal and repository-relative;
+directories, globs and `..` are refused. Combine it with `--staged` to read
+the index, or `--include-untracked` to select a new, non-ignored file. The
+command preserves the real index and applies the usual secret preflight.
+It cannot be combined with pushed-commit, range or pull-request review.
+
 Read all recorded runs with `proofline history --repo owner/name --pr 7`.
 `proofline rerun REVIEW_ID` requests the original immutable subject and waits;
 `--no-wait` returns its link. Reruns require `reviews:rerun`.

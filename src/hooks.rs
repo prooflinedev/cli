@@ -375,7 +375,7 @@ async fn subjects(hook: Hook, here: &Path, remote: &str) -> anyhow::Result<(Vec<
         Hook::PreCommit => Ok((
             vec![Subject {
                 label: "the staged changes".to_owned(),
-                changes: git::local_changes(here, remote, LocalSelection::Staged).await,
+                changes: git::local_changes(here, remote, LocalSelection::Staged, None).await,
             }],
             0,
         )),
