@@ -1698,6 +1698,13 @@
             "description": "The finding's recorded lifecycle state: `NEW`, `UNCHANGED`, `RESOLVED`\n or `REINTRODUCED`.",
             "type": "string"
           },
+          "local_findings": {
+            "description": "Earlier occurrences in the author's local reviews linked by exact patch\n identity. These links carry no verdict or finding decision.",
+            "items": {
+              "$ref": "#/components/schemas/MatchedLocalFinding"
+            },
+            "type": "array"
+          },
           "placement": {
             "anyOf": [
               {
@@ -3673,6 +3680,32 @@
           "PENDING"
         ],
         "type": "string"
+      },
+      "MatchedLocalFinding": {
+        "description": "A local occurrence with the same semantic fingerprint as this finding.",
+        "properties": {
+          "created_at": {
+            "description": "When the local review was requested.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "finding_id": {
+            "description": "The occurrence in that local review.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "review_id": {
+            "description": "The author's local review, linked by exact patch identity.",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "review_id",
+          "finding_id",
+          "created_at"
+        ],
+        "type": "object"
       },
       "NotAssessedView": {
         "properties": {
