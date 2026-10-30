@@ -1,0 +1,63 @@
+name: Hosted install check
+# Runs the official hosted installer into a disposable home on the publisher's
+# runner image and reads back the installed version and digests. It never
+# builds, publishes or writes release objects; it only reads proofline.sh,
+# the same origin the publish job already compares against.
+on:
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: hosted-install
+  cancel-in-progress: false
+jobs:
+  install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      VERSION: 0.1.6
+      TARGET: x86_64-unknown-linux-musl
+      # Digest of the v0.1.6 archive recorded by Release run 40458824281.
+      ARCHIVE_SHA256: 9bc64427ab03009510d79d9b97983c3910e5f6971a3ce3f4a4cc004ab756b2b5
+    steps:
+      - run: |
+          set -euo pipefail
+          fetch() {
+            curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+              --connect-timeout 15 --max-time 120 "$@"
+          }
+          work=$(mktemp -d "$RUNNER_TEMP/hosted-install.XXXXXX")
+          home="$work/home"
+          prefix="$home/.local/bin"
+          mkdir -p "$home" "$work/expected"
+
+          # The installer follows latest, so refuse unless latest is the pinned version.
+          latest=$(fetch https://proofline.sh/cli/latest)
+          [ "$latest" = "$VERSION" ] || { echo "latest is $latest, not $VERSION" >&2; exit 1; }
+
+          name="proofline-$TARGET.tar.gz"
+          fetch "https://proofline.sh/cli/download/$VERSION/$name" -o "$work/$name"
+          echo "$ARCHIVE_SHA256  $work/$name" | sha256sum --check --strict
+          [ "$(tar -tzf "$work/$name")" = proofline ]
+          tar -xzf "$work/$name" -C "$work/expected" proofline
+
+          fetch https://proofline.sh/cli -o "$work/install.sh"
+          installer_sha256=$(sha256sum "$work/install.sh" | cut -d ' ' -f 1)
+          env -i PATH=/usr/bin:/bin HOME="$home" PROOFLINE_INSTALL_DIR="$prefix" \
+            sh "$work/install.sh"
+
+          [ -f "$prefix/proofline" ] && [ ! -L "$prefix/proofline" ]
+          installed=$(PROOFLINE_NO_UPDATE_CHECK=1 HOME="$home" "$prefix/proofline" --version)
+          [ "$installed" = "proofline $VERSION" ] || { echo "installed $installed" >&2; exit 1; }
+          cmp "$work/expected/proofline" "$prefix/proofline"
+          binary_sha256=$(sha256sum "$prefix/proofline" | cut -d ' ' -f 1)
+
+          {
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Workflow commit | \`$GITHUB_SHA\` |"
+            echo "| Installed version | \`$installed\` |"
+            echo "| Installer sha256 | \`$installer_sha256\` |"
+            echo "| Archive | \`https://proofline.sh/cli/download/$VERSION/$name\` |"
+            echo "| Archive sha256 | \`$ARCHIVE_SHA256\` |"
+            echo "| Binary sha256 | \`$binary_sha256\` |"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
