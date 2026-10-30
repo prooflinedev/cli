@@ -14,10 +14,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
-      VERSION: 0.1.6
+      VERSION: 0.1.7
       TARGET: x86_64-unknown-linux-musl
-      # Digest of the v0.1.6 archive recorded by Release run 40458824281.
-      ARCHIVE_SHA256: 9bc64427ab03009510d79d9b97983c3910e5f6971a3ce3f4a4cc004ab756b2b5
+      # Digests from the v0.1.7 assets published by Release run 41123276320.
+      ARCHIVE_SHA256: fb13dbd429c1e61f9fb6d8974e3b17792f65b5882e4623a37a335590e000fe13
+      CHECKSUMS_SHA256: c5b9c6ebb2cf7729fefe29ee3137655e757a01685501374afbd3da094ac614c6
       # Reviewed installer: proofline 0421e803, apps/marketing/public/cli/install.sh.
       INSTALLER_SHA256: da5e9d49eaa193a9f98d002b799c7b432129ac1f9c746295abf19ca1f613f567
     steps:
@@ -31,7 +32,13 @@ jobs:
           prefix="$work/bin"
           mkdir -p "$prefix" "$work/expected"
 
+          latest=$(fetch https://proofline.sh/cli/latest)
+          [ "$latest" = "$VERSION" ] || { echo "latest is $latest, expected $VERSION" >&2; exit 1; }
+          fetch "https://proofline.sh/cli/download/$VERSION/SHA256SUMS" -o "$work/SHA256SUMS"
+          echo "$CHECKSUMS_SHA256  $work/SHA256SUMS" | sha256sum --check --strict
+
           name="proofline-$TARGET.tar.gz"
+          grep -Fx "$ARCHIVE_SHA256  $name" "$work/SHA256SUMS"
           fetch "https://proofline.sh/cli/download/$VERSION/$name" -o "$work/$name"
           echo "$ARCHIVE_SHA256  $work/$name" | sha256sum --check --strict
           [ "$(tar -tzf "$work/$name")" = proofline ]
@@ -53,6 +60,8 @@ jobs:
             echo "| Field | Value |"
             echo "| --- | --- |"
             echo "| Workflow commit | \`$GITHUB_SHA\` |"
+            echo "| Published latest | \`$latest\` |"
+            echo "| SHA256SUMS sha256 | \`$CHECKSUMS_SHA256\` |"
             echo "| Installed version | \`$installed\` |"
             echo "| Installer sha256 | \`$INSTALLER_SHA256\` |"
             echo "| Archive | \`https://proofline.sh/cli/download/$VERSION/$name\` |"
