@@ -40,7 +40,8 @@ jobs:
           # Refuse installer bytes that differ from the reviewed source before running them.
           fetch https://proofline.sh/cli -o "$work/install.sh"
           echo "$INSTALLER_SHA256  $work/install.sh" | sha256sum --check --strict
-          PROOFLINE_VERSION="$VERSION" PROOFLINE_INSTALL_DIR="$prefix" sh "$work/install.sh"
+          PROOFLINE_NO_UPDATE_CHECK=1 PROOFLINE_VERSION="$VERSION" PROOFLINE_INSTALL_DIR="$prefix" \
+            sh "$work/install.sh"
 
           [ -f "$prefix/proofline" ] && [ ! -L "$prefix/proofline" ]
           installed=$(PROOFLINE_NO_UPDATE_CHECK=1 "$prefix/proofline" --version)
