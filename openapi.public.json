@@ -793,6 +793,103 @@
           }
         ]
       },
+      "CiFailureAttribution": {
+        "description": "What the control plane records as a failure's cause.",
+        "enum": [
+          "CAUSED_BY_CHANGE",
+          "PRE_EXISTING_ON_BASE",
+          "FLAKY_OR_INFRASTRUCTURE",
+          "ENVIRONMENT_STATE",
+          "UNKNOWN"
+        ],
+        "type": "string"
+      },
+      "CiFailureLine": {
+        "description": "One failed CI job as the Check states it.",
+        "properties": {
+          "attribution": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/CiFailureAttribution"
+              }
+            ],
+            "description": "The recorded cause: `CAUSED_BY_CHANGE`, `PRE_EXISTING_ON_BASE`,\n `FLAKY_OR_INFRASTRUCTURE`, `ENVIRONMENT_STATE` or `UNKNOWN`. `UNKNOWN`\n means the failure was not diagnosed, and `undiagnosed` says why."
+          },
+          "failed_step": {
+            "description": "The first failed step's name, admitted the same way. Null when no\n step concluded as failed.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "job_name": {
+            "description": "The job's name as the diagnosis admitted it: masked, or `<withheld>`.\n A protected value of the observing review reads as the withheld\n marker.",
+            "type": "string"
+          },
+          "run_attempt": {
+            "description": "The GitHub Actions run attempt the job failed in, from 1. The line\n is the newest diagnosed attempt of its run.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "timed_out": {
+            "description": "Whether the job timed out rather than failed.",
+            "type": "boolean"
+          },
+          "undiagnosed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CiFailureUndiagnosed"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the failure was not diagnosed. Set exactly when `attribution` is\n `UNKNOWN`."
+          }
+        },
+        "required": [
+          "job_name",
+          "timed_out",
+          "run_attempt",
+          "attribution"
+        ],
+        "type": "object"
+      },
+      "CiFailureUndiagnosed": {
+        "description": "Why a failed job's attribution is `UNKNOWN`.",
+        "oneOf": [
+          {
+            "const": "LOG_UNAVAILABLE",
+            "description": "GitHub returned no log for the job.",
+            "type": "string"
+          },
+          {
+            "const": "LOG_TOO_LARGE",
+            "description": "The complete log exceeds the read bound.",
+            "type": "string"
+          },
+          {
+            "const": "LOG_NOT_ADMITTED",
+            "description": "The log could not cross the credential mask or protected-value\n admission. The console names which.",
+            "type": "string"
+          },
+          {
+            "const": "DECISION_UNAVAILABLE",
+            "description": "The attribution decision fell back: Jev was unavailable or refused.",
+            "type": "string"
+          },
+          {
+            "const": "SHADOW",
+            "description": "The attribution decision runs in shadow mode, so its answer is not\n applied.",
+            "type": "string"
+          },
+          {
+            "const": "UNDETERMINED",
+            "description": "The decision applied no cause.",
+            "type": "string"
+          }
+        ]
+      },
       "CodeAssessmentStatus": {
         "description": "A code assessment's recorded execution status. It is never a verdict on\n the change: only `COMPLETED` says the assessment covered what it read.",
         "oneOf": [
@@ -4881,6 +4978,31 @@
         "properties": {
           "accepted_risk_count": {
             "description": "Finding series whose current decision is an unexpired `ACCEPTED_RISK`.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ci_failures": {
+            "description": "Failed CI jobs diagnosed on the reviewed head, the newest diagnosed\n attempt of each run, in diagnosis order. The Check states each one;\n none is a Proofline open item. Absent when no job was diagnosed.",
+            "items": {
+              "$ref": "#/components/schemas/CiFailureLine"
+            },
+            "type": "array"
+          },
+          "ci_failures_omitted": {
+            "description": "Diagnosed failed CI jobs on the reviewed head beyond `ci_failures`.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ci_runs_pending": {
+            "description": "Failed CI run attempts on the reviewed head whose diagnosis is queued\n or running, so none of their jobs has a line yet.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "ci_runs_unfinished": {
+            "description": "Failed CI run attempts on the reviewed head whose diagnosis failed or\n was cancelled, so none of their jobs has a line.",
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
