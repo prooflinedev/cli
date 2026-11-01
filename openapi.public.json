@@ -5656,6 +5656,14 @@
             ],
             "description": "Human override beside the original decision, when one was requested."
           },
+          "publication_group": {
+            "description": "The finding that represents this finding's publication group, when an\n applied group publishes it in one comment with other findings. Every\n member names the same finding, the representative included.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "reason_codes": {
             "description": "Recognized safe reason codes; unknown values are represented as `UNRECOGNIZED`.",
             "items": {
