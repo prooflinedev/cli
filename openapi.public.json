@@ -5991,6 +5991,68 @@
         ],
         "type": "object"
       },
+      "ScanRequestBody": {
+        "additionalProperties": false,
+        "description": "One request to scan a ref or an exact commit of the repository.",
+        "properties": {
+          "budget_credits": {
+            "description": "The credits the whole scan may spend, at most the organization's\n on-demand ceiling.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "commit_sha": {
+            "description": "An exact commit. Name it or `ref`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ref": {
+            "description": "A ref, resolved once when the request arrives. Name it or `commit_sha`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "request_id": {
+            "description": "The caller's identity for this request. Sending it again returns the\n first resolution instead of scanning again.",
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "budget_credits"
+        ],
+        "type": "object"
+      },
+      "ScanResponse": {
+        "description": "What a scan request resolved to.",
+        "properties": {
+          "outcome": {
+            "description": "`CREATED`, `EXISTING` when this request id was already resolved, or\n `REPOSITORY_UNAVAILABLE` when GitHub could not resolve it.",
+            "type": "string"
+          },
+          "resolution_id": {
+            "description": "The request's one resolution receipt.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "review_id": {
+            "description": "The scan review, readable through the review routes. Absent when\n GitHub could not resolve the request.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "resolution_id",
+          "outcome"
+        ],
+        "type": "object"
+      },
       "SpecialistAssessmentExecution": {
         "properties": {
           "assessment_id": {
@@ -7594,6 +7656,84 @@
         ],
         "summary": "Get repository review guidance",
         "x-proofline-token-scope": "guidance:read"
+      }
+    },
+    "/api/v1/organizations/{org_id}/repositories/{repo_id}/scans": {
+      "post": {
+        "description": "Scans the whole repository at one commit, resolved once from `ref` or named by `commit_sha`, and records that resolution. Requires live GitHub write access, and `budget_credits` at most the organization's on-demand scan limit; a limit of 0 turns on-demand scans off. Sending the same `request_id` again returns the first resolution. Results remain in Proofline and are never posted to GitHub.",
+        "operationId": "request_scan",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "org_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "style": "simple"
+          },
+          {
+            "in": "path",
+            "name": "repo_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "style": "simple"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScanRequestBody"
+              }
+            }
+          },
+          "description": "One request to scan a ref or an exact commit of the repository.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanResponse"
+                }
+              }
+            },
+            "description": "What a scan request resolved to."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunNowRefused"
+                }
+              }
+            },
+            "description": "A run-now request that created nothing, as the 400 it is answered with.\n\n The refusal is a configuration fact, not a failure, and it is still sent\n as an RFC 9457 problem: `title`, `status` and `detail` are what a client\n that knows only problems shows, and `repository_name` and `refusal` are\n the extension members a client that knows refusals links from. During a\n rollout a page loaded from the previous bundle keeps working against\n this server, because a refusal was a 400 with a `detail` before too."
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "An RFC 9457 problem; the HTTP status remains authoritative."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Scan a repository revision",
+        "x-proofline-token-scope": "scans:request"
       }
     },
     "/api/v1/organizations/{org_id}/repository-names": {
