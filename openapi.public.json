@@ -6001,7 +6001,6 @@
             "type": "integer"
           },
           "commit_sha": {
-            "default": null,
             "description": "An exact commit. Name it or `ref`.",
             "type": [
               "string",
@@ -6009,7 +6008,6 @@
             ]
           },
           "ref": {
-            "default": null,
             "description": "A ref, resolved once when the request arrives. Name it or `commit_sha`.",
             "type": [
               "string",
