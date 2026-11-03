@@ -977,7 +977,9 @@ fn poll_deadline(minutes: u64) -> Result<tokio::time::Instant, PollTimeoutTooLar
 }
 
 /// Reads the review, polling until it finishes or `deadline` passes. Without
-/// a deadline it reads once.
+/// a deadline it reads once. Every read confirms the server's answer is of
+/// the review requested, not a cache or routing mix-up that would otherwise
+/// let a result for a different review decide this one's outcome.
 async fn read_review(
     api: &Api,
     review_id: Uuid,
@@ -987,6 +989,7 @@ async fn read_review(
     let mut delay = FIRST_POLL_SECONDS;
     loop {
         let (raw, detail) = api.review(review_id).await?;
+        outcome::same_review(&detail, review_id)?;
         if sarif {
             sarif::validate_subject(&detail, review_id)?;
         }
@@ -1103,6 +1106,52 @@ async fn ci_job(
 /// it asks for one.
 const REQUEST_AFTER: Duration = Duration::from_secs(120);
 
+/// Confirms `detail` is actually the pull-request review of `commit` in
+/// `repository_id` before it is allowed to decide a CI verdict or produce a
+/// SARIF artifact. [`read_review`] already confirms `detail` is the review
+/// requested by id; a search match on `commit` against a summary row does
+/// not guarantee the detail fetched moments later, by that id, kept the same
+/// story, so the fields the search relied on are checked again here against
+/// the server's own account of the subject. The repository is compared by
+/// id, not `repository_full_name`: a GitHub rename changes the name but not
+/// the id, and comparing names would then refuse a review that is actually
+/// of the right repository. The id is checked only when the server names
+/// one, since it is absent on an old server or a review that names no
+/// repository.
+fn confirm_ci_subject(
+    detail: &ReviewDetail,
+    commit: &str,
+    repository_id: Uuid,
+) -> anyhow::Result<()> {
+    if detail.kind != "PULL_REQUEST" {
+        bail!(
+            "proofline asked for the pull-request review of {commit}, but the server returned a {} review",
+            text::one_line(&detail.kind)
+        );
+    }
+    if !detail
+        .head_commit_sha
+        .as_deref()
+        .is_some_and(|head| head.eq_ignore_ascii_case(commit))
+    {
+        bail!(
+            "proofline asked for the review of {commit}, but the server returned head commit {}",
+            detail
+                .head_commit_sha
+                .as_deref()
+                .map_or_else(|| "none".to_owned(), text::one_line)
+        );
+    }
+    if let Some(detail_repository) = detail.repository_id
+        && detail_repository != repository_id
+    {
+        bail!(
+            "proofline asked for a review in repository {repository_id}, but the server returned a review in repository {detail_repository}"
+        );
+    }
+    Ok(())
+}
+
 /// Waits for the review the App runs for the pull request whose head is
 /// `commit`, then reports it. With `request`, a job that has found no review
 /// after [`REQUEST_AFTER`] asks once for one and reports the review it gets;
@@ -1165,6 +1214,7 @@ async fn ci_review(
     let sarif_path = args.sarif.as_deref();
     let (raw, detail, state) =
         read_review(api, review_id, Some(deadline), sarif_path.is_some()).await?;
+    confirm_ci_subject(&detail, commit, repository_id)?;
     if let Some(path) = sarif_path {
         let document = sarif::review(
             &detail,
