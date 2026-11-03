@@ -1879,6 +1879,121 @@ async fn ci_review_fail_on_exits_three_for_an_open_finding_of_a_complete_review(
     assert!(requests.lock().unwrap().is_empty());
 }
 
+/// A console whose search page names `CI_REVIEW` as the pull-request review of
+/// `CI_HEAD`, but whose `/reviews/{CI_REVIEW}` detail disagrees with that: the
+/// body it serves names a different review id and a different head commit, as
+/// a stale search index or a mixed-up cache response would. `sarif::validate_subject`
+/// already refuses exactly this mismatch, but only when `--sarif` is passed;
+/// `ci_review`'s plain and `--json` paths never call it, so they compute
+/// `ci_verdict` from a detail that was never confirmed to be the review, or
+/// the commit, actually under test.
+async fn mismatched_identity_console() -> String {
+    let other_review = "0190f3a0-0000-7000-8000-0000000000e1";
+    let other_head = "fedcba9876543210fedcba9876543210fedcba98";
+    let app = Router::new()
+        .route(
+            &format!("/api/v1/organizations/{ORG}/repository-names"),
+            get(|| async {
+                Json(json!({ "repositories": [{ "id": CI_REPOSITORY, "full_name": "acme/app" }] }))
+            }),
+        )
+        .route(
+            &format!("/api/v1/organizations/{ORG}/reviews"),
+            get(|| async {
+                Json(json!({
+                    "items": [{
+                        "id": CI_REVIEW,
+                        "kind": "PULL_REQUEST",
+                        "status": "COMPLETED",
+                        "created_at": "2026-10-01T00:00:00Z",
+                        "head_commit_sha": CI_HEAD,
+                        "pull_request_number": 12,
+                        "repository_id": CI_REPOSITORY,
+                        "run_number": 1,
+                    }],
+                    "next_cursor": null,
+                    "truncated": false,
+                    "filters": { "repositories": [], "environments": [], "authors": [] },
+                }))
+            }),
+        )
+        .route(
+            &format!("/api/v1/organizations/{ORG}/reviews/{CI_REVIEW}"),
+            get(move || async move {
+                Json(json!({
+                    "id": other_review,
+                    "kind": "PULL_REQUEST",
+                    "status": "COMPLETED",
+                    "assessment_count": 1,
+                    "assessments": [{
+                        "id": "0190f3a0-0000-7000-8000-0000000000f2",
+                        "environment_display_name": "production",
+                        "status": "COMPLETED",
+                        "findings": [],
+                        "checks": { "receipt_recorded": true, "status": "READY", "families": [] },
+                    }],
+                    "open_items": { "open_findings": 0, "serious_findings": 0, "accepted_risks": 0, "not_assessed": [] },
+                    "head_commit_sha": other_head,
+                    "base_commit_sha": "0123456789abcdef0123456789abcdef01234567",
+                    "pull_request_number": 99,
+                    "repository_full_name": "acme/app",
+                    "run_number": 1,
+                }))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    origin
+}
+
+#[tokio::test]
+async fn ci_review_refuses_a_completed_review_whose_detail_names_another_review_and_head() {
+    let origin = mismatched_identity_console().await;
+    let args = [
+        "ci",
+        "review",
+        "--repo",
+        "acme/app",
+        "--commit",
+        CI_HEAD,
+        "--timeout",
+        "0",
+        "--json",
+    ];
+    let output = cli(&origin, &args).await;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // The CLI asked about CI_HEAD and found CI_REVIEW for it, then fetched a
+    // detail that names a different review id and a different head commit.
+    // That is exactly the mismatch `sarif::validate_subject` already refuses
+    // for `--sarif`; the plain and `--json` paths must refuse it too rather
+    // than report success for a result that was never confirmed to be the
+    // review, or the commit, under test.
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "exited successfully for a detail naming a different review and head: {stderr}"
+    );
+    assert!(!stderr.contains(TOKEN));
+
+    // The same mismatch, surfaced through `--sarif`, is already refused:
+    // `read_review` runs `sarif::validate_subject` only when SARIF is
+    // requested, so the identity check exists but is not wired into the path
+    // `ci review` actually uses to decide pass/fail.
+    let directory = tempfile::tempdir().unwrap();
+    let sarif_path = directory.path().join("proofline.sarif");
+    let mut sarif_args = args.to_vec();
+    sarif_args.extend(["--sarif", sarif_path.to_str().unwrap()]);
+    let sarif_output = cli_in(&origin, &sarif_args, directory.path()).await;
+    let sarif_stderr = String::from_utf8_lossy(&sarif_output.stderr);
+    assert_eq!(sarif_output.status.code(), Some(1), "{sarif_stderr}");
+    assert!(
+        sarif_stderr.contains("but the server returned review"),
+        "{sarif_stderr}"
+    );
+    assert!(!sarif_path.exists());
+}
+
 #[tokio::test]
 async fn native_tools_keep_tenant_paths_and_reruns_make_one_attempt() {
     let requests = Arc::new(Mutex::new(Vec::new()));
