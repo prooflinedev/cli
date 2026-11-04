@@ -34,6 +34,10 @@ is installed by rustup. Run `cargo fmt --check`, `cargo clippy --locked --all-ta
 `openapi.public.json` is the public API contract pinned for this revision.
 Server compatibility is checked in the Proofline control plane.
 
+## Contributing
+
+This repository distributes the Proofline CLI and its generated API contract. Open an issue for changes to `openapi.public.json`. Pull requests are welcome for hand-written commands in `src/`, release scripts in `scripts/`, and tests in `tests/`.
+
 ## Coverage uploads
 
 Upload reports your CI produced for an exact commit:
