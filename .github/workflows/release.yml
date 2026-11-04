@@ -73,6 +73,7 @@ jobs:
           test "$(target/"$TARGET"/release/"$binary" --version)" = "proofline $VERSION"
           if [[ "$TARGET" == x86_64-unknown-linux-musl && -f install.sh ]]; then
             sh -n install.sh
+            grep -Fxq "PROOFLINE_INSTALLER_VERSION=$VERSION" install.sh
             if grep -q '^PROOFLINE_SETUP_MIN_VERSION=' install.sh; then
               minimum=$(sed -n 's/^PROOFLINE_SETUP_MIN_VERSION=//p' install.sh)
               [[ "$minimum" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
