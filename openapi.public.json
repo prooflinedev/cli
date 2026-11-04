@@ -1480,6 +1480,13 @@
               "null"
             ]
           },
+          "coverage_details": {
+            "description": "Recorded check coverage counts and fixed cancellation causes, without source text.\n Absent coverage does not establish that every check ran.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "findings": {
             "description": "The code-only findings the code assessment recorded, `SERIOUS` first.\n An empty list does not establish deployment safety.",
             "items": {
