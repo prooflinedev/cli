@@ -64,17 +64,17 @@ Licensed under Apache-2.0.
 ## Publishing
 
 GitHub Actions checks pull requests and main. Run `Release` on main with
-`publish=false` to build all four Linux/macOS archives without publishing.
+`publish=false` to build the Linux, macOS and Windows archives.
 A `vX.Y.Z` tag equal to Cargo's version, or a main dispatch with `publish=true`,
-publishes after the `release` environment approves the job. The commit must be on main.
+publishes the checked archives through the `release` environment. The commit must be on main.
 
 The build jobs have no write credential. The publisher creates a GitHub draft
 to reserve the version, records artifact attestations, and uploads the binaries
 and SHA256SUMS to the existing R2 download bucket and GitHub Releases.
 The bucket-scoped credential is the `CLI_RELEASE_R2_CREDENTIALS` environment secret;
 `CLOUDFLARE_ACCOUNT_ID` is an environment variable. R2 versions are reserved
-with a conditional write. A failed publication retains its reservation; raise
-the package version before another release. Install and update URLs stay on proofline.sh.
+with a conditional write. Retry a failed publishing job with its original build artifacts.
+It verifies existing files, uploads missing ones and advances the installer only after the archives match. Install and update URLs stay on proofline.sh.
 
 ## Review and knowledge tools
 
