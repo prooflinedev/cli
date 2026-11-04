@@ -71,6 +71,15 @@ jobs:
           binary=proofline
           if [[ "$TARGET" == *windows* ]]; then binary=proofline.exe; fi
           test "$(target/"$TARGET"/release/"$binary" --version)" = "proofline $VERSION"
+          if [[ "$TARGET" == x86_64-unknown-linux-musl && -f install.sh ]]; then
+            sh -n install.sh
+            if grep -q '^PROOFLINE_SETUP_MIN_VERSION=' install.sh; then
+              minimum=$(sed -n 's/^PROOFLINE_SETUP_MIN_VERSION=//p' install.sh)
+              [[ "$minimum" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+              [[ "$(printf '%s\n%s\n' "$minimum" "$VERSION" | sort -V | tail -1)" == "$VERSION" ]]
+              "target/$TARGET/release/proofline" agent install claude-code --print > /dev/null
+            fi
+          fi
           python3 scripts/archive.py "$TARGET"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -104,6 +113,7 @@ jobs:
           test "$(find artifacts -name '*.tar.gz' | wc -l)" -eq 5
           (cd artifacts && LC_ALL=C sha256sum proofline-*.tar.gz > SHA256SUMS)
           printf '%s\n' "$VERSION" > artifacts/latest
+          if [[ -f install.sh ]]; then cp install.sh artifacts/install.sh; fi
           python3 scripts/github-assets.py "$VERSION" artifacts
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:

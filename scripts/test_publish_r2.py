@@ -177,6 +177,21 @@ class PublishTest(unittest.TestCase):
         self.assertNotEqual(self.run_publish().returncode, 0)
         self.assertEqual(self.requests, [])
 
+    def test_installer_failure_preserves_latest_and_retry_finishes_the_release(self):
+        installer = b"#!/bin/sh\nexit 0\n"
+        (self.dist / "install.sh").write_bytes(installer)
+        key = "/proofline-cli-releases/0.1.0/install.sh"
+        type(self).reject = key
+        self.assertNotEqual(self.run_publish().returncode, 0)
+        self.assertNotIn("/proofline-cli-releases/latest", self.objects)
+        self.requests.clear()
+        type(self).reject = None
+        result = self.run_publish()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([(path, body) for path, _, body in self.requests], [
+            (key, installer), ("/proofline-cli-releases/latest", b"0.1.0\n"),
+        ])
+
     def test_checksum_mismatch_writes_nothing(self):
         (self.dist / f"proofline-{TARGETS[-1]}.tar.gz").write_bytes(b"damaged")
         self.assertNotEqual(self.run_publish().returncode, 0)

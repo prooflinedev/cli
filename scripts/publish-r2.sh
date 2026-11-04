@@ -94,6 +94,9 @@ for target in $targets; do
   immutable "$version/$archive" "$dist/$archive" application/gzip
 done
 immutable "$version/SHA256SUMS" "$dist/SHA256SUMS" 'text/plain; charset=utf-8'
+if [ -f "$dist/install.sh" ]; then
+  immutable "$version/install.sh" "$dist/install.sh" 'text/plain; charset=utf-8'
+fi
 if [ "$latest" != "$version" ]; then
   printf '%s\n' "$version" > "$temporary/latest"
   put latest "$temporary/latest" 'text/plain; charset=utf-8' 'public, max-age=60' "$condition"
