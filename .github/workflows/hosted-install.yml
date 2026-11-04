@@ -19,7 +19,6 @@ jobs:
       # Digests from the v0.1.7 assets published by Release run 41123276320.
       ARCHIVE_SHA256: fb13dbd429c1e61f9fb6d8974e3b17792f65b5882e4623a37a335590e000fe13
       CHECKSUMS_SHA256: c5b9c6ebb2cf7729fefe29ee3137655e757a01685501374afbd3da094ac614c6
-      # Reviewed installer: proofline 0421e803, apps/marketing/public/cli/install.sh.
       INSTALLER_SHA256: da5e9d49eaa193a9f98d002b799c7b432129ac1f9c746295abf19ca1f613f567
     steps:
       - run: |

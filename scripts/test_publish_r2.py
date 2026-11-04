@@ -41,10 +41,17 @@ class PublishTest(unittest.TestCase):
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
-                code = cls.probe_status if self.path.endswith("SHA256SUMS") else 200
-                body = cls.latest.encode() if self.path == "/cli/latest" else b""
+                body = cls.objects.get(self.path)
+                if body is not None:
+                    code = 200
+                elif self.path.endswith("/latest"):
+                    code, body = 200, cls.latest.encode()
+                else:
+                    code = cls.probe_status if self.path.endswith("/SHA256SUMS") else 404
+                    body = b""
                 self.send_response(code)
                 self.send_header("Content-Length", str(len(body)))
+                self.send_header("ETag", '"' + hashlib.sha256(body).hexdigest() + '"')
                 self.end_headers()
                 self.wfile.write(body)
 
@@ -55,7 +62,7 @@ class PublishTest(unittest.TestCase):
                 if self.headers.get("If-None-Match") == "*" and self.path in cls.objects:
                     status = 412
                 if status == 200:
-                    cls.objects.add(self.path)
+                    cls.objects[self.path] = body
                 self.send_response(status)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
@@ -92,7 +99,7 @@ class PublishTest(unittest.TestCase):
     def setUp(self):
         type(self).requests = []
         type(self).reject = None
-        type(self).objects = set()
+        type(self).objects = {}
         type(self).probe_status = 404
         type(self).latest = "0.0.9"
         self.dist = self.base / self._testMethodName
@@ -157,6 +164,18 @@ class PublishTest(unittest.TestCase):
         self.assertNotEqual(self.run_publish().returncode, 0)
         self.assertEqual(len(self.requests), 3)
         self.assertFalse(any(path.endswith("/latest") for path, _, _ in self.requests))
+        already_uploaded = set(self.objects)
+        self.requests.clear()
+        type(self).reject = None
+        result = self.run_publish()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(already_uploaded.intersection(path for path, _, _ in self.requests))
+        self.requests.clear()
+        self.assertEqual(self.run_publish().returncode, 0)
+        self.assertEqual(self.requests, [])
+        self.objects[f"/proofline-cli-releases/0.1.0/proofline-{TARGETS[0]}.tar.gz"] = b"changed"
+        self.assertNotEqual(self.run_publish().returncode, 0)
+        self.assertEqual(self.requests, [])
 
     def test_checksum_mismatch_writes_nothing(self):
         (self.dist / f"proofline-{TARGETS[-1]}.tar.gz").write_bytes(b"damaged")
@@ -177,10 +196,9 @@ class PublishTest(unittest.TestCase):
                 self.assertEqual(self.requests, [])
 
     def test_reserved_version_cannot_overwrite_partial_release(self):
-        type(self).objects.add("/proofline-cli-releases/0.1.0/RELEASE.json")
+        self.objects["/proofline-cli-releases/0.1.0/RELEASE.json"] = b"other commit"
         self.assertNotEqual(self.run_publish().returncode, 0)
-        self.assertEqual(len(self.requests), 1)
-        self.assertEqual(self.requests[0][1]["If-None-Match"], "*")
+        self.assertEqual(self.requests, [])
 
     def test_invalid_credentials_and_version_write_nothing(self):
         self.env["CLI_RELEASE_R2_CREDENTIALS"] = json.dumps({"access_key_id": "invalid", "secret_access_key": SECRET})
