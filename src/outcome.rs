@@ -186,6 +186,7 @@ mod tests {
             incompleteness_kind: None,
             reason_codes: None,
             release_evidence_gap: None,
+            declared_reach: None,
         }
     }
 

@@ -194,6 +194,37 @@ pub struct Assessment {
     pub incompleteness_kind: Option<String>,
     pub reason_codes: Option<Vec<String>>,
     pub release_evidence_gap: Option<String>,
+    /// What World declares depends on what the change deploys. Absent when
+    /// the assessment's kind records none or the server predates it.
+    #[serde(default)]
+    pub declared_reach: Option<DeclaredReach>,
+}
+
+/// A reached entity declares a dependency on what the change deploys; it is
+/// never a claim that the change breaks it, so reach never decides an outcome.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DeclaredReach {
+    /// `READ`, `NO_ROOTS`, `ROOTS_UNKNOWN` or `UNAVAILABLE`; only `READ`
+    /// carries entities or gaps.
+    pub outcome: String,
+    pub complete: bool,
+    pub entities: Vec<ReachedEntity>,
+    pub gaps: Vec<ReachGap>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ReachedEntity {
+    pub kind: String,
+    /// Environment evidence for this organization's readers: never publish
+    /// it to GitHub.
+    pub label: String,
+    /// The relation steps from the deployed root. Only their count is shown.
+    pub path: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ReachGap {
+    pub code: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
