@@ -151,7 +151,7 @@ impl Layout {
         let directories = self.directories()?;
         self.outside_repository(&directories)?;
         self.lock_metadata()?;
-        let file = self.read_file()?;
+        let file = Self::read_file(&self.target)?;
         Ok(Snapshot { directories, file })
     }
 
@@ -314,36 +314,35 @@ impl Layout {
         Err(InstallError::GitProbe(self.target.clone()))
     }
 
-    fn read_file(&self) -> Result<Option<RecordedFile>, InstallError> {
-        let Some(meta) = metadata(&self.target)? else {
+    fn read_file(target: &Path) -> Result<Option<RecordedFile>, InstallError> {
+        let Some(meta) = metadata(target)? else {
             return Ok(None);
         };
-        regular(&self.target, &meta)?;
+        regular(target, &meta)?;
         if meta.len() > MAX_BYTES {
             return Err(InstallError::TooLarge);
         }
-        let stamp = Stamp::read(&self.target, &meta)?;
-        let file = File::open(&self.target)
-            .map_err(|error| InstallError::io("read", &self.target, error))?;
-        let opened = file.metadata().map_err(|error| {
-            InstallError::io("inspect the opened configuration", &self.target, error)
-        })?;
-        if Stamp::read(&self.target, &opened)? != stamp {
-            return Err(InstallError::Changed(self.target.clone()));
+        let stamp = Stamp::read(target, &meta)?;
+        let file = File::open(target).map_err(|error| InstallError::io("read", target, error))?;
+        let opened = file
+            .metadata()
+            .map_err(|error| InstallError::io("inspect the opened configuration", target, error))?;
+        if Stamp::read(target, &opened)? != stamp {
+            return Err(InstallError::Changed(target.to_owned()));
         }
         let mut bytes = Vec::new();
         file.take(MAX_BYTES + 1)
             .read_to_end(&mut bytes)
-            .map_err(|error| InstallError::io("read", &self.target, error))?;
+            .map_err(|error| InstallError::io("read", target, error))?;
         if u64::try_from(bytes.len()).map_err(|_| InstallError::TooLarge)? > MAX_BYTES {
             return Err(InstallError::TooLarge);
         }
-        let Some(final_meta) = metadata(&self.target)? else {
-            return Err(InstallError::Changed(self.target.clone()));
+        let Some(final_meta) = metadata(target)? else {
+            return Err(InstallError::Changed(target.to_owned()));
         };
-        regular(&self.target, &final_meta)?;
-        if Stamp::read(&self.target, &final_meta)? != stamp {
-            return Err(InstallError::Changed(self.target.clone()));
+        regular(target, &final_meta)?;
+        if Stamp::read(target, &final_meta)? != stamp {
+            return Err(InstallError::Changed(target.to_owned()));
         }
         Ok(Some(RecordedFile {
             bytes,
@@ -474,4 +473,23 @@ fn regular(path: &Path, meta: &Metadata) -> Result<(), InstallError> {
         return Err(InstallError::File(path.to_owned()));
     }
     Ok(())
+}
+
+pub(super) fn inspect(target: &Path) -> Result<Option<Vec<u8>>, InstallError> {
+    let resolved = match target.canonicalize() {
+        Ok(resolved) => resolved,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return match metadata(target)? {
+                None => Ok(None),
+                Some(_) => Err(InstallError::File(target.to_owned())),
+            };
+        }
+        Err(error) => return Err(InstallError::io("resolve configuration", target, error)),
+    };
+    let file =
+        Layout::read_file(&resolved)?.ok_or_else(|| InstallError::Changed(target.to_owned()))?;
+    if target.canonicalize().ok().as_ref() != Some(&resolved) {
+        return Err(InstallError::Changed(target.to_owned()));
+    }
+    Ok(Some(file.bytes))
 }

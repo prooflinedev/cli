@@ -11,6 +11,25 @@ New entries use this executable's absolute path and store no credentials.
 Claude Code uses the top-level `mcpServers` in `~/.claude.json`.
 A custom `CLAUDE_CONFIG_DIR` requires manual configuration with `--print`.
 
+Inspect an existing registration with `proofline agent status codex` or
+`proofline agent status claude-code` (also supports `cursor`, `gemini` and `kiro`).
+This read-only, offline command reports the user-level configuration path and
+whether its registration is missing, invalid, valid, or unable to be verified.
+Local/project scopes are not inspected; a missing user-level entry does not mean
+Proofline is absent from every scope. Connectivity and authentication are not
+checked, and the configured command is never run. Validated origins and their
+sources are reported: registration arguments, registration environment, or the
+CLI default. Alternate valid origins are accepted. Status rejects explicit
+`--base-url` and `--org` options; these do not override the inspected registration.
+The invoking process's organization environment is ignored for status inspection.
+Custom launchers, remote HTTP transports and relative executables may require
+manual verification. Symlinked configuration files are read without changing
+them or their targets. An absolute `CODEX_HOME` is respected; custom
+`CLAUDE_CONFIG_DIR` configurations require manual inspection. JSON inspection
+uses the last repeated member, while installation retains its duplicate-key
+safeguards. Valid and unverifiable outcomes exit 0; missing and invalid outcomes
+exit 1. Command or output failures also exit nonzero.
+
 See the [CLI documentation](https://proofline.sh/docs/cli/) for commands.
 
 `proofline review --path src/main.rs` reviews only that file's local changes

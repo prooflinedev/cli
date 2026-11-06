@@ -2,13 +2,12 @@
 
 use std::process::ExitCode;
 
-use clap::Parser as _;
 use proofline_cli::{Cli, Verdict, run};
 use secrecy::SecretString;
 
 fn main() -> ExitCode {
     proofline_cli::update::on_invocation();
-    let cli = match Cli::try_parse() {
+    let cli = match Cli::parse_invocation() {
         Ok(cli) => cli,
         Err(error) => {
             if error.print().is_err() {

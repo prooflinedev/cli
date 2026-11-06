@@ -91,6 +91,7 @@ pub fn on_invocation() {
     if args
         .iter()
         .any(|arg| arg == "update" || arg == "__update-check")
+        || (args.iter().any(|arg| arg == "agent") && args.iter().any(|arg| arg == "status"))
     {
         return;
     }
