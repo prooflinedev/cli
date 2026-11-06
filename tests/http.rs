@@ -664,11 +664,99 @@ async fn a_refused_review_request_names_the_reason_without_terminal_control() {
         org(),
     );
     let error = api.request_review(Uuid::nil(), 7).await.unwrap_err();
-    let ApiError::Problem { status, detail, .. } = &error else {
+    let ApiError::Problem {
+        status,
+        detail,
+        refusal,
+        ..
+    } = &error
+    else {
         panic!("expected a problem, got {error:?}");
     };
     assert_eq!(*status, 400);
     assert_eq!(detail, "No environment links acme/web.\u{FFFD}[2J");
+    assert_eq!(refusal.as_deref(), Some("NO_LINKED_ENVIRONMENT"));
+}
+
+/// A console that answers every pull-request review of `acme/web` with `status` and `body`.
+async fn refusing(status: StatusCode, body: Value) -> String {
+    let app = Router::new()
+        .route(
+            &format!("/api/v1/organizations/{ORG}/repository-names"),
+            get(|| async {
+                Json(json!({ "repositories": [
+                    { "id": FIRST_REPOSITORY, "full_name": "acme/web" },
+                ] }))
+            }),
+        )
+        .route(
+            &format!(
+                "/api/v1/organizations/{ORG}/repositories/{FIRST_REPOSITORY}/pull-requests/7/review"
+            ),
+            post(move || async move { (status, Json(body)) }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{address}")
+}
+
+async fn review_stderr(origin: &str, repository: &str) -> String {
+    let output = cli(
+        origin,
+        &["review", "--pr", "7", "--no-wait", "--repo", repository],
+    )
+    .await;
+    assert!(!output.status.success());
+    String::from_utf8(output.stderr).unwrap()
+}
+
+#[tokio::test]
+async fn a_refused_review_links_the_owners_console_after_the_servers_detail() {
+    let origin = refusing(
+        StatusCode::BAD_REQUEST,
+        json!({
+            "title": "invalid request",
+            "status": 400,
+            "detail": "environment production is not ready",
+            "repository_name": "web",
+            "refusal": { "reason": "A_REASON_FROM_A_NEWER_SERVER" },
+        }),
+    )
+    .await;
+    assert_eq!(
+        review_stderr(&origin, "Acme/Web").await,
+        format!(
+            "proofline: {origin} returned HTTP 400: environment production is not ready\n\
+             Change it at {origin}/orgs/github/acme\n"
+        )
+    );
+}
+
+#[tokio::test]
+async fn only_a_400_with_a_refusal_reason_links_the_console() {
+    for (status, refusal) in [
+        (StatusCode::BAD_REQUEST, json!(null)),
+        (StatusCode::BAD_REQUEST, json!({ "reason": 5 })),
+        (
+            StatusCode::CONFLICT,
+            json!({ "reason": "NO_LINKED_ENVIRONMENT" }),
+        ),
+    ] {
+        let origin = refusing(
+            status,
+            json!({ "title": "invalid request", "status": status.as_u16(), "detail": "refused", "refusal": refusal }),
+        )
+        .await;
+        assert_eq!(
+            review_stderr(&origin, "acme/web").await,
+            format!(
+                "proofline: {origin} returned HTTP {}: refused\n",
+                status.as_u16()
+            ),
+            "{status} {refusal}"
+        );
+    }
 }
 
 #[tokio::test]

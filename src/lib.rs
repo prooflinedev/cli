@@ -125,8 +125,9 @@ enum Command {
     Login(LoginArgs),
     /// Remove the stored token from the OS keychain.
     Logout,
-    /// Show which organization and token the CLI uses.
-    Status,
+    /// Show which organization and token the CLI uses, and whether this
+    /// checkout can be reviewed.
+    Status(StatusArgs),
     /// Review the checkout's local changes, pushed commits, or an open pull
     /// request's current head.
     Review(ReviewArgs),
@@ -204,6 +205,15 @@ struct RepositoryArgs {
     /// Git remote that names the repository.
     #[arg(long, default_value = "origin")]
     remote: String,
+}
+
+#[derive(Debug, Args)]
+struct StatusArgs {
+    /// Print JSON instead of text.
+    #[arg(long)]
+    json: bool,
+    #[command(flatten)]
+    repository: RepositoryArgs,
 }
 
 #[derive(Debug, Args)]
@@ -458,7 +468,7 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
         Command::Logout => logout(&origin, token.is_some())
             .await
             .map(|()| Verdict::Done),
-        Command::Status => status(Http::new(origin)?, token, cli.org)
+        Command::Status(args) => status(Http::new(origin)?, token, cli.org, &args)
             .await
             .map(|()| Verdict::Done),
         Command::Review(args) => {
@@ -619,49 +629,278 @@ async fn logout(origin: &Origin, environment: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn status(http: Http, token: Option<SecretString>, org: Option<Uuid>) -> anyhow::Result<()> {
+/// What `status` found. `reviewable` is `None` when the CLI cannot tell.
+#[derive(Debug, Default, serde::Serialize)]
+struct Status {
+    console: String,
+    organization_id: Option<Uuid>,
+    token: Option<&'static str>,
+    scopes: Option<Vec<String>>,
+    expires_at: Option<u64>,
+    server: Option<String>,
+    repository: Option<String>,
+    /// Why setup could not be read.
+    setup: Option<String>,
+    /// The server's `configuration_complete`: setup was finished.
+    setup_finished: Option<bool>,
+    /// The server's configured environments that link this repository.
+    environments: Vec<serde_json::Value>,
+    blockers: Vec<serde_json::Value>,
+    reviewable: Option<bool>,
+    next: Option<String>,
+}
+
+impl Status {
+    fn refuse(&mut self, next: String) {
+        self.reviewable = Some(false);
+        self.next = Some(next);
+    }
+
+    fn unknown(&mut self, next: String) {
+        self.reviewable = None;
+        self.next = Some(next);
+    }
+
+    fn print(&self, json: bool) -> anyhow::Result<()> {
+        let mut stdout = std::io::stdout().lock();
+        if json {
+            writeln!(stdout, "{}", serde_json::to_string_pretty(self)?)?;
+        } else {
+            writeln!(stdout, "{}", self.lines().join("\n"))?;
+        }
+        Ok(())
+    }
+
+    fn lines(&self) -> Vec<String> {
+        let mut lines = vec![format!("console: {}", self.console)];
+        if let Some(organization_id) = self.organization_id {
+            lines.push(format!("organization: {organization_id}"));
+        }
+        if let Some(token) = self.token {
+            lines.push(format!("token: {token}"));
+        }
+        if let Some(scopes) = &self.scopes {
+            lines.push(format!("scopes: {}", text::one_line(&scopes.join(" "))));
+        }
+        if let Some(expires_at) = self.expires_at {
+            let left = expires_at.saturating_sub(device::now());
+            lines.push(if left == 0 {
+                "expires: expired; run `proofline login`".to_owned()
+            } else {
+                format!("expires: in {} hours", left.div_ceil(3600))
+            });
+        }
+        if let Some(server) = &self.server {
+            lines.push(format!("server: {}", text::one_line(server)));
+        }
+        if let Some(repository) = &self.repository {
+            lines.push(format!("repository: {repository} is connected"));
+        }
+        if let Some(setup) = &self.setup {
+            lines.push(format!("setup: cannot tell: {}", text::one_line(setup)));
+        }
+        match self.setup_finished {
+            Some(true) => lines.push("setup: finished".to_owned()),
+            Some(false) => lines.push("setup: not finished".to_owned()),
+            None => {}
+        }
+        for environment in &self.environments {
+            lines.push(format!(
+                "environment: {} {}",
+                text::one_line(environment["display_name"].as_str().unwrap_or("unnamed")),
+                if environment["ready"] == true {
+                    "is ready"
+                } else {
+                    "is not ready"
+                }
+            ));
+        }
+        if self.setup_finished.is_some() && self.environments.is_empty() {
+            lines.push("environment: none links this repository".to_owned());
+        }
+        for blocker in &self.blockers {
+            let detail = blocker["detail"].as_str().unwrap_or("blocked");
+            lines.push(format!("setup: {}", text::one_line(detail)));
+        }
+        lines.push(format!(
+            "reviewable: {}",
+            match self.reviewable {
+                Some(true) => "yes",
+                Some(false) => "no",
+                None => "cannot tell",
+            }
+        ));
+        if let Some(next) = &self.next {
+            lines.push(format!("next: {}", text::one_line(next)));
+        }
+        lines
+    }
+}
+
+async fn status(
+    http: Http,
+    token: Option<SecretString>,
+    org: Option<Uuid>,
+    args: &StatusArgs,
+) -> anyhow::Result<()> {
+    let mut status = Status {
+        console: http.origin().to_string(),
+        ..Status::default()
+    };
+    let credential = match credentials::load(http.origin(), token, org).await {
+        Ok(credential) => credential,
+        Err(error) => {
+            status.refuse(error.to_string());
+            status.print(args.json)?;
+            return Err(error.into());
+        }
+    };
     let Credential {
         token,
         organization_id,
         scope,
         expires_at,
         source,
-    } = credentials::load(http.origin(), token, org).await?;
-    let origin = http.origin().clone();
-    let mut lines = vec![
-        format!("console: {origin}"),
-        format!("organization: {organization_id}"),
-        format!(
-            "token: {}",
-            match source {
-                Source::Environment => "PROOFLINE_TOKEN",
-                Source::Keychain => "OS keychain",
-            }
-        ),
-    ];
-    if let Some(scope) = scope {
-        lines.push(format!("scopes: {}", text::one_line(&scope)));
-    }
-    if let Some(expires_at) = expires_at {
-        let left = expires_at.saturating_sub(device::now());
-        lines.push(if left == 0 {
-            "expires: expired; run `proofline login`".to_owned()
-        } else {
-            format!("expires: in {} hours", left.div_ceil(3600))
-        });
-    }
-    let api = Api::new(http, token, organization_id);
-    let result = api.reviews(None, None, None).await;
-    lines.push(match &result {
-        Ok(_) => "server: accepted the token".to_owned(),
-        Err(error) if error.status() == Some(401) => {
-            "server: the token is expired, revoked or malformed; run `proofline login`".to_owned()
-        }
-        Err(error) => format!("server: {error}"),
+    } = credential;
+    status.organization_id = Some(organization_id);
+    status.token = Some(match source {
+        Source::Environment => "PROOFLINE_TOKEN",
+        Source::Keychain => "OS keychain",
     });
-    writeln!(std::io::stdout().lock(), "{}", lines.join("\n"))?;
+    status.scopes = scope
+        .as_deref()
+        .map(|scope| scope.split_whitespace().map(str::to_owned).collect());
+    status.expires_at = expires_at;
+    let api = Api::new(http.clone(), token.clone(), organization_id);
+    let result = api.reviews(None, None, None).await;
+    match &result {
+        Ok(_) => {
+            status.server = Some("accepted the token".to_owned());
+            readiness(&mut status, &api, &http, &token, &args.repository).await;
+        }
+        Err(error) if error.status() == Some(401) => {
+            status.server = Some(
+                "the token is expired, revoked or malformed; run `proofline login`".to_owned(),
+            );
+            status.refuse("run `proofline login`".to_owned());
+        }
+        Err(error) => {
+            status.server = Some(error.to_string());
+            if unread(error) {
+                status.unknown(error.to_string());
+            } else {
+                status.refuse(error.to_string());
+            }
+        }
+    }
+    status.print(args.json)?;
     result?;
     Ok(())
+}
+
+/// Whether the CLI has no answer to read: the server did not answer in time,
+/// or its answer could not be read.
+const fn unread(error: &ApiError) -> bool {
+    matches!(
+        error,
+        ApiError::Protocol { .. }
+            | ApiError::Problem {
+                status: 408 | 429,
+                ..
+            }
+    ) || unanswered(error)
+}
+
+/// Whether `proofline review` can run here: the repository is connected, setup
+/// is finished, and a ready environment links the repository. Setup is
+/// readable only through the MCP setup tool.
+async fn readiness(
+    status: &mut Status,
+    api: &Api,
+    http: &Http,
+    token: &SecretString,
+    repository: &RepositoryArgs,
+) {
+    let (name, id) = match connected_repository(api, repository).await {
+        Ok(found) => found,
+        // No answer was read, so the repository may still be connected.
+        Err(error) if error.downcast_ref::<ApiError>().is_some_and(unread) => {
+            return status.unknown(format!("{error:#}"));
+        }
+        Err(error) => return status.refuse(format!("{error:#}")),
+    };
+    let console = console(api.origin(), &name).to_string();
+    status.repository = Some(name);
+    if let Some(scopes) = status
+        .scopes
+        .as_ref()
+        .filter(|scopes| !scopes.iter().any(|scope| scope == "setup:write"))
+    {
+        status.setup = Some("the token lacks the setup:write scope".to_owned());
+        status.next = Some(login_adding(scopes, "setup:write"));
+        return;
+    }
+    let arguments = serde_json::json!({ "organization_id": api.organization_id() });
+    let data = match mcp::call(http, token, "get_setup_status", arguments).await {
+        Ok(result) if result["isError"] != true => result["structuredContent"]["data"].clone(),
+        Ok(result) => {
+            let reason = result["content"][0]["text"].as_str().unwrap_or("refused");
+            status.setup = Some(reason.to_owned());
+            return status.unknown(format!("check setup at {console}"));
+        }
+        Err(error) => {
+            status.setup = Some(error.to_string());
+            return status.unknown(format!("check setup at {console}"));
+        }
+    };
+    // An environment's fields are read as the console reads them.
+    let id = id.to_string();
+    let environments = data["configured_environment_states"]
+        .as_array()
+        .and_then(|all| {
+            all.iter()
+                .map(|environment| {
+                    let ids = environment["repository_ids"].as_array()?;
+                    environment["ready"].as_bool()?;
+                    Some(
+                        ids.iter()
+                            .any(|linked| linked == id.as_str())
+                            .then_some(environment),
+                    )
+                })
+                .collect::<Option<Vec<_>>>()
+        });
+    let (Some(finished), Some(environments)) =
+        (data["configuration_complete"].as_bool(), environments)
+    else {
+        status.setup = Some("the server's setup status is incomplete".to_owned());
+        return status.unknown(format!("check setup at {console}"));
+    };
+    status.setup_finished = Some(finished);
+    status.environments = environments.into_iter().flatten().cloned().collect();
+    status.blockers = data["blockers"].as_array().cloned().unwrap_or_default();
+    let reviewable = finished
+        && status
+            .environments
+            .iter()
+            .any(|environment| environment["ready"] == true);
+    status.reviewable = Some(reviewable);
+    if !reviewable {
+        let console = data["console_url"].as_str().unwrap_or(&console);
+        status.next = Some(format!("finish setup at {console}"));
+    }
+}
+
+/// The sign-in that adds `scope`. `login --scope` replaces the scopes, so it
+/// repeats the ones the token has.
+fn login_adding(scopes: &[String], scope: &str) -> String {
+    let flags: Vec<String> = scopes
+        .iter()
+        .map(String::as_str)
+        .chain([scope])
+        .map(|scope| format!("--scope {scope}"))
+        .collect();
+    format!("run `proofline login {}`", flags.join(" "))
 }
 
 async fn repository_name(args: &RepositoryArgs) -> anyhow::Result<String> {
@@ -705,6 +944,32 @@ async fn connected_repository(api: &Api, args: &RepositoryArgs) -> anyhow::Resul
         )
     })?;
     Ok((name, id))
+}
+
+/// Links the console after a review request that a setting refused; the
+/// server's detail names the setting.
+pub(crate) fn refused(error: ApiError, origin: &Origin, repository: &str) -> anyhow::Error {
+    if !matches!(
+        error,
+        ApiError::Problem {
+            status: 400,
+            refusal: Some(_),
+            ..
+        }
+    ) {
+        return error.into();
+    }
+    let console = console(origin, repository);
+    anyhow::anyhow!("{error}\nChange it at {console}")
+}
+
+/// The console of the organization that owns `owner/name`, addressed in
+/// lowercase as `setup` addresses it.
+fn console(origin: &Origin, repository: &str) -> url::Url {
+    let owner = repository
+        .split_once('/')
+        .map_or(repository, |(owner, _)| owner);
+    origin.join(["orgs", "github", &owner.to_lowercase()])
 }
 
 /// A repository with reviews the token can read, for finding one of them. A
@@ -773,7 +1038,7 @@ async fn review(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
                 "this sign-in cannot request reviews; run `proofline login` and keep the reviews:request permission",
             ));
         }
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(refused(error, api.origin(), &name)),
     };
     say(&format!(
         "{} review run {} of {name} #{}{}.",
@@ -832,7 +1097,10 @@ async fn review_local(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
         trigger_source: None,
         verify_finding_ids: args.verify.clone(),
     };
-    let requested = api.request_patch_review(repository_id, &request).await?;
+    let requested = api
+        .request_patch_review(repository_id, &request)
+        .await
+        .map_err(|error| refused(error, api.origin(), &name))?;
     say(&format!(
         "{} review of {files} changed {} in {name} on {}.",
         if requested.existing {
@@ -861,7 +1129,10 @@ async fn review_files(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
         git::named_files(std::path::Path::new("."), revision, &args.files).await?;
     let (name, repository_id) = connected_repository(api, &args.repository).await?;
     let request = FileReviewRequest { commit_sha, paths };
-    let requested = api.request_file_review(repository_id, &request).await?;
+    let requested = api
+        .request_file_review(repository_id, &request)
+        .await
+        .map_err(|error| refused(error, api.origin(), &name))?;
     say(&format!(
         "{} whole-file review of {} selected files in {name} at {}.",
         if requested.existing {
@@ -890,7 +1161,10 @@ async fn review_pushed(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> 
         base_commit_sha: change.base_commit_sha,
         head_commit_sha: change.head_commit_sha,
     };
-    let requested = api.request_commit_review(repository_id, &request).await?;
+    let requested = api
+        .request_commit_review(repository_id, &request)
+        .await
+        .map_err(|error| refused(error, api.origin(), &name))?;
     say(&format!(
         "{} review of {name} {}..{}.",
         if requested.existing {
@@ -1066,13 +1340,15 @@ fn ci_commit(flag: Option<&str>) -> anyhow::Result<String> {
 /// Whether a failure is Proofline's rather than the caller's: the console
 /// could not be reached or failed on its side.
 fn unavailable(error: &anyhow::Error) -> bool {
-    error
-        .downcast_ref::<ApiError>()
-        .is_some_and(|error| match error {
-            ApiError::Transport { .. } => true,
-            ApiError::Problem { status, .. } => *status >= 500,
-            ApiError::Protocol { .. } => false,
-        })
+    error.downcast_ref::<ApiError>().is_some_and(unanswered)
+}
+
+const fn unanswered(error: &ApiError) -> bool {
+    match error {
+        ApiError::Transport { .. } => true,
+        ApiError::Problem { status, .. } => *status >= 500,
+        ApiError::Protocol { .. } => false,
+    }
 }
 
 /// `ci review` once its inputs are read. In GitHub Actions without
@@ -1542,6 +1818,15 @@ mod tests {
         assert_eq!(
             ci_verdict(Some(Outcome::Incomplete), None, None, serious),
             Verdict::NotComplete
+        );
+    }
+
+    #[test]
+    fn a_scope_hint_keeps_the_scopes_the_token_has() {
+        let held = ["reviews:read".to_owned(), "reviews:request".to_owned()];
+        assert_eq!(
+            login_adding(&held, "setup:write"),
+            "run `proofline login --scope reviews:read --scope reviews:request --scope setup:write`"
         );
     }
 }
