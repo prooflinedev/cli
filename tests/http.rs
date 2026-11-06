@@ -2188,3 +2188,366 @@ async fn fix_commands_preserve_context_and_never_retry_verification() {
     assert_eq!(calls.lock().unwrap().len(), 4);
     server.abort();
 }
+
+type ExportQuery = std::collections::BTreeMap<String, String>;
+
+/// A console whose export pages come from `page`, recording every query.
+async fn export_console(
+    page: impl Fn(&ExportQuery) -> Response + Clone + Send + Sync + 'static,
+) -> (
+    String,
+    Arc<Mutex<Vec<ExportQuery>>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let queries = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&queries);
+    let app = Router::new().route(
+        &format!("/api/v1/organizations/{ORG}/exports/reviews"),
+        get(move |uri: axum::http::Uri| {
+            let seen = Arc::clone(&seen);
+            let page = page.clone();
+            async move {
+                let query: ExportQuery =
+                    url::form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes())
+                        .into_owned()
+                        .collect();
+                let reply = page(&query);
+                seen.lock().unwrap().push(query);
+                reply
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (origin, queries, server)
+}
+
+fn export_reply(content_type: &str, horizon: &str, next: Option<&str>, body: &str) -> Response {
+    let mut headers = HeaderMap::new();
+    headers.insert(header::CONTENT_TYPE, content_type.parse().unwrap());
+    headers.insert("x-proofline-export-version", "1".parse().unwrap());
+    headers.insert("x-proofline-export-settled-until", horizon.parse().unwrap());
+    if let Some(next) = next {
+        headers.insert("x-proofline-export-next-cursor", next.parse().unwrap());
+    }
+    (headers, body.to_owned()).into_response()
+}
+
+fn export_args<'a>(from: &'a str, to: &'a str, format: &'a str, output: &'a str) -> Vec<&'a str> {
+    vec![
+        "export", "reviews", "--from", from, "--to", to, "--format", format, "--all", "--output",
+        output,
+    ]
+}
+
+fn directory_entries(directory: &std::path::Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    names
+}
+
+#[tokio::test]
+async fn export_all_follows_every_cursor_into_one_ndjson_file() {
+    let (origin, queries, server) = export_console(|query| {
+        let (next, body) = match query.get("cursor").map(String::as_str) {
+            None => (Some("c/1+"), "{\"n\":1}\n"),
+            // A page without its final newline must not join the next page's first record.
+            Some("c/1+") => (Some("c2"), "{\"n\":2}"),
+            Some(_) => (None, "{\"n\":3}\n"),
+        };
+        export_reply("application/x-ndjson", "2026-10-25T00:00:00Z", next, body)
+    })
+    .await;
+    let directory = tempfile::tempdir().unwrap();
+    let output = cli_in(
+        &origin,
+        &export_args(
+            "2026-10-01T00:00:00Z",
+            "2026-10-25T00:00:00Z",
+            "ndjson",
+            "reviews.ndjson",
+        ),
+        directory.path(),
+    )
+    .await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "settled-until: 2026-10-25T00:00:00Z\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("reviews.ndjson")).unwrap(),
+        "{\"n\":1}\n{\"n\":2}\n{\"n\":3}\n"
+    );
+    assert_eq!(directory_entries(directory.path()), ["reviews.ndjson"]);
+    let queries = queries.lock().unwrap();
+    let cursors: Vec<_> = queries.iter().map(|query| query.get("cursor")).collect();
+    assert_eq!(
+        cursors,
+        [None, Some(&"c/1+".to_owned()), Some(&"c2".to_owned())]
+    );
+    for query in queries.iter() {
+        assert_eq!(query["from"], "2026-10-01T00:00:00Z");
+        assert_eq!(query["to"], "2026-10-25T00:00:00Z");
+        assert_eq!(query["format"], "ndjson");
+    }
+    server.abort();
+}
+
+#[tokio::test]
+async fn export_all_splits_a_long_range_into_adjacent_windows_with_one_csv_header() {
+    let (origin, queries, server) = export_console(|query| {
+        let from = query["from"].as_str();
+        let horizon = match from {
+            "2026-09-01T00:00:00Z" => "2026-11-01T00:00:00Z",
+            "2026-10-02T00:00:00Z" => "2026-11-03T00:00:00Z",
+            _ => "2026-11-02T00:00:00Z",
+        };
+        let (next, body) = match (from, query.get("cursor")) {
+            ("2026-08-01T00:00:00Z", None) => {
+                (Some("more"), format!("from,claim\r\n{from},\"a,b\"\r\n"))
+            }
+            ("2026-08-01T00:00:00Z", Some(_)) => (None, format!("from,claim\r\n{from},second")),
+            _ => (None, format!("from,claim\r\n{from},\"a,b\"\r\n")),
+        };
+        export_reply("text/csv", horizon, next, &body)
+    })
+    .await;
+    let directory = tempfile::tempdir().unwrap();
+    let output = cli_in(
+        &origin,
+        &export_args(
+            "2026-08-01T00:00:00Z",
+            "2026-10-10T00:00:00Z",
+            "csv",
+            "reviews.csv",
+        ),
+        directory.path(),
+    )
+    .await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let sent: Vec<_> = queries
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|query| {
+            (
+                query["from"].clone(),
+                query["to"].clone(),
+                query.get("cursor").cloned(),
+            )
+        })
+        .collect();
+    let window = |from: &str, to: &str, cursor: Option<&str>| {
+        (from.to_owned(), to.to_owned(), cursor.map(str::to_owned))
+    };
+    assert_eq!(
+        sent,
+        [
+            window("2026-08-01T00:00:00Z", "2026-09-01T00:00:00Z", None),
+            window("2026-08-01T00:00:00Z", "2026-09-01T00:00:00Z", Some("more")),
+            window("2026-09-01T00:00:00Z", "2026-10-02T00:00:00Z", None),
+            window("2026-10-02T00:00:00Z", "2026-10-10T00:00:00Z", None),
+        ]
+    );
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("reviews.csv")).unwrap(),
+        "from,claim\r\n\
+         2026-08-01T00:00:00Z,\"a,b\"\r\n\
+         2026-08-01T00:00:00Z,second\r\n\
+         2026-09-01T00:00:00Z,\"a,b\"\r\n\
+         2026-10-02T00:00:00Z,\"a,b\"\r\n"
+    );
+    // The earliest window horizon is the guarantee for the whole file.
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "settled-until: 2026-11-01T00:00:00Z\n"
+    );
+    assert_eq!(directory_entries(directory.path()), ["reviews.csv"]);
+    server.abort();
+}
+
+#[tokio::test]
+async fn export_all_failure_leaves_no_file_and_an_existing_file_untouched() {
+    let (origin, _, server) = export_console(|query| {
+        if query.contains_key("cursor") {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"detail": "boom"})),
+            )
+                .into_response();
+        }
+        export_reply(
+            "text/csv",
+            "2026-10-25T00:00:00Z",
+            Some("next"),
+            "from,claim\r\nnew,row\r\n",
+        )
+    })
+    .await;
+    let directory = tempfile::tempdir().unwrap();
+    let args = export_args(
+        "2026-10-01T00:00:00Z",
+        "2026-10-25T00:00:00Z",
+        "csv",
+        "reviews.csv",
+    );
+    let output = cli_in(&origin, &args, directory.path()).await;
+    assert_eq!(output.status.code(), Some(1));
+    assert!(directory_entries(directory.path()).is_empty());
+    std::fs::write(directory.path().join("reviews.csv"), "previous\r\n").unwrap();
+    let output = cli_in(&origin, &args, directory.path()).await;
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("HTTP 500"));
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("reviews.csv")).unwrap(),
+        "previous\r\n"
+    );
+    assert_eq!(directory_entries(directory.path()), ["reviews.csv"]);
+    server.abort();
+}
+
+#[tokio::test]
+async fn export_all_refuses_inconsistent_pages() {
+    type Page = fn(Option<&str>) -> (&'static str, Option<&'static str>, &'static str);
+    let cases: [(Page, &str); 4] = [
+        (
+            |cursor| match cursor {
+                None => ("2026-10-25T00:00:00Z", Some("c1"), "a,b\r\n1,2\r\n"),
+                Some(_) => ("2026-10-25T00:00:01Z", None, "a,b\r\n3,4\r\n"),
+            },
+            "settled horizon changed",
+        ),
+        (
+            |_| ("2026-10-25T00:00:00Z", Some("c1"), "a,b\r\n1,2\r\n"),
+            "repeated export cursor",
+        ),
+        (
+            |_| ("2026-10-25T00:00:00Z", Some(""), "a,b\r\n1,2\r\n"),
+            "empty or repeated export cursor",
+        ),
+        (
+            |cursor| match cursor {
+                None => ("2026-10-25T00:00:00Z", Some("c1"), "a,b\r\n1,2\r\n"),
+                Some(_) => ("2026-10-25T00:00:00Z", None, "a,c\r\n3,4\r\n"),
+            },
+            "different CSV header",
+        ),
+    ];
+    for (page, refusal) in cases {
+        let (origin, _, server) = export_console(move |query| {
+            let (horizon, next, body) = page(query.get("cursor").map(String::as_str));
+            export_reply("text/csv", horizon, next, body)
+        })
+        .await;
+        let directory = tempfile::tempdir().unwrap();
+        let output = cli_in(
+            &origin,
+            &export_args(
+                "2026-10-01T00:00:00Z",
+                "2026-10-25T00:00:00Z",
+                "csv",
+                "reviews.csv",
+            ),
+            directory.path(),
+        )
+        .await;
+        assert_eq!(output.status.code(), Some(1));
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(refusal),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(directory_entries(directory.path()).is_empty());
+        server.abort();
+    }
+}
+
+#[tokio::test]
+async fn export_all_stops_at_the_page_cap() {
+    let (origin, queries, server) = export_console(|query| {
+        let next = format!("{}x", query.get("cursor").map_or("", String::as_str));
+        export_reply(
+            "application/x-ndjson",
+            "2026-10-25T00:00:00Z",
+            Some(&next),
+            "{}\n",
+        )
+    })
+    .await;
+    let directory = tempfile::tempdir().unwrap();
+    let output = cli_in(
+        &origin,
+        &export_args(
+            "2026-10-01T00:00:00Z",
+            "2026-10-02T00:00:00Z",
+            "ndjson",
+            "reviews.ndjson",
+        ),
+        directory.path(),
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("exceeded 1000 pages"));
+    assert_eq!(queries.lock().unwrap().len(), 1000);
+    assert!(directory_entries(directory.path()).is_empty());
+    server.abort();
+}
+
+#[tokio::test]
+async fn export_all_needs_output_conflicts_with_cursor_and_checks_the_range_first() {
+    let (origin, queries, server) = export_console(|_| StatusCode::NOT_FOUND.into_response()).await;
+    let range = [
+        "export",
+        "reviews",
+        "--from",
+        "2026-10-01T00:00:00Z",
+        "--to",
+        "2026-10-25T00:00:00Z",
+    ];
+    for (extra, refusal) in [
+        (&["--all"][..], "--output <OUTPUT>"),
+        (&["--output", "reviews.ndjson"][..], "--all"),
+        (
+            &["--all", "--output", "reviews.ndjson", "--cursor", "c1"][..],
+            "cannot be used with",
+        ),
+    ] {
+        let args: Vec<&str> = range.iter().chain(extra).copied().collect();
+        let output = cli(&origin, &args).await;
+        assert_eq!(output.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(refusal), "{stderr}");
+    }
+    for (from, to, refusal) in [
+        (
+            "2026-10-25T00:00:00Z",
+            "2026-10-25T00:00:00Z",
+            "--to must be later than --from",
+        ),
+        (
+            "2026-10-01",
+            "2026-10-25T00:00:00Z",
+            "--from is not an RFC3339 timestamp",
+        ),
+    ] {
+        let output = cli(&origin, &export_args(from, to, "csv", "reviews.csv")).await;
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stderr).contains(refusal));
+    }
+    assert!(queries.lock().unwrap().is_empty());
+    server.abort();
+}
