@@ -707,6 +707,26 @@ async fn connected_repository(api: &Api, args: &RepositoryArgs) -> anyhow::Resul
     Ok((name, id))
 }
 
+/// Links the console after a review request that a setting refused; the
+/// server's detail names the setting.
+pub(crate) fn refused(error: ApiError, origin: &Origin, repository: &str) -> anyhow::Error {
+    if !matches!(
+        error,
+        ApiError::Problem {
+            status: 400,
+            refusal: Some(_),
+            ..
+        }
+    ) {
+        return error.into();
+    }
+    let owner = repository
+        .split_once('/')
+        .map_or(repository, |(owner, _)| owner);
+    let console = origin.join(["orgs", "github", &owner.to_lowercase()]);
+    anyhow::anyhow!("{error}\nChange it at {console}")
+}
+
 /// A repository with reviews the token can read, for finding one of them. A
 /// repository that has since left the installation keeps its reviews, so this
 /// reads the review collection's repositories, not the connected ones.
@@ -773,7 +793,7 @@ async fn review(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
                 "this sign-in cannot request reviews; run `proofline login` and keep the reviews:request permission",
             ));
         }
-        Err(error) => return Err(error.into()),
+        Err(error) => return Err(refused(error, api.origin(), &name)),
     };
     say(&format!(
         "{} review run {} of {name} #{}{}.",
@@ -832,7 +852,10 @@ async fn review_local(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
         trigger_source: None,
         verify_finding_ids: args.verify.clone(),
     };
-    let requested = api.request_patch_review(repository_id, &request).await?;
+    let requested = api
+        .request_patch_review(repository_id, &request)
+        .await
+        .map_err(|error| refused(error, api.origin(), &name))?;
     say(&format!(
         "{} review of {files} changed {} in {name} on {}.",
         if requested.existing {
@@ -861,7 +884,10 @@ async fn review_files(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
         git::named_files(std::path::Path::new("."), revision, &args.files).await?;
     let (name, repository_id) = connected_repository(api, &args.repository).await?;
     let request = FileReviewRequest { commit_sha, paths };
-    let requested = api.request_file_review(repository_id, &request).await?;
+    let requested = api
+        .request_file_review(repository_id, &request)
+        .await
+        .map_err(|error| refused(error, api.origin(), &name))?;
     say(&format!(
         "{} whole-file review of {} selected files in {name} at {}.",
         if requested.existing {
@@ -890,7 +916,10 @@ async fn review_pushed(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> 
         base_commit_sha: change.base_commit_sha,
         head_commit_sha: change.head_commit_sha,
     };
-    let requested = api.request_commit_review(repository_id, &request).await?;
+    let requested = api
+        .request_commit_review(repository_id, &request)
+        .await
+        .map_err(|error| refused(error, api.origin(), &name))?;
     say(&format!(
         "{} review of {name} {}..{}.",
         if requested.existing {

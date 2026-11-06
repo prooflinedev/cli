@@ -22,7 +22,9 @@ use crate::outcome::{self, Outcome};
 use crate::render::location;
 use crate::severity::Severity;
 use crate::text::one_line;
-use crate::{RepositoryArgs, Verdict, connect, connected_repository, preflight, read_review, say};
+use crate::{
+    RepositoryArgs, Verdict, connect, connected_repository, preflight, read_review, refused, say,
+};
 
 /// Identifies a script this CLI wrote. Uninstall removes a hook only when its
 /// whole text is the script this version writes, so an edited hook stays.
@@ -485,14 +487,17 @@ async fn request(
     deadline: tokio::time::Instant,
 ) -> Report {
     let requested = async {
-        let (_, repository_id) = connected_repository(api, repository).await?;
+        let (name, repository_id) = connected_repository(api, repository).await?;
         let request = PatchReviewRequest {
             base_commit_sha: changes.base_commit_sha,
             patch: changes.patch,
             trigger_source: Some(hook.trigger_source()),
             verify_finding_ids: Vec::new(),
         };
-        let requested = api.request_patch_review(repository_id, &request).await?;
+        let requested = api
+            .request_patch_review(repository_id, &request)
+            .await
+            .map_err(|error| refused(error, api.origin(), &name))?;
         let (_, detail, state) =
             read_review(api, requested.review_id, Some(deadline), false).await?;
         anyhow::Ok((requested.review_id, detail, state))
@@ -550,7 +555,12 @@ fn conclude(
                 gap = true;
                 say(&format!(
                     "Proofline could not review {label}: {}",
-                    one_line(reason)
+                    reason
+                        .lines()
+                        .filter(|line| !line.trim().is_empty())
+                        .map(one_line)
+                        .collect::<Vec<_>>()
+                        .join("; ")
                 ));
             }
             Report::Read {
