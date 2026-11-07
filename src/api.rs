@@ -386,10 +386,7 @@ impl Api {
             .http
             .send(self.request(Method::POST, self.url(path)).json(body))
             .await?;
-        if !reply.status.is_success() {
-            return Err(self.http.problem(&reply));
-        }
-        self.decode(&reply.body)
+        self.try_decode(&reply)
     }
 
     pub(crate) async fn list_page(
@@ -442,10 +439,7 @@ impl Api {
                 self.url(&["reviews", &review.to_string(), "rerun"]),
             ))
             .await?;
-        if !reply.status.is_success() {
-            return Err(self.http.problem(&reply));
-        }
-        self.decode(&reply.body)
+        self.try_decode(&reply)
     }
 
     pub(crate) async fn export(
@@ -462,6 +456,19 @@ impl Api {
 
     fn decode<T: DeserializeOwned>(&self, body: &[u8]) -> Result<T, ApiError> {
         serde_json::from_slice(body).map_err(|error| self.http.protocol(error.to_string()))
+    }
+
+    /// Decode a successful reply from JSON to `T`
+    ///
+    /// `Err`, if the reply did not flag success or the decoding fails.
+    fn try_decode<T: DeserializeOwned>(&self, reply: &Reply) -> Result<T, ApiError> {
+        // Err out if the reply was not successful
+        if !reply.status.is_success() {
+            return Err(self.http.problem(reply));
+        }
+
+        // At this point, the reply was successful, so we can decode
+        self.decode(&reply.body)
     }
 
     /// Fetches a review as the raw document and its typed reading.
@@ -553,10 +560,7 @@ impl Api {
             None => request,
         };
         let (reply, _) = self.http.send(request).await?;
-        if reply.status.is_success() {
-            return self.decode(&reply.body);
-        }
-        Err(self.http.problem(&reply))
+        self.try_decode(&reply)
     }
 
     /// Requests a review of a patch on a base commit. One attempt; the server
@@ -572,10 +576,7 @@ impl Api {
             .http
             .send(self.request(Method::POST, url).json(request))
             .await?;
-        if reply.status.is_success() {
-            return self.decode(&reply.body);
-        }
-        Err(self.http.problem(&reply))
+        self.try_decode(&reply)
     }
 
     /// Uploads reports for one exact tested commit. Both a new report and an
@@ -609,10 +610,7 @@ impl Api {
             .http
             .send(self.request(Method::POST, url).json(request))
             .await?;
-        if reply.status.is_success() {
-            return self.decode(&reply.body);
-        }
-        Err(self.http.problem(&reply))
+        self.try_decode(&reply)
     }
 
     /// Requests a review of the change from one pushed commit to another. One
@@ -628,10 +626,7 @@ impl Api {
             .http
             .send(self.request(Method::POST, url).json(request))
             .await?;
-        if reply.status.is_success() {
-            return self.decode(&reply.body);
-        }
-        Err(self.http.problem(&reply))
+        self.try_decode(&reply)
     }
 
     /// Stops the holder's own local review in one bounded attempt. A refusal
@@ -645,10 +640,7 @@ impl Api {
             .http
             .send(self.request(Method::POST, self.url(&["reviews", &id, "stop"])))
             .await?;
-        if !reply.status.is_success() {
-            return Err(self.http.problem(&reply));
-        }
-        let raw: serde_json::Value = self.decode(&reply.body)?;
+        let raw: serde_json::Value = self.try_decode(&reply)?;
         let stopped: StopResponse = serde_json::from_value(raw.clone())
             .map_err(|error| self.http.protocol(error.to_string()))?;
         if stopped.review_id != review_id || stopped.status != "STOPPED" {
