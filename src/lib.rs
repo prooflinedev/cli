@@ -287,6 +287,10 @@ struct ReviewArgs {
     /// Return once the review is requested instead of waiting for its result.
     #[arg(long)]
     no_wait: bool,
+    /// Exit 3 when the completed review has an open finding at or above this
+    /// severity, as `ci review --fail-on` does.
+    #[arg(long, value_enum, value_name = "SEVERITY", conflicts_with = "no_wait")]
+    fail_on: Option<Severity>,
     /// Include secret-shaped patch content from this exact repository-relative
     /// path. Repeat for more paths; each override applies only to local review.
     #[arg(long, value_name = "PATH", conflicts_with = "pr")]
@@ -350,7 +354,7 @@ pub enum Verdict {
     /// Proofline did not answer: it was unreachable, failed on its side, or
     /// had no finished review before the deadline.
     Unavailable,
-    /// A complete review has an open finding at or above `ci review --fail-on`.
+    /// A complete review has an open finding at or above `--fail-on`.
     ThresholdReached,
     /// A Git hook's exit policy refuses the commit or push.
     Blocked,
@@ -926,6 +930,7 @@ async fn finish(api: &Api, review_id: Uuid, args: &ReviewArgs) -> anyhow::Result
         true,
         &args.output,
         OutputFormat::from_json(args.output.json),
+        args.fail_on,
     )
     .await
 }
@@ -958,7 +963,7 @@ async fn findings(api: &Api, args: &FindingsArgs) -> anyhow::Result<Verdict> {
     } else {
         OutputFormat::from_json(args.output.json)
     };
-    show(api, review_id, args.wait, &args.output, format).await
+    show(api, review_id, args.wait, &args.output, format, None).await
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1015,6 +1020,7 @@ async fn show(
     wait: bool,
     output: &OutputArgs,
     format: OutputFormat,
+    fail_on: Option<Severity>,
 ) -> anyhow::Result<Verdict> {
     let deadline = if wait {
         Some(poll_deadline(output.timeout)?)
@@ -1025,7 +1031,19 @@ async fn show(
     let (raw, detail, state) = read_review(api, review_id, deadline, sarif).await?;
     print_review(api, review_id, raw, &detail, state, format)?;
     match state {
-        Some(Outcome::Completed) => return Ok(Verdict::Done),
+        Some(Outcome::Completed) => {
+            let verdict = review_verdict(&detail, fail_on);
+            match verdict {
+                Verdict::ThresholdReached => {
+                    say("The review has an open finding at or above the --fail-on severity.");
+                }
+                Verdict::Unavailable => say(
+                    "Proofline returned the completed review without `open_items`, so --fail-on could not be measured. It is not a pass.",
+                ),
+                Verdict::Done | Verdict::NotComplete | Verdict::Blocked => {}
+            }
+            return Ok(verdict);
+        }
         Some(ended) => say_not_complete(ended),
         None if wait => say(&format!(
             "The review was still {} after {} minutes; it continues at {}",
@@ -1244,6 +1262,28 @@ fn ci_verdict(
                 }
             }
         },
+    }
+}
+
+/// How `review --fail-on` ends for a complete review. A pull request counts
+/// its open items, as `ci review` does; other reviews have no finding
+/// decisions, so their findings count, as in a Git hook.
+fn review_verdict(detail: &ReviewDetail, fail_on: Option<Severity>) -> Verdict {
+    let Some(threshold) = fail_on else {
+        return Verdict::Done;
+    };
+    if detail.kind == "PULL_REQUEST" {
+        return ci_verdict(
+            Some(Outcome::Completed),
+            detail.open_items.as_ref(),
+            outcome::code_assessment(detail),
+            fail_on,
+        );
+    }
+    if outcome::findings_reach(detail, threshold) {
+        Verdict::ThresholdReached
+    } else {
+        Verdict::Done
     }
 }
 
@@ -1496,6 +1536,75 @@ mod tests {
             }
         }
         ticker.abort();
+    }
+
+    #[test]
+    fn review_fail_on_measures_pull_requests_by_open_items_and_others_by_findings() {
+        let detail = |kind: &str, open_items: serde_json::Value| -> ReviewDetail {
+            serde_json::from_value(json!({
+                "id": "0190f3a0-0000-7000-8000-000000000033",
+                "kind": kind,
+                "status": "COMPLETED",
+                "assessment_count": 1,
+                "assessments": [{
+                    "id": "0190f3a0-0000-7000-8000-000000000033",
+                    "environment_display_name": "production",
+                    "status": "COMPLETED",
+                    "findings": [{
+                        "id": "0190f3a0-0000-7000-8000-000000000044",
+                        "finding_fingerprint": null,
+                        "severity": "SERIOUS",
+                        "risk_domain": "resource_capacity",
+                        "claim": "The pool outgrows the connection limit.",
+                        "impact": "Connections are refused during the rollout.",
+                        "lifecycle_state": "NEW",
+                        "remediation": null,
+                        "evidence_refs": [],
+                    }],
+                    "checks": { "receipt_recorded": true, "status": "READY", "families": [] },
+                    "incompleteness_kind": null,
+                    "reason_codes": null,
+                    "release_evidence_gap": null,
+                }],
+                "code_assessment": null,
+                "base_commit_sha": "b".repeat(40),
+                "head_commit_sha": "c".repeat(40),
+                "open_items": open_items,
+                "pull_request_number": null,
+                "repository_full_name": "acme/app",
+                "run_number": null,
+            }))
+            .unwrap()
+        };
+        let (warning, serious) = (Some(Severity::Warning), Some(Severity::Serious));
+        for kind in ["PATCH", "COMMIT", "FILES"] {
+            let review = detail(kind, serde_json::Value::Null);
+            assert_eq!(
+                review_verdict(&review, serious),
+                Verdict::ThresholdReached,
+                "{kind}"
+            );
+            assert_eq!(
+                review_verdict(&review, warning),
+                Verdict::ThresholdReached,
+                "{kind}"
+            );
+            assert_eq!(review_verdict(&review, None), Verdict::Done, "{kind}");
+        }
+        // The finding was dismissed.
+        let dismissed = detail(
+            "PULL_REQUEST",
+            json!({ "open_findings": 0, "serious_findings": 0 }),
+        );
+        assert_eq!(review_verdict(&dismissed, serious), Verdict::Done);
+        let open = detail(
+            "PULL_REQUEST",
+            json!({ "open_findings": 1, "serious_findings": 1 }),
+        );
+        assert_eq!(review_verdict(&open, serious), Verdict::ThresholdReached);
+        let unmeasured = detail("PULL_REQUEST", serde_json::Value::Null);
+        assert_eq!(review_verdict(&unmeasured, serious), Verdict::Unavailable);
+        assert_eq!(review_verdict(&unmeasured, None), Verdict::Done);
     }
 
     #[test]

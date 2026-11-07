@@ -46,8 +46,8 @@ fn main() -> ExitCode {
         Ok(Verdict::NotComplete) => ExitCode::from(2),
         // Proofline gave no answer in time; distinct from the caller's error.
         Ok(Verdict::Unavailable) => ExitCode::from(4),
-        // `ci review --fail-on`: the review is complete and a finding reaches
-        // the caller's threshold.
+        // `--fail-on`: the review is complete and a finding reaches the
+        // caller's threshold.
         Ok(Verdict::ThresholdReached) => ExitCode::from(3),
         Ok(Verdict::Blocked) => ExitCode::FAILURE,
         Err(error) => {

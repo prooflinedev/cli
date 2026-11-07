@@ -28,6 +28,7 @@ struct Fixture {
     commit_requests: Arc<Mutex<Vec<Value>>>,
     file_requests: Arc<Mutex<Vec<Value>>>,
     authorized: bool,
+    findings: Vec<Value>,
 }
 
 async fn observe(State(fixture): State<Fixture>, request: Request, next: Next) -> Response {
@@ -77,7 +78,7 @@ async fn upload(
 }
 
 /// A settled patch review that re-verified `FINDING` against the patch.
-async fn settled_review(headers: HeaderMap) -> Json<Value> {
+async fn settled_review(State(fixture): State<Fixture>, headers: HeaderMap) -> Json<Value> {
     assert_eq!(headers[header::AUTHORIZATION], format!("Bearer {TOKEN}"));
     Json(json!({
         "id": REVIEW,
@@ -88,7 +89,7 @@ async fn settled_review(headers: HeaderMap) -> Json<Value> {
             "id": REVIEW,
             "environment_display_name": "production",
             "status": "COMPLETED",
-            "findings": [],
+            "findings": fixture.findings,
             "checks": { "receipt_recorded": true, "status": "READY", "families": [] },
             "incompleteness_kind": null,
             "reason_codes": null,
@@ -140,12 +141,17 @@ struct Server {
 
 impl Server {
     async fn start(authorized: bool) -> Self {
+        Self::with_findings(authorized, Vec::new()).await
+    }
+
+    async fn with_findings(authorized: bool, findings: Vec<Value>) -> Self {
         let fixture = Fixture {
             requests: Arc::default(),
             uploads: Arc::default(),
             commit_requests: Arc::default(),
             file_requests: Arc::default(),
             authorized,
+            findings,
         };
         let app = Router::new()
             .route(
@@ -711,6 +717,55 @@ async fn pushed_commits_send_two_exact_shas_and_no_patch() {
         vec![expected.clone(), expected]
     );
     assert!(server.fixture.uploads.lock().unwrap().is_empty());
+    server.close().await;
+}
+
+/// `--fail-on` exits 3 at or above the threshold and refuses `--no-wait`.
+#[tokio::test]
+async fn fail_on_exits_three_for_a_pushed_commit_finding_at_the_threshold() {
+    let checkout = Checkout::new(&[("kept.txt", "base\n")]).await;
+    checkout.write("kept.txt", "pushed\n").await;
+    checkout.git(&["commit", "-qam", "pushed"]).await;
+    let finding = |severity: &str| {
+        json!({
+            "id": FINDING,
+            "finding_fingerprint": null,
+            "severity": severity,
+            "risk_domain": "resource_capacity",
+            "claim": "The pool outgrows the database's connection limit.",
+            "impact": "New connections are refused during the rollout.",
+            "lifecycle_state": "NEW",
+            "remediation": null,
+            "evidence_refs": [],
+        })
+    };
+    for (findings, flags, code) in [
+        (vec![finding("SERIOUS")], vec!["--fail-on", "serious"], 3),
+        (vec![finding("SERIOUS")], vec!["--fail-on", "warning"], 3),
+        (vec![finding("WARNING")], vec!["--fail-on", "serious"], 0),
+        (vec![finding("SERIOUS")], vec![], 0),
+        (vec![], vec!["--fail-on", "warning"], 0),
+    ] {
+        let server = Server::with_findings(true, findings).await;
+        let mut flags = flags.clone();
+        flags.extend(["--commit", "HEAD"]);
+        let output = checkout.review_and_wait(&server, &[], &flags).await;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(code), "{flags:?}: {stderr}");
+        assert_eq!(
+            stderr.contains("at or above the --fail-on severity"),
+            code == 3,
+            "{flags:?}: {stderr}"
+        );
+        assert_eq!(server.fixture.commit_requests.lock().unwrap().len(), 1);
+        server.close().await;
+    }
+    let server = Server::start(true).await;
+    let output = checkout
+        .review(&server, &[], &["--fail-on", "serious", "--commit", "HEAD"])
+        .await;
+    assert_eq!(output.status.code(), Some(1));
+    server.assert_no_requests();
     server.close().await;
 }
 

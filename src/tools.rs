@@ -103,6 +103,7 @@ pub(crate) async fn rerun(api: &Api, args: &RerunArgs) -> anyhow::Result<Verdict
         true,
         &args.output,
         OutputFormat::from_json(args.output.json),
+        None,
     )
     .await
 }

@@ -106,6 +106,17 @@ pub(crate) fn code_reaches(code: &CodeAssessment, threshold: Severity) -> bool {
         })
 }
 
+/// Whether an unresolved finding of a review without finding decisions
+/// reaches `threshold`.
+pub(crate) fn findings_reach(review: &ReviewDetail, threshold: Severity) -> bool {
+    let environment = review.assessments.iter().any(|assessment| {
+        assessment.findings.iter().any(|finding| {
+            finding.lifecycle_state != "RESOLVED" && threshold.reached_by(&finding.severity)
+        })
+    });
+    environment || code_assessment(review).is_some_and(|code| code_reaches(code, threshold))
+}
+
 /// CODE has no World receipts or environment checks. Its recorded status and
 /// incompleteness are the only completion evidence for the code lane.
 pub(crate) fn code_gap(code: &CodeAssessment) -> Option<&str> {
@@ -206,6 +217,48 @@ mod tests {
             run_number: Some(1),
             local_reverifications: Vec::new(),
         }
+    }
+
+    fn finding(severity: &str, lifecycle_state: &str) -> crate::model::Finding {
+        crate::model::Finding {
+            id: uuid::Uuid::nil(),
+            finding_fingerprint: None,
+            severity: severity.to_owned(),
+            risk_domain: "resource_capacity".to_owned(),
+            claim: "the pool outgrows the database's connection limit".to_owned(),
+            impact: "new connections are refused during the rollout".to_owned(),
+            lifecycle_state: lifecycle_state.to_owned(),
+            remediation: None,
+            evidence_refs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn findings_reach_counts_unresolved_findings_at_or_above_the_threshold() {
+        let with = |severity: &str, lifecycle_state: &str| {
+            let mut production = assessment("COMPLETED");
+            production.findings = vec![finding(severity, lifecycle_state)];
+            let mut detail = review("COMPLETED", vec![production], 1);
+            detail.kind = "COMMIT".to_owned();
+            detail
+        };
+        for (severity, lifecycle_state, threshold, reaches) in [
+            ("SERIOUS", "NEW", Severity::Serious, true),
+            ("SERIOUS", "NEW", Severity::Warning, true),
+            ("WARNING", "NEW", Severity::Warning, true),
+            ("WARNING", "UNCHANGED", Severity::Serious, false),
+            ("SERIOUS", "REINTRODUCED", Severity::Serious, true),
+            ("SERIOUS", "RESOLVED", Severity::Warning, false),
+            ("CRITICAL", "NEW", Severity::Serious, true),
+        ] {
+            assert_eq!(
+                findings_reach(&with(severity, lifecycle_state), threshold),
+                reaches,
+                "{severity} {lifecycle_state} {threshold:?}"
+            );
+        }
+        let clean = review("COMPLETED", vec![assessment("COMPLETED")], 1);
+        assert!(!findings_reach(&clean, Severity::Warning));
     }
 
     #[test]
