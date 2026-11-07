@@ -431,7 +431,7 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
         }
         Command::Run(args) => {
             let api = connect(Http::new(origin)?, token, cli.org).await?;
-            let name = repository_name(&args.repository).await?;
+            let name = pull_request_repository(&api, &args.repository).await?;
             tools::json(
                 &api.tool_get(&[
                     "reviews",
@@ -482,7 +482,7 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
         }
         Command::History(args) => {
             let api = connect(Http::new(origin)?, token, cli.org).await?;
-            let name = repository_name(&args.repository).await?;
+            let name = pull_request_repository(&api, &args.repository).await?;
             tools::json(&api.history(&name, args.pr).await?)
         }
         Command::Guidance(args) => {
@@ -725,6 +725,23 @@ async fn reviewed_repository(api: &Api, args: &RepositoryArgs) -> anyhow::Result
         )
     })?;
     Ok((name, id))
+}
+
+/// The repository segment of a pull-request review address. The server names
+/// the repository without its owner, so `owner/name` is first checked against
+/// the repositories with reviews, and only `name` is sent. A bare name is sent
+/// as given.
+async fn pull_request_repository(api: &Api, args: &RepositoryArgs) -> anyhow::Result<String> {
+    if let Some(name) = &args.repo
+        && !name.contains('/')
+    {
+        return Ok(name.clone());
+    }
+    let (name, _) = reviewed_repository(api, args).await?;
+    Ok(name
+        .rsplit_once('/')
+        .map_or(name.as_str(), |(_, repository)| repository)
+        .to_owned())
 }
 
 /// The newest review in `repository` that `matches`, searching with `search`.
