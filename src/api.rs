@@ -25,6 +25,12 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const READ_ATTEMPTS: u32 = 4;
 const MAX_RETRY_AFTER: u64 = 60;
 
+// Media types
+pub(crate) const MEDIA_TYPE_CSV: &str = "text/csv";
+const MEDIA_TYPE_JSON: &str = "application/json";
+pub(crate) const MEDIA_TYPE_NDJSON: &str = "application/x-ndjson";
+const MEDIA_TYPE_SERVER_SENT_EVENT: &str = "text/event-stream";
+
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
     #[error("{origin} returned HTTP {status}: {detail}")]
@@ -102,7 +108,7 @@ fn json_content_type(headers: &header::HeaderMap) -> bool {
             value
                 .split(';')
                 .next()
-                .is_some_and(|media| media.trim().eq_ignore_ascii_case("application/json"))
+                .is_some_and(|media| media.trim().eq_ignore_ascii_case(MEDIA_TYPE_JSON))
         })
 }
 
@@ -231,8 +237,11 @@ impl Http {
             .client
             .post(self.origin.join(["mcp"]))
             .bearer_auth(token.expose_secret())
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::ACCEPT, "application/json, text/event-stream")
+            .header(header::CONTENT_TYPE, MEDIA_TYPE_JSON)
+            .header(
+                header::ACCEPT,
+                [MEDIA_TYPE_JSON, MEDIA_TYPE_SERVER_SENT_EVENT].join(","),
+            )
             .header(header::ORIGIN, self.origin.as_key())
             .body(body);
         if let Some(protocol) = protocol {
@@ -334,7 +343,7 @@ impl Api {
             .client
             .request(method, url)
             .bearer_auth(self.token.expose_secret())
-            .header(header::ACCEPT, "application/json")
+            .header(header::ACCEPT, MEDIA_TYPE_JSON)
     }
 
     /// GET with up to three retries on 429 and 503, honoring `Retry-After` up
@@ -369,7 +378,7 @@ impl Api {
     }
 
     async fn get(&self, url: Url) -> Result<serde_json::Value, ApiError> {
-        let reply = self.read(url, "application/json").await?;
+        let reply = self.read(url, MEDIA_TYPE_JSON).await?;
         self.decode(&reply.body)
     }
 

@@ -5,7 +5,8 @@ use anyhow::{Context as _, bail};
 use clap::{Args, Subcommand, ValueEnum};
 use uuid::Uuid;
 
-use crate::{OutputArgs, OutputFormat, RepositoryArgs, Verdict, api::Api, say, show};
+use crate::api::{Api, MEDIA_TYPE_CSV, MEDIA_TYPE_NDJSON};
+use crate::{OutputArgs, OutputFormat, RepositoryArgs, Verdict, say, show};
 
 #[derive(Debug, Args)]
 pub(crate) struct RerunArgs {
@@ -112,8 +113,8 @@ pub(crate) async fn export(api: &Api, args: &ExportArgs) -> anyhow::Result<Verdi
         bail!("--group-by is available only for finding_outcomes");
     }
     let (format, accept) = match args.format {
-        Format::Csv => ("csv", "text/csv"),
-        Format::Ndjson => ("ndjson", "application/x-ndjson"),
+        Format::Csv => ("csv", MEDIA_TYPE_CSV),
+        Format::Ndjson => ("ndjson", MEDIA_TYPE_NDJSON),
     };
     let mut query = vec![
         ("from", args.from.clone()),
