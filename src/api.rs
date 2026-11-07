@@ -98,7 +98,10 @@ async fn read_body(mut response: reqwest::Response) -> Result<Vec<u8>, BodyError
     Ok(body)
 }
 
-fn json_content_type(headers: &header::HeaderMap) -> bool {
+/// Checks if a response headers signals a given content type
+///
+/// It's considered a mismatch, if the headers have multiple content type headers.
+pub(crate) fn has_content_type(headers: &header::HeaderMap, expected: &str) -> bool {
     let mut values = headers.get_all(header::CONTENT_TYPE).iter();
     let Some(value) = values.next() else {
         return false;
@@ -108,8 +111,15 @@ fn json_content_type(headers: &header::HeaderMap) -> bool {
             value
                 .split(';')
                 .next()
-                .is_some_and(|media| media.trim().eq_ignore_ascii_case(MEDIA_TYPE_JSON))
+                .is_some_and(|media| media.trim().eq_ignore_ascii_case(expected))
         })
+}
+
+/// Checks if a response headers signals a JSON type
+///
+/// It's considered a mismatch, if the headers have multiple content type headers.
+fn json_content_type(headers: &header::HeaderMap) -> bool {
+    has_content_type(headers, MEDIA_TYPE_JSON)
 }
 
 impl ApiError {

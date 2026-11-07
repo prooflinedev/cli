@@ -5,7 +5,7 @@ use anyhow::{Context as _, bail};
 use clap::{Args, Subcommand, ValueEnum};
 use uuid::Uuid;
 
-use crate::api::{Api, MEDIA_TYPE_CSV, MEDIA_TYPE_NDJSON};
+use crate::api::{Api, MEDIA_TYPE_CSV, MEDIA_TYPE_NDJSON, has_content_type};
 use crate::{OutputArgs, OutputFormat, RepositoryArgs, Verdict, say, show};
 
 #[derive(Debug, Args)]
@@ -128,12 +128,7 @@ pub(crate) async fn export(api: &Api, args: &ExportArgs) -> anyhow::Result<Verdi
         query.push(("group_by", group.clone()));
     }
     let reply = api.export(args.dataset.name(), &query, accept).await?;
-    let content_type = reply
-        .headers
-        .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default();
-    if content_type.split(';').next().map(str::trim) != Some(accept)
+    if !has_content_type(&reply.headers, accept)
         || reply
             .headers
             .get("x-proofline-export-version")
