@@ -1023,7 +1023,15 @@ async fn show(
     };
     let sarif = matches!(format, OutputFormat::Sarif);
     let (raw, detail, state) = read_review(api, review_id, deadline, sarif).await?;
-    print_review(api, review_id, raw, &detail, state, format)?;
+    print_review(
+        api,
+        review_id,
+        raw,
+        &detail,
+        state,
+        format,
+        render::Reach::Entities,
+    )?;
     match state {
         Some(Outcome::Completed) => return Ok(Verdict::Done),
         Some(ended) => say_not_complete(ended),
@@ -1183,6 +1191,7 @@ async fn ci_review(
         &detail,
         state,
         OutputFormat::from_json(args.json),
+        render::Reach::Summary,
     )?;
     let verdict = ci_verdict(
         state,
@@ -1254,6 +1263,7 @@ fn print_review(
     detail: &ReviewDetail,
     state: Option<Outcome>,
     format: OutputFormat,
+    shown: render::Reach,
 ) -> anyhow::Result<()> {
     let mut stdout = std::io::stdout().lock();
     match format {
@@ -1281,7 +1291,7 @@ fn print_review(
             write!(
                 stdout,
                 "{}",
-                render::review(detail, state, &api.review_url(detail.id))
+                render::review(detail, state, &api.review_url(detail.id), shown)
             )?;
         }
     }
