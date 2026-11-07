@@ -148,3 +148,5 @@ A successful read is not a verdict: `PENDING`, `UNAVAILABLE` and `NOT_VERIFIED`
 retain their meaning. Only the server's recorded re-verification establishes a
 fix. Reads need `reviews:read`; verification also needs `reviews:request` and
 current repository write access. For unpushed local changes, use `review --verify`.
+`review` and `findings` print each finding's ID in text output, so `fix context`,
+`fix-prompt` and `review --verify` need no `--json` first.

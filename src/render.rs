@@ -39,6 +39,8 @@ fn finding(out: &mut Vec<String>, finding: &Finding) {
     if let Some(remediation) = &finding.remediation {
         out.push(format!("           fix: {}", one_line(remediation)));
     }
+    // fix and session commands take this ID, so text output must not need --json
+    out.push(format!("           id: {}", finding.id));
 }
 
 fn assessment(out: &mut Vec<String>, assessment: &Assessment) {
@@ -267,6 +269,18 @@ mod tests {
         let text = review(&detail, None, &url());
         let places = ["first", "second", "third"].map(|claim| text.find(claim).unwrap());
         assert!(places.is_sorted(), "{text}");
+    }
+
+    #[test]
+    fn each_finding_prints_the_id_that_fix_commands_take() {
+        let mut item = finding("SERIOUS", "lost order");
+        item.id = uuid::Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef);
+        let detail = sample("COMPLETED", vec![item]);
+        let text = review(&detail, None, &url());
+        assert!(
+            text.contains("           id: 01234567-89ab-cdef-0123-456789abcdef\n"),
+            "{text}"
+        );
     }
 
     #[test]
