@@ -143,6 +143,38 @@ pub async fn remove(origin: &Origin) -> Result<bool, CredentialError> {
     }
 }
 
+/// The session bus address for the Secret Service keychain when the
+/// environment names no bus. The keychain library finds the bus only through
+/// `DBUS_SESSION_BUS_ADDRESS` or `$XDG_RUNTIME_DIR/bus`, and some coding agents
+/// start MCP servers with neither variable. systemd and elogind serve the user
+/// bus at `/run/user/<uid>/bus`.
+#[cfg(target_os = "linux")]
+pub fn default_session_bus() -> Option<String> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let named = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+    let environment_names_bus = named("DBUS_SESSION_BUS_ADDRESS") || named("XDG_RUNTIME_DIR");
+    // `/proc/self` belongs to the effective user, who owns the session bus.
+    let uid = std::fs::metadata("/proc/self").ok()?.uid();
+    let bus = std::path::Path::new("/run/user")
+        .join(uid.to_string())
+        .join("bus");
+    user_bus_address(environment_names_bus, &bus)
+}
+
+/// `unix:path=<bus>` when the environment names no bus and `bus` is a socket.
+/// A numeric user bus path needs no D-Bus address escaping.
+#[cfg(target_os = "linux")]
+fn user_bus_address(environment_names_bus: bool, bus: &std::path::Path) -> Option<String> {
+    use std::os::unix::fs::FileTypeExt as _;
+
+    if environment_names_bus {
+        return None;
+    }
+    let socket = std::fs::metadata(bus).ok()?.file_type().is_socket();
+    socket.then(|| format!("unix:path={}", bus.display()))
+}
+
 /// Keychain calls block on the platform's IPC, so they run off the runtime.
 async fn blocking<T: Send + 'static>(
     call: impl FnOnce() -> keyring::Result<T> + Send + 'static,
@@ -150,4 +182,31 @@ async fn blocking<T: Send + 'static>(
     tokio::task::spawn_blocking(call)
         .await
         .unwrap_or_else(|join| Err(keyring::Error::PlatformFailure(Box::new(join))))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_bus_is_used_only_when_the_environment_names_no_bus() {
+        let directory = tempfile::tempdir().unwrap();
+        let bus = directory.path().join("bus");
+        let _listener = std::os::unix::net::UnixListener::bind(&bus).unwrap();
+
+        assert_eq!(
+            user_bus_address(false, &bus),
+            Some(format!("unix:path={}", bus.display()))
+        );
+        // An address or runtime directory in the environment stays in charge.
+        assert_eq!(user_bus_address(true, &bus), None);
+
+        let file = directory.path().join("file");
+        std::fs::write(&file, b"").unwrap();
+        assert_eq!(user_bus_address(false, &file), None);
+        assert_eq!(
+            user_bus_address(false, &directory.path().join("missing")),
+            None
+        );
+    }
 }

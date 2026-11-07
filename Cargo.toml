@@ -45,7 +45,9 @@ tokio = { version = "1", features = ["net", "test-util"] }
 workspace = true
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# `deny` rather than `forbid`, so the one start-up environment write in
+# `src/main.rs` can state its reason with `expect`.
+unsafe_code = "deny"
 ambiguous_negative_literals = "deny"
 explicit_outlives_requirements = "deny"
 ffi_unwind_calls = "deny"
