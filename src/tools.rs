@@ -128,14 +128,16 @@ pub(crate) async fn export(api: &Api, args: &ExportArgs) -> anyhow::Result<Verdi
         query.push(("group_by", group.clone()));
     }
     let reply = api.export(args.dataset.name(), &query, accept).await?;
-    if !has_content_type(&reply.headers, accept)
-        || reply
-            .headers
-            .get("x-proofline-export-version")
-            .and_then(|v| v.to_str().ok())
-            != Some("1")
+    if !has_content_type(&reply.headers, accept) {
+        bail!("the server returned an unsupported export format");
+    }
+    if reply
+        .headers
+        .get("x-proofline-export-version")
+        .and_then(|v| v.to_str().ok())
+        != Some("1")
     {
-        bail!("the server returned an unsupported export format or version");
+        bail!("the server returned an unsupported export version");
     }
     let horizon = reply
         .headers
