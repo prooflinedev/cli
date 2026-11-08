@@ -1915,6 +1915,15 @@ async fn native_tools_keep_tenant_paths_and_reruns_make_one_attempt() {
                 )
                     .into_response();
             }
+            if path.ends_with("/reviews") {
+                return Json(json!({
+                    "items": [],
+                    "truncated": false,
+                    "next_cursor": null,
+                    "filters": {"repositories": [{"id": REPOSITORY, "name": "owner/repo"}]}
+                }))
+                .into_response();
+            }
             if path.ends_with("repository-names") {
                 return Json(
                     json!({"repositories": [{"id": REPOSITORY, "full_name":"owner/repo"}]}),
@@ -1973,6 +1982,72 @@ async fn native_tools_keep_tenant_paths_and_reruns_make_one_attempt() {
     );
     assert_eq!(output.stdout, b"dataset_version,claim\r\n1,\"a,b\"\r\n");
     assert!(String::from_utf8_lossy(&output.stderr).contains("next-cursor: opaque-next"));
+    server.abort();
+}
+
+#[tokio::test]
+async fn pull_request_runs_name_the_repository_without_its_owner() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&requests);
+    let app = Router::new().fallback(move |request: axum::extract::Request| {
+        let seen = Arc::clone(&seen);
+        async move {
+            let path = request.uri().path().to_owned();
+            seen.lock().unwrap().push(path.clone());
+            if path.ends_with("/reviews") {
+                return Json(json!({
+                    "items": [],
+                    "truncated": false,
+                    "next_cursor": null,
+                    "filters": {"repositories": [{"id": REPOSITORY, "name": "Acme/Web"}]}
+                }))
+                .into_response();
+            }
+            Json(json!({"items": []})).into_response()
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let prefix = format!("/api/v1/organizations/{ORG}/reviews/pr");
+    for (args, expected) in [
+        (
+            vec!["history", "--repo", "acme/web", "--pr", "7"],
+            format!("{prefix}/web/7"),
+        ),
+        (
+            vec!["run", "--repo", "acme/web", "--pr", "7", "--run", "2"],
+            format!("{prefix}/web/7/runs/2"),
+        ),
+        // A bare name is the address segment itself and needs no lookup.
+        (
+            vec!["history", "--repo", "web", "--pr", "7"],
+            format!("{prefix}/web/7"),
+        ),
+    ] {
+        requests.lock().unwrap().clear();
+        let output = cli(&origin, &args).await;
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(requests.lock().unwrap().last(), Some(&expected), "{args:?}");
+    }
+    // Another owner's repository of the same name is refused, not read.
+    requests.lock().unwrap().clear();
+    let output = cli(&origin, &["history", "--repo", "other/web", "--pr", "7"]).await;
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("other/web has no reviews"));
+    assert!(
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|path| !path.starts_with(&prefix))
+    );
     server.abort();
 }
 
