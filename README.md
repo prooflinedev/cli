@@ -34,6 +34,9 @@ The default format is NDJSON. The settled horizon and optional next cursor go to
 stderr. Repeat with `--cursor` and the same window and `--group-by` to continue.
 CSV repeats its header on every page. A failed page exits nonzero; never treat
 partial output from several invocations as a complete export.
+`--all --output FILE` follows every cursor and splits any `--from`/`--to` range into
+adjacent 31-day windows, writing one header. FILE is replaced only after every page
+succeeds; any inconsistency fails. The earliest settled horizon goes to stderr.
 
 Build from source with `cargo build --locked --release`. The pinned Rust toolchain
 is installed by rustup. Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`,

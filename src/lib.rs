@@ -113,7 +113,7 @@ enum Command {
     Guidance(RepositoryArgs),
     /// Read a bounded, untrusted finding fix prompt as JSON.
     FixPrompt { finding_id: Uuid },
-    /// Export one page of analytics as CSV or NDJSON.
+    /// Export one page of analytics as CSV or NDJSON, or with --all every page into a file.
     Export(tools::ExportArgs),
     /// Install the newest official release over this installer-managed binary.
     Update,
