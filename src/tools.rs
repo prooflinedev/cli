@@ -5,7 +5,8 @@ use anyhow::{Context as _, bail};
 use clap::{Args, Subcommand, ValueEnum};
 use uuid::Uuid;
 
-use crate::{OutputArgs, OutputFormat, RepositoryArgs, Verdict, api::Api, say, show};
+use crate::api::{Api, MEDIA_TYPE_CSV, MEDIA_TYPE_NDJSON, has_content_type};
+use crate::{OutputArgs, OutputFormat, RepositoryArgs, Verdict, say, show};
 
 #[derive(Debug, Args)]
 pub(crate) struct RerunArgs {
@@ -112,8 +113,8 @@ pub(crate) async fn export(api: &Api, args: &ExportArgs) -> anyhow::Result<Verdi
         bail!("--group-by is available only for finding_outcomes");
     }
     let (format, accept) = match args.format {
-        Format::Csv => ("csv", "text/csv"),
-        Format::Ndjson => ("ndjson", "application/x-ndjson"),
+        Format::Csv => ("csv", MEDIA_TYPE_CSV),
+        Format::Ndjson => ("ndjson", MEDIA_TYPE_NDJSON),
     };
     let mut query = vec![
         ("from", args.from.clone()),
@@ -127,19 +128,16 @@ pub(crate) async fn export(api: &Api, args: &ExportArgs) -> anyhow::Result<Verdi
         query.push(("group_by", group.clone()));
     }
     let reply = api.export(args.dataset.name(), &query, accept).await?;
-    let content_type = reply
+    if !has_content_type(&reply.headers, accept) {
+        bail!("the server returned an unsupported export format");
+    }
+    if reply
         .headers
-        .get("content-type")
+        .get("x-proofline-export-version")
         .and_then(|v| v.to_str().ok())
-        .unwrap_or_default();
-    if content_type.split(';').next().map(str::trim) != Some(accept)
-        || reply
-            .headers
-            .get("x-proofline-export-version")
-            .and_then(|v| v.to_str().ok())
-            != Some("1")
+        != Some("1")
     {
-        bail!("the server returned an unsupported export format or version");
+        bail!("the server returned an unsupported export version");
     }
     let horizon = reply
         .headers
