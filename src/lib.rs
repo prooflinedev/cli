@@ -27,7 +27,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context as _, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::{
+    Args, CommandFactory as _, FromArgMatches as _, Parser, Subcommand, parser::ValueSource,
+};
 use secrecy::{ExposeSecret as _, SecretString};
 use uuid::Uuid;
 
@@ -71,6 +73,46 @@ pub struct Cli {
 
     #[command(subcommand)]
     command: Command,
+}
+
+impl Cli {
+    /// Parse an invocation, rejecting origin overrides for read-only agent inspection.
+    pub fn parse_invocation() -> Result<Self, clap::Error> {
+        let args: Vec<_> = std::env::args_os().collect();
+        let mut parser = Self::command();
+        // Identify status without reading the invoking process's configuration.
+        let matches = parser
+            .clone()
+            .ignore_errors(true)
+            .disable_help_flag(true)
+            .disable_version_flag(true)
+            .mut_arg("base_url", |arg| arg.env(None::<&str>))
+            .mut_arg("org", |arg| {
+                arg.env(None::<&str>)
+                    .value_parser(clap::builder::StringValueParser::new())
+            })
+            .try_get_matches_from(&args);
+        if let Ok(matches) = matches
+            && matches
+                .subcommand_matches("agent")
+                .and_then(|agent| agent.subcommand_matches("status"))
+                .is_some()
+        {
+            if ["base_url", "org"]
+                .iter()
+                .any(|name| matches.value_source(name) == Some(ValueSource::CommandLine))
+            {
+                return Err(clap::Error::raw(
+                    clap::error::ErrorKind::ArgumentConflict,
+                    "agent status reads the registration's origin and organization; --base-url and --org are not supported",
+                ));
+            }
+            parser = parser
+                .mut_arg("base_url", |arg| arg.env(None::<&str>))
+                .mut_arg("org", |arg| arg.env(None::<&str>));
+        }
+        Self::from_arg_matches(&parser.try_get_matches_from(args)?)
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -119,7 +161,7 @@ enum Command {
     Update,
     #[command(name = "__update-check", hide = true)]
     UpdateCheck,
-    /// Configure a coding agent to use the existing local MCP bridge.
+    /// Configure or inspect a coding agent's local MCP bridge.
     Agent(agent::AgentArgs),
     /// Sign in through the browser and keep the token in the OS keychain.
     Login(LoginArgs),
@@ -352,7 +394,7 @@ pub enum Verdict {
     Unavailable,
     /// A complete review has an open finding at or above `ci review --fail-on`.
     ThresholdReached,
-    /// A Git hook's exit policy refuses the commit or push.
+    /// A command reports a failed check without an additional error message.
     Blocked,
 }
 
@@ -366,7 +408,10 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
         writeln!(stdout, "{}", serde_json::to_string_pretty(&document)?)?;
         return Ok(Verdict::Done);
     }
-    match &cli.command {
+    match cli.command {
+        Command::Agent(args) => {
+            return agent::run(args, cli.base_url).await;
+        }
         Command::Update => return update::install().await.map(|()| Verdict::Done),
         Command::UpdateCheck => {
             update::check().await;
@@ -448,7 +493,7 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
             let api = connect(Http::new(origin)?, token, cli.org).await?;
             tools::session(&api, command).await
         }
-        Command::Agent(args) => agent::run(args, origin).await.map(|()| Verdict::Done),
+        Command::Agent(args) => agent::run(args, cli.base_url).await,
         Command::Login(args) => {
             let http = Http::new(origin)?;
             login(&http, &args, cli.org, token.is_some())

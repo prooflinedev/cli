@@ -30,7 +30,8 @@ serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 tempfile = "=3.27.0"
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "macros", "time", "process", "io-std", "io-util", "fs"] }
-toml_edit = "=0.25.15"
+toml_edit = { version = "=0.25.15", features = ["serde"] }
+toml_parser = "=1.1.3"
 url = "2"
 uuid = { version = "1", features = ["serde"] }
 webbrowser = "1"

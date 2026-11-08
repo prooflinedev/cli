@@ -1,6 +1,7 @@
 //! User-level configuration for the existing credential-free MCP launcher.
 
 mod config;
+mod status;
 mod store;
 
 #[cfg(test)]
@@ -25,6 +26,15 @@ pub(crate) struct AgentArgs {
 enum AgentCommand {
     /// Add Proofline to a coding agent's user configuration after confirmation.
     Install(InstallArgs),
+    /// Inspect user-level MCP configuration offline; project scopes, connectivity and authentication are not checked.
+    #[command(
+        after_help = "Status does not accept --base-url or --org; origin and organization are read from the registration."
+    )]
+    Status {
+        /// Coding agent whose user configuration is inspected (read-only).
+        #[arg(value_enum)]
+        client: Client,
+    },
 }
 
 #[derive(Debug, Args)]
@@ -162,16 +172,20 @@ enum Outcome {
     Installed,
 }
 
-pub(crate) async fn run(args: AgentArgs, origin: Origin) -> anyhow::Result<()> {
-    tokio::task::spawn_blocking(move || {
-        let AgentCommand::Install(args) = args.command;
+pub(crate) async fn run(args: AgentArgs, base_url: String) -> anyhow::Result<crate::Verdict> {
+    tokio::task::spawn_blocking(move || -> anyhow::Result<crate::Verdict> {
+        let args = match args.command {
+            AgentCommand::Status { client } => return status::run(client),
+            AgentCommand::Install(args) => args,
+        };
+        let origin = Origin::parse(&base_url)?;
         let home = std::env::home_dir().ok_or(InstallError::Home)?;
         let codex_home = std::env::var_os("CODEX_HOME");
         if args.client == Client::ClaudeCode
             && !args.print
             && std::env::var_os("CLAUDE_CONFIG_DIR").is_some()
         {
-            return Err(InstallError::CustomClaudeHome);
+            return Err(InstallError::CustomClaudeHome.into());
         }
         let stdin = io::stdin();
         let stdout = io::stdout();
@@ -184,11 +198,11 @@ pub(crate) async fn run(args: AgentArgs, origin: Origin) -> anyhow::Result<()> {
             &mut stdin.lock(),
             &mut stdout.lock(),
             &mut stderr.lock(),
-        )
+        )?;
+        Ok(crate::Verdict::Done)
     })
     .await
-    .map_err(InstallError::Task)??;
-    Ok(())
+    .map_err(InstallError::Task)?
 }
 
 fn install(
