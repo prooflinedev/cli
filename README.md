@@ -20,6 +20,13 @@ the index, or `--include-untracked` to select a new, non-ignored file. The
 command preserves the real index and applies the usual secret preflight.
 It cannot be combined with pushed-commit, range or pull-request review.
 
+`proofline review --range BASE..HEAD --fail-on serious` exits 3 when the
+completed review has an open finding at or above that severity, as
+`ci review --fail-on` does. With `--pr`, dismissed and accepted findings do not
+count; other reviews count every unresolved finding. `--fail-on` waits for the
+result and cannot be combined with `--no-wait`. Use it to gate a pipeline
+outside GitHub Actions, such as an Atlantis step between `plan` and `apply`.
+
 Read all recorded runs with `proofline history --repo owner/name --pr 7`.
 `proofline rerun REVIEW_ID` requests the original immutable subject and waits;
 `--no-wait` returns its link. Reruns require `reviews:rerun`.
