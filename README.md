@@ -20,6 +20,11 @@ the index, or `--include-untracked` to select a new, non-ignored file. The
 command preserves the real index and applies the usual secret preflight.
 It cannot be combined with pushed-commit, range or pull-request review.
 
+Review text output shows each environment's declared reach: the services and
+queues that depend on what the change deploys. Reach does not change the exit
+code. Entity labels must not go to GitHub, so `ci review` shows only the
+summary and SARIF leaves reach out.
+
 Read all recorded runs with `proofline history --repo owner/name --pr 7`.
 `proofline rerun REVIEW_ID` requests the original immutable subject and waits;
 `--no-wait` returns its link. Reruns require `reviews:rerun`.

@@ -386,6 +386,7 @@ struct Fake {
     polls: Arc<AtomicUsize>,
     report_organization: bool,
     summary: Option<Value>,
+    reach: Option<Value>,
 }
 
 async fn code() -> Json<Value> {
@@ -485,6 +486,9 @@ async fn review(State(fake): State<Fake>, headers: HeaderMap) -> Response {
     });
     if let Some(summary) = fake.summary {
         body["change_summary"] = summary;
+    }
+    if let Some(reach) = fake.reach {
+        body["assessments"][0]["declared_reach"] = reach;
     }
     Json(body).into_response()
 }
@@ -642,6 +646,87 @@ async fn a_review_reads_with_unknown_fields_and_keeps_its_gap() {
             org(),
         );
         assert_eq!(wrong.review(id).await.unwrap_err().status(), Some(401));
+    }
+}
+
+#[tokio::test]
+async fn declared_reach_prints_in_text_and_stays_out_of_sarif() {
+    let entity = |kind: &str, label: &str, depth: usize| {
+        let step = json!({
+            "assertion_id": "0190f3a0-0000-7000-8000-0000000000e1",
+            "relation": "proofline.relation.consumes_api",
+            "direction": "IN",
+        });
+        json!({
+            "entity_id": "0190f3a0-0000-7000-8000-0000000000e2",
+            "kind": kind,
+            "label": label,
+            "type_keys": [],
+            "path": vec![step; depth],
+        })
+    };
+    let reach = |outcome: &str, complete: bool, entities: Vec<Value>, gaps: Value| {
+        json!({
+            "outcome": outcome, "complete": complete, "entities": entities, "gaps": gaps,
+            "receipt_digest": null, "snapshot_id": null, "terraform": null,
+        })
+    };
+    let found = vec![
+        entity("service", "checkout-api", 1),
+        entity("queue", "orders\u{1b}[2J", 2),
+    ];
+    let incomplete = json!([{ "code": "COVERAGE_INCOMPLETE" }]);
+    for (reach, expected) in [
+        (
+            reach("READ", true, found, json!([])),
+            vec![
+                "  declared reach: complete, 2 found",
+                "    service  checkout-api  depth 1",
+                // The escape sequence is neutralised before it reaches the terminal.
+                "    queue    orders\u{fffd}[2J  depth 2",
+            ],
+        ),
+        (
+            reach("READ", true, vec![], json!([])),
+            vec!["  declared reach: complete, none found"],
+        ),
+        (
+            reach("READ", false, vec![], incomplete),
+            vec!["  declared reach: incomplete (COVERAGE_INCOMPLETE), 0 found so far"],
+        ),
+        (
+            reach("NO_ROOTS", false, vec![], json!([])),
+            vec!["  declared reach: unknown (NO_ROOTS)"],
+        ),
+    ] {
+        let console = serve(Fake {
+            reach: Some(reach),
+            ..Fake::default()
+        })
+        .await
+        .to_string();
+        let id = "0190f3a0-0000-7000-8000-0000000000aa";
+
+        let output = cli(&console, &["findings", "--review", id]).await;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let lines: Vec<&str> = text.lines().collect();
+        // The reach follows its assessment's heading, in the order the server sent.
+        let heading = lines
+            .iter()
+            .position(|line| line.starts_with("production: "))
+            .unwrap();
+        assert_eq!(
+            lines[heading + 1..][..expected.len()],
+            expected[..],
+            "{text}"
+        );
+        // The fake assessment is incomplete, so the exit code stays 2 whatever the reach says.
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+
+        let output = cli(&console, &["findings", "--review", id, "--sarif"]).await;
+        let sarif: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(sarif["version"], "2.1.0");
+        assert!(!sarif.to_string().contains("checkout-api"), "{sarif:#}");
     }
 }
 
@@ -1254,6 +1339,8 @@ async fn findings_of_a_departed_repository_still_resolve_through_its_reviews() {
 const CI_REPOSITORY: &str = "0190f3a0-0000-7000-8000-0000000000f0";
 const CI_REVIEW: &str = "0190f3a0-0000-7000-8000-0000000000f1";
 const CI_HEAD: &str = "89abcdef0123456789abcdef0123456789abcdef";
+/// Every CI assessment declares this dependent; it never decides an exit code.
+const CI_REACH_LABEL: &str = "checkout-api";
 
 #[derive(Debug, Clone, Copy)]
 struct CiCodeFinding {
@@ -1387,6 +1474,14 @@ async fn ci_console(
                             "status": assessment,
                             "findings": findings,
                             "checks": { "receipt_recorded": true, "status": "READY", "families": [] },
+                            "declared_reach": {
+                                "outcome": "READ", "complete": true, "gaps": [],
+                                "receipt_digest": null, "snapshot_id": null, "terraform": null,
+                                "entities": [{
+                                    "entity_id": "0190f3a0-0000-7000-8000-0000000000e2",
+                                    "kind": "service", "label": CI_REACH_LABEL, "type_keys": [], "path": [],
+                                }],
+                            },
                         }],
                     });
                     if let Some(code) = code {
@@ -1436,6 +1531,32 @@ async fn ci_console(
     let origin = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     (origin, requests)
+}
+
+#[tokio::test]
+async fn ci_review_text_shows_the_reach_summary_without_entity_labels() {
+    let (origin, _) = ci_console("PULL_REQUEST", StatusCode::OK, "COMPLETED", None, None).await;
+    let directory = tempfile::tempdir().unwrap();
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_proofline"))
+        .args(["--base-url", &origin, "--org", ORG, "ci", "review"])
+        .args(["--repo", "acme/app", "--timeout", "0"])
+        .env("PROOFLINE_TOKEN", TOKEN)
+        .env("COMMIT_SHA", CI_HEAD)
+        .env_remove("GITHUB_SHA")
+        .env("PATH", "")
+        .current_dir(directory.path())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.lines()
+            .any(|line| line == "  declared reach: complete, 1 found"),
+        "{text}"
+    );
+    assert!(!text.contains(CI_REACH_LABEL), "{text}");
 }
 
 struct CiCase {

@@ -5,11 +5,11 @@ use std::process::Command;
 
 use proofline_cli::model::{
     Assessment, Check, Checks, CodeAssessment, CommitReviewRequest, CommitReviewResponse,
-    CoverageUploadRequest, CoverageUploadResponse, EvidenceRef, FileReviewRequest,
+    CoverageUploadRequest, CoverageUploadResponse, DeclaredReach, EvidenceRef, FileReviewRequest,
     FileReviewResponse, FileScope, FilterChoice, Finding, OpenItems, PatchReviewRequest,
-    PatchReviewResponse, RepositoryName, RepositoryNames, ReviewDetail, ReviewFilters, ReviewPage,
-    ReviewSubject, ReviewSummary, RunNowMode, RunNowRequest, RunNowResponse, StopResponse,
-    UploadedReport,
+    PatchReviewResponse, ReachGap, ReachedEntity, RepositoryName, RepositoryNames, ReviewDetail,
+    ReviewFilters, ReviewPage, ReviewSubject, ReviewSummary, RunNowMode, RunNowRequest,
+    RunNowResponse, StopResponse, UploadedReport,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -159,6 +159,9 @@ fn types_match_the_public_contract() {
     holds::<ReviewDetail>("CustomerReviewDetail");
     holds::<OpenItems>("OpenItemsView");
     holds::<Assessment>("CustomerAssessment");
+    holds::<DeclaredReach>("DeclaredReachView");
+    holds::<ReachedEntity>("ReachedEntityView");
+    holds::<ReachGap>("ReachGapView");
     holds::<CodeAssessment>("CustomerCodeAssessment");
     holds::<Checks>("CustomerChecks");
     holds::<Check>("CustomerCheck");

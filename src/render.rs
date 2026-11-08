@@ -5,7 +5,7 @@ use std::cmp::Reverse;
 
 use url::Url;
 
-use crate::model::{Assessment, CodeAssessment, Finding, ReviewDetail};
+use crate::model::{Assessment, CodeAssessment, DeclaredReach, Finding, ReviewDetail};
 use crate::outcome::{self, Outcome};
 use crate::severity::Severity;
 use crate::text::{one_line, terminal_safe};
@@ -41,7 +41,17 @@ fn finding(out: &mut Vec<String>, finding: &Finding) {
     }
 }
 
-fn assessment(out: &mut Vec<String>, assessment: &Assessment) {
+/// How much of each declared reach the text shows.
+#[derive(Debug, Clone, Copy)]
+pub enum Reach {
+    /// The summary and every reached entity.
+    Entities,
+    /// The summary only. CI logs can be public, and entity labels must not
+    /// be published to GitHub.
+    Summary,
+}
+
+fn assessment(out: &mut Vec<String>, assessment: &Assessment, shown: Reach) {
     let name = one_line(&assessment.environment_display_name);
     let mut findings: Vec<&Finding> = assessment.findings.iter().collect();
     // Most severe first; a severity this CLI does not know prints last.
@@ -66,6 +76,39 @@ fn assessment(out: &mut Vec<String>, assessment: &Assessment) {
     }
     for item in findings {
         finding(out, item);
+    }
+    if let Some(reach) = &assessment.declared_reach {
+        declared_reach(out, reach, shown);
+    }
+}
+
+/// What depends on the change. Only a complete reach can say "none": an
+/// incomplete or unread one says nothing about what depends on the change.
+fn declared_reach(out: &mut Vec<String>, reach: &DeclaredReach, shown: Reach) {
+    let count = reach.entities.len();
+    let summary = match (reach.outcome.as_str(), reach.complete) {
+        ("READ", true) if count == 0 => "complete, none found".to_owned(),
+        ("READ", true) => format!("complete, {count} found"),
+        ("READ", false) => {
+            let gaps: Vec<&str> = reach.gaps.iter().map(|gap| gap.code.as_str()).collect();
+            format!(
+                "incomplete ({}), {count} found so far",
+                one_line(&gaps.join(", "))
+            )
+        }
+        (outcome, _) => format!("unknown ({})", one_line(outcome)),
+    };
+    out.push(format!("  declared reach: {summary}"));
+    if matches!(shown, Reach::Summary) {
+        return;
+    }
+    for entity in &reach.entities {
+        out.push(format!(
+            "    {:<8} {}  depth {}",
+            one_line(&entity.kind),
+            one_line(&entity.label),
+            entity.path.len()
+        ));
     }
 }
 
@@ -92,7 +135,7 @@ fn code_assessment(out: &mut Vec<String>, code: &CodeAssessment) {
 }
 
 /// The review, with separate CODE and environment assessment blocks.
-pub fn review(review: &ReviewDetail, state: Option<Outcome>, url: &Url) -> String {
+pub fn review(review: &ReviewDetail, state: Option<Outcome>, url: &Url, shown: Reach) -> String {
     let mut out = Vec::new();
     let subject = match (&review.repository_full_name, review.pull_request_number) {
         (Some(repository), Some(number)) => format!("{} #{number}", one_line(repository)),
@@ -159,7 +202,7 @@ pub fn review(review: &ReviewDetail, state: Option<Outcome>, url: &Url) -> Strin
     }
     for item in &review.assessments {
         out.push(String::new());
-        assessment(&mut out, item);
+        assessment(&mut out, item, shown);
     }
     if !review.local_reverifications.is_empty() {
         out.push(String::new());
@@ -207,6 +250,7 @@ mod tests {
                     .then(|| "WORLD_UNAVAILABLE".to_owned()),
                 reason_codes: None,
                 release_evidence_gap: None,
+                declared_reach: None,
             }],
             base_commit_sha: None,
             head_commit_sha: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
@@ -249,7 +293,7 @@ mod tests {
     #[test]
     fn an_incomplete_assessment_never_reads_as_clean() {
         let detail = sample("INCOMPLETE", Vec::new());
-        let text = review(&detail, outcome::terminal(&detail), &url());
+        let text = review(&detail, outcome::terminal(&detail), &url(), Reach::Entities);
         assert!(text.contains("production: INCOMPLETE (incomplete: WORLD_UNAVAILABLE)"));
         assert!(!text.contains("no findings"));
     }
@@ -264,7 +308,7 @@ mod tests {
                 finding("SERIOUS", "first"),
             ],
         );
-        let text = review(&detail, None, &url());
+        let text = review(&detail, None, &url(), Reach::Entities);
         let places = ["first", "second", "third"].map(|claim| text.find(claim).unwrap());
         assert!(places.is_sorted(), "{text}");
     }
@@ -272,7 +316,7 @@ mod tests {
     #[test]
     fn model_text_cannot_drive_the_terminal() {
         let detail = sample("COMPLETED", vec![finding("SERIOUS", "x\u{1b}[2J\ny")]);
-        let text = review(&detail, None, &url());
+        let text = review(&detail, None, &url(), Reach::Entities);
         assert!(!text.contains('\u{1b}'));
         assert!(text.contains("x\u{FFFD}[2J y"));
     }
