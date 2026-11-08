@@ -32,6 +32,8 @@ pub enum ApiError {
         origin: String,
         status: u16,
         detail: String,
+        /// The `refusal.reason` of a review request that created nothing.
+        refusal: Option<String>,
     },
     #[error("could not reach {origin}: {reason}")]
     Transport { origin: String, reason: String },
@@ -119,6 +121,7 @@ impl ApiError {
 struct Problem {
     title: Option<String>,
     detail: Option<String>,
+    refusal: Option<serde_json::Value>,
 }
 
 /// A response that arrived with an HTTP status, and its bounded body.
@@ -269,6 +272,10 @@ impl Http {
 
     pub fn problem(&self, reply: &Reply) -> ApiError {
         let parsed = serde_json::from_slice::<Problem>(&reply.body).ok();
+        let refusal = parsed
+            .as_ref()
+            .and_then(|problem| problem.refusal.as_ref()?.get("reason")?.as_str())
+            .map(str::to_owned);
         let detail = parsed
             .and_then(|problem| problem.detail.or(problem.title))
             .map_or_else(
@@ -285,6 +292,7 @@ impl Http {
             origin: self.origin.to_string(),
             status: reply.status.as_u16(),
             detail,
+            refusal,
         }
     }
 

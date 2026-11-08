@@ -20,6 +20,13 @@ the index, or `--include-untracked` to select a new, non-ignored file. The
 command preserves the real index and applies the usual secret preflight.
 It cannot be combined with pushed-commit, range or pull-request review.
 
+`proofline status` also says whether `proofline review` can run in this
+checkout: the repository is connected, setup is finished, and a ready
+environment links the repository. Open setup blockers are the reason when it
+cannot. Setup needs `setup:write`; without it, status says it cannot tell.
+`--json` prints the same report for agents. The exit code still reflects only
+the token.
+
 Read all recorded runs with `proofline history --repo owner/name --pr 7`.
 `proofline rerun REVIEW_ID` requests the original immutable subject and waits;
 `--no-wait` returns its link. Reruns require `reviews:rerun`.
