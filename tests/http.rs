@@ -1880,6 +1880,146 @@ async fn ci_review_fail_on_exits_three_for_an_open_finding_of_a_complete_review(
 }
 
 #[tokio::test]
+async fn ci_review_annotations_put_open_findings_on_the_diff_as_escaped_workflow_commands() {
+    let finding = |id: &str, severity: &str, lifecycle_state: &str, claim: &str, refs: Value| {
+        json!({
+            "id": id,
+            "severity": severity,
+            "risk_domain": "data_integrity",
+            "claim": claim,
+            "impact": "orders are lost",
+            "lifecycle_state": lifecycle_state,
+            "evidence_refs": refs,
+        })
+    };
+    let reference = |commit: &str| {
+        json!([{
+            "kind": "repository_file",
+            "label": "src/app.rs",
+            "provenance_status": "VERIFIED_REPOSITORY_READ",
+            "repository_path": "src/app.rs",
+            "start_line": 3,
+            "end_line": 5,
+            "commit_sha": commit,
+            "companion_repository": null,
+        }])
+    };
+    let findings = json!([
+        // Model text that tries to end its command and start another.
+        finding(
+            "0190f3a0-0000-7000-8000-0000000000a1",
+            "SERIOUS",
+            "NEW",
+            "Retries drop 100% of orders, then\n::add-mask::secret",
+            reference(CI_HEAD),
+        ),
+        // Cited at another commit, so it has no place on this diff.
+        finding(
+            "0190f3a0-0000-7000-8000-0000000000a2",
+            "WARNING",
+            "NEW",
+            "Stale cache.",
+            reference("fedcba9876543210fedcba9876543210fedcba98"),
+        ),
+        finding(
+            "0190f3a0-0000-7000-8000-0000000000a3",
+            "SERIOUS",
+            "RESOLVED",
+            "Already fixed.",
+            json!([]),
+        ),
+    ]);
+    let app = Router::new()
+        .route(
+            &format!("/api/v1/organizations/{ORG}/repository-names"),
+            get(|| async {
+                Json(json!({ "repositories": [{ "id": CI_REPOSITORY, "full_name": "acme/app" }] }))
+            }),
+        )
+        .route(
+            &format!("/api/v1/organizations/{ORG}/reviews"),
+            get(|| async {
+                Json(json!({
+                    "items": [{
+                        "id": CI_REVIEW,
+                        "kind": "PULL_REQUEST",
+                        "status": "COMPLETED",
+                        "created_at": "2026-10-01T00:00:00Z",
+                        "head_commit_sha": CI_HEAD,
+                        "pull_request_number": 12,
+                        "repository_id": CI_REPOSITORY,
+                        "run_number": 1,
+                    }],
+                    "next_cursor": null,
+                    "truncated": false,
+                    "filters": { "repositories": [], "environments": [], "authors": [] },
+                }))
+            }),
+        )
+        .route(
+            &format!("/api/v1/organizations/{ORG}/reviews/{CI_REVIEW}"),
+            get(move || {
+                let findings = findings.clone();
+                async move {
+                    Json(json!({
+                        "id": CI_REVIEW,
+                        "kind": "PULL_REQUEST",
+                        "status": "COMPLETED",
+                        "head_commit_sha": CI_HEAD,
+                        "pull_request_number": 12,
+                        "run_number": 1,
+                        "assessment_count": 1,
+                        "open_items": {
+                            "open_findings": 2,
+                            "serious_findings": 1,
+                            "accepted_risks": 0,
+                            "not_assessed": [],
+                        },
+                        "assessments": [{
+                            "id": "0190f3a0-0000-7000-8000-0000000000f2",
+                            "environment_display_name": "production",
+                            "status": "COMPLETED",
+                            "findings": findings,
+                            "checks": { "receipt_recorded": true, "status": "READY", "families": [] },
+                        }],
+                    }))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let mut args = vec!["ci", "review", "--repo", "acme/app", "--commit", CI_HEAD];
+    args.extend(["--timeout", "0", "--json"]);
+    let commands = |output: &std::process::Output| -> Vec<String> {
+        String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .filter(|line| line.starts_with("::"))
+            .map(str::to_owned)
+            .collect()
+    };
+
+    let plain = cli(&origin, &args).await;
+    assert_eq!(plain.status.code(), Some(0));
+    assert!(commands(&plain).is_empty(), "annotations are opt-in");
+
+    args.push("--annotations");
+    let annotated = cli(&origin, &args).await;
+    assert_eq!(annotated.status.code(), Some(0));
+    assert_eq!(
+        commands(&annotated),
+        [
+            "::error file=src/app.rs,line=3,endLine=5,title=Proofline production%3A data_integrity::Retries drop 100%25 of orders, then%0A::add-mask::secret%0A%0Aorders are lost",
+            "::warning title=Proofline production%3A data_integrity::Stale cache.%0A%0Aorders are lost",
+        ]
+    );
+    // Annotations go to stderr, so the result on stdout keeps its shape.
+    let result: Value = serde_json::from_slice(&annotated.stdout).unwrap();
+    assert_eq!(result["outcome"], "COMPLETED");
+}
+
+#[tokio::test]
 async fn native_tools_keep_tenant_paths_and_reruns_make_one_attempt() {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&requests);

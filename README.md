@@ -35,6 +35,13 @@ stderr. Repeat with `--cursor` and the same window and `--group-by` to continue.
 CSV repeats its header on every page. A failed page exits nonzero; never treat
 partial output from several invocations as a complete export.
 
+In GitHub Actions, `proofline ci review --annotations` also prints each finding
+that is not resolved as a workflow annotation, so it shows on the pull request's
+diff at the cited lines. It works on every GitHub plan, while uploading the
+`--sarif` file to code scanning needs GitHub Advanced Security on private
+repositories. GitHub shows at most 10 error and 10 warning annotations per step;
+the review link has the rest.
+
 Build from source with `cargo build --locked --release`. The pinned Rust toolchain
 is installed by rustup. Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`,
 `cargo test --locked` and `cargo deny check` before submitting a pull request.
