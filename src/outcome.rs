@@ -3,7 +3,7 @@
 //! complete, and an assessment with a gap is never reported as clean.
 
 use crate::model::{
-    Assessment, CodeAssessment, CodeAssessmentRead, CodeAssessmentStatus, ReviewDetail,
+    Assessment, CodeAssessment, CodeAssessmentRead, CodeAssessmentStatus, Finding, ReviewDetail,
 };
 use crate::severity::Severity;
 
@@ -101,9 +101,15 @@ pub(crate) fn code_unavailable(review: &ReviewDetail) -> bool {
 /// whole result.
 pub(crate) fn code_reaches(code: &CodeAssessment, threshold: Severity) -> bool {
     code_gap(code).is_none()
-        && code.findings.iter().any(|finding| {
-            finding.lifecycle_state != "RESOLVED" && threshold.reached_by(&finding.severity)
-        })
+        && code
+            .findings
+            .iter()
+            .any(|finding| !resolved(finding) && threshold.reached_by(&finding.severity))
+}
+
+/// Whether the finding's recorded lifecycle says it is fixed.
+pub(crate) fn resolved(finding: &Finding) -> bool {
+    finding.lifecycle_state == "RESOLVED"
 }
 
 /// CODE has no World receipts or environment checks. Its recorded status and
