@@ -67,6 +67,12 @@ only the file name. The JSON body cannot exceed 64 MiB. The command sends the ex
 An identical upload returns the recorded report. Upload success records evidence;
 the server evaluates the coverage check separately.
 
+## Other CI systems
+
+`proofline ci review --junit proofline.xml` also writes the review as JUnit XML. An open finding or a blocked check is a failure and an incomplete assessment is an error; a dismissed, accepted or resolved finding passes. The exit code is unchanged, so `--fail-on` still decides it.
+GitLab CI: `artifacts: { when: always, reports: { junit: proofline.xml } }`
+Jenkins: `sh 'proofline ci review --junit proofline.xml'`, then `junit 'proofline.xml'` in `post { always { } }`.
+
 Licensed under Apache-2.0.
 
 ## Publishing

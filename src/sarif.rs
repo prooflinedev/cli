@@ -49,20 +49,35 @@ const CODE_DOMAINS: [&str; 11] = [
     "committed_secret",
 ];
 
+/// A review that cannot be exported as a report, named by `report`.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum SubjectError {
+    #[error(
+        "requested review {requested}, but the server returned review {returned}; {report} export refused"
+    )]
+    WrongReview {
+        requested: Uuid,
+        returned: Uuid,
+        report: &'static str,
+    },
+    #[error(
+        "review {review} has kind {kind}; {report} export requires a retained pull-request review"
+    )]
+    UnsupportedSubject {
+        review: Uuid,
+        kind: String,
+        report: &'static str,
+    },
+    #[error(
+        "review {review} does not record a full commit SHA; {report} export requires an immutable pull-request head"
+    )]
+    MissingHead { review: Uuid, report: &'static str },
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(super) enum SarifError {
-    #[error(
-        "requested review {requested}, but the server returned review {returned}; SARIF export refused"
-    )]
-    WrongReview { requested: Uuid, returned: Uuid },
-    #[error(
-        "review {review} has kind {kind}; SARIF export requires a retained pull-request review"
-    )]
-    UnsupportedSubject { review: Uuid, kind: String },
-    #[error(
-        "review {0} does not record a full commit SHA; SARIF export requires an immutable pull-request head"
-    )]
-    MissingHead(Uuid),
+    #[error(transparent)]
+    Subject(#[from] SubjectError),
     #[error("finding {finding} has unsupported severity {severity}; SARIF export refused")]
     UnsupportedSeverity { finding: Uuid, severity: String },
     #[error("finding {finding} has unsupported risk domain {domain}; SARIF export refused")]
@@ -211,7 +226,7 @@ struct EvidenceProperties<'a> {
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-enum LocationStatus {
+pub(super) enum LocationStatus {
     Located,
     NoVerifiedReviewedLocation,
     NonCodeReference,
@@ -294,23 +309,34 @@ enum AssessmentSource<'a> {
     Code(&'a CodeAssessment),
 }
 
-pub(super) fn validate_subject(detail: &ReviewDetail, requested: Uuid) -> Result<(), SarifError> {
+/// Checks the review is the requested retained pull-request head. `report`
+/// names the format in the refusal.
+pub(super) fn validate_subject(
+    detail: &ReviewDetail,
+    requested: Uuid,
+    report: &'static str,
+) -> Result<(), SubjectError> {
     if detail.id != requested {
-        return Err(SarifError::WrongReview {
+        return Err(SubjectError::WrongReview {
             requested,
             returned: detail.id,
+            report,
         });
     }
     if detail.kind != "PULL_REQUEST" {
-        return Err(SarifError::UnsupportedSubject {
+        return Err(SubjectError::UnsupportedSubject {
             review: detail.id,
             kind: crate::text::one_line(&detail.kind),
+            report,
         });
     }
     if !detail.head_commit_sha.as_deref().is_some_and(|head| {
         matches!(head.len(), 40 | 64) && head.bytes().all(|byte| byte.is_ascii_hexdigit())
     }) {
-        return Err(SarifError::MissingHead(detail.id));
+        return Err(SubjectError::MissingHead {
+            review: detail.id,
+            report,
+        });
     }
     Ok(())
 }
@@ -321,11 +347,14 @@ pub(super) fn review<'a>(
     organization: Uuid,
     review_url: &str,
 ) -> Result<Report<'a>, SarifError> {
-    validate_subject(detail, requested)?;
+    validate_subject(detail, requested, "SARIF")?;
     let head = detail
         .head_commit_sha
         .as_deref()
-        .ok_or(SarifError::MissingHead(detail.id))?
+        .ok_or(SubjectError::MissingHead {
+            review: detail.id,
+            report: "SARIF",
+        })?
         .to_ascii_lowercase();
     let state = outcome::terminal(detail);
     let mut results = Vec::new();
@@ -579,7 +608,7 @@ fn finding_result<'a>(
     })
 }
 
-fn code_location<'a>(
+pub(super) fn code_location<'a>(
     reference: &'a EvidenceRef,
     head: &str,
 ) -> Result<(&'a str, u32, u32), LocationStatus> {

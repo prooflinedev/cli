@@ -227,6 +227,7 @@ mod tests {
             claim: claim.to_owned(),
             impact: "orders are lost".to_owned(),
             lifecycle_state: "ACTIVE".to_owned(),
+            validation: None,
             remediation: None,
             evidence_refs: vec![EvidenceRef {
                 kind: "CODE".to_owned(),

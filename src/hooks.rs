@@ -22,7 +22,9 @@ use crate::outcome::{self, Outcome};
 use crate::render::location;
 use crate::severity::Severity;
 use crate::text::one_line;
-use crate::{RepositoryArgs, Verdict, connect, connected_repository, preflight, read_review, say};
+use crate::{
+    ReportKind, RepositoryArgs, Verdict, connect, connected_repository, preflight, read_review, say,
+};
 
 /// Identifies a script this CLI wrote. Uninstall removes a hook only when its
 /// whole text is the script this version writes, so an edited hook stays.
@@ -493,8 +495,13 @@ async fn request(
             verify_finding_ids: Vec::new(),
         };
         let requested = api.request_patch_review(repository_id, &request).await?;
-        let (_, detail, state) =
-            read_review(api, requested.review_id, Some(deadline), false).await?;
+        let (_, detail, state) = read_review(
+            api,
+            requested.review_id,
+            Some(deadline),
+            ReportKind::Unchecked,
+        )
+        .await?;
         anyhow::Ok((requested.review_id, detail, state))
     };
     match requested.await {
