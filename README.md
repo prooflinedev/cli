@@ -4,7 +4,7 @@ The command-line client for the [Proofline review API](https://proofline.sh/docs
 
 Install with `curl -fsSL https://proofline.sh/cli | sh`, then run `proofline login`.
 To register MCP without a prompt, run `proofline agent install CLIENT --yes`.
-Clients include `claude-code` (or `claude`), `cursor`, `codex`, `gemini` and `kiro`.
+Clients include `claude-code` (or `claude`), `cursor`, `codex`, `gemini`, `kiro` and `windsurf`.
 Without `--yes`, the command previews the entry and asks for confirmation.
 `--print` previews without writing. Existing Proofline entries remain unchanged.
 New entries use this executable's absolute path and store no credentials.
