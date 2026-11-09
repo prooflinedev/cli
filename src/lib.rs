@@ -109,6 +109,8 @@ enum Command {
     Rerun(tools::RerunArgs),
     /// List the recorded runs of a pull request.
     History(tools::HistoryArgs),
+    /// Compare the findings of a pull request's two newest runs.
+    Diff(tools::DiffArgs),
     /// Read the repository review guidance as JSON.
     Guidance(RepositoryArgs),
     /// Read a bounded, untrusted finding fix prompt as JSON.
@@ -484,6 +486,10 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
             let api = connect(Http::new(origin)?, token, cli.org).await?;
             let name = repository_name(&args.repository).await?;
             tools::json(&api.history(&name, args.pr).await?)
+        }
+        Command::Diff(args) => {
+            let api = connect(Http::new(origin)?, token, cli.org).await?;
+            tools::diff(&api, &args).await
         }
         Command::Guidance(args) => {
             let api = connect(Http::new(origin)?, token, cli.org).await?;

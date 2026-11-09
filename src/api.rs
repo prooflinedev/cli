@@ -424,6 +424,41 @@ impl Api {
             .await
     }
 
+    /// One page of a pull request's runs, newest first.
+    pub(crate) async fn pull_request_history(
+        &self,
+        repository: &str,
+        number: u64,
+        cursor: Option<&str>,
+    ) -> Result<ReviewPage, ApiError> {
+        let mut url = self.url(&["reviews", "pr", repository, &number.to_string()]);
+        if let Some(cursor) = cursor {
+            url.query_pairs_mut().append_pair("cursor", cursor);
+        }
+        let raw = self.get(url).await?;
+        serde_json::from_value(raw).map_err(|error| self.http.protocol(error.to_string()))
+    }
+
+    /// One recorded run of a pull request, by its run number.
+    pub(crate) async fn pull_request_run(
+        &self,
+        repository: &str,
+        number: u64,
+        run: u64,
+    ) -> Result<ReviewDetail, ApiError> {
+        let raw = self
+            .get(self.url(&[
+                "reviews",
+                "pr",
+                repository,
+                &number.to_string(),
+                "runs",
+                &run.to_string(),
+            ]))
+            .await?;
+        serde_json::from_value(raw).map_err(|error| self.http.protocol(error.to_string()))
+    }
+
     pub(crate) async fn guidance(&self, repository: Uuid) -> Result<serde_json::Value, ApiError> {
         self.get(self.url(&["repositories", &repository.to_string(), "review-guidance"]))
             .await

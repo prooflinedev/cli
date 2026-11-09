@@ -2188,3 +2188,343 @@ async fn fix_commands_preserve_context_and_never_retry_verification() {
     assert_eq!(calls.lock().unwrap().len(), 4);
     server.abort();
 }
+
+fn diff_summary(run: i64) -> Value {
+    json!({
+        "id": Uuid::from_u128(run as u128),
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "created_at": "2026-11-01T00:00:00Z",
+        "head_commit_sha": null,
+        "pull_request_number": 7,
+        "repository_id": REPOSITORY,
+        "run_number": run,
+    })
+}
+
+fn diff_finding(fingerprint: Option<&str>, severity: &str, claim: &str) -> Value {
+    json!({
+        "id": Uuid::nil(),
+        "finding_fingerprint": fingerprint,
+        "severity": severity,
+        "risk_domain": "data_integrity",
+        "claim": claim,
+        "impact": "orders are lost",
+        "lifecycle_state": "ACTIVE",
+        "remediation": null,
+        "evidence_refs": [],
+    })
+}
+
+fn diff_detail(run: i64, status: &str, findings: Vec<Value>) -> Value {
+    json!({
+        "id": Uuid::from_u128(100 + run as u128),
+        "kind": "PULL_REQUEST",
+        "status": status,
+        "assessment_count": 1,
+        "assessments": [{
+            "id": Uuid::from_u128(200 + run as u128),
+            "environment_display_name": "production",
+            "status": status,
+            "findings": findings,
+            "checks": { "receipt_recorded": true, "status": "READY", "families": [] },
+            "incompleteness_kind": null,
+            "reason_codes": null,
+            "release_evidence_gap": null,
+        }],
+        "code_assessment": null,
+        "base_commit_sha": null,
+        "head_commit_sha": null,
+        "open_items": null,
+        "pull_request_number": 7,
+        "repository_full_name": "acme/web",
+        "run_number": run,
+    })
+}
+
+async fn serve_diff(
+    runs: Vec<i64>,
+    details: Vec<(u64, Value)>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let details: Arc<std::collections::HashMap<u64, Value>> =
+        Arc::new(details.into_iter().collect());
+    let summaries: Vec<Value> = runs.iter().map(|run| diff_summary(*run)).collect();
+    let app = Router::new()
+        .route(
+            &format!("/api/v1/organizations/{ORG}/reviews/pr/{{repository}}/{{number}}"),
+            get(move |Path((repository, number)): Path<(String, u64)>| {
+                let summaries = summaries.clone();
+                async move {
+                    assert_eq!(repository, "acme/web");
+                    assert_eq!(number, 7);
+                    Json(json!({
+                        "items": summaries,
+                        "next_cursor": null,
+                        "truncated": false,
+                        "filters": { "repositories": [{ "id": REPOSITORY, "name": "acme/web" }] },
+                    }))
+                }
+            }),
+        )
+        .route(
+            &format!(
+                "/api/v1/organizations/{ORG}/reviews/pr/{{repository}}/{{number}}/runs/{{run}}"
+            ),
+            get(
+                move |Path((_repository, _number, run)): Path<(String, u64, u64)>| {
+                    let details = Arc::clone(&details);
+                    async move {
+                        details.get(&run).map_or_else(
+                            || {
+                                (
+                                    StatusCode::NOT_FOUND,
+                                    Json(json!({
+                                        "title": "not found",
+                                        "status": 404,
+                                        "detail": "no such run",
+                                    })),
+                                )
+                                    .into_response()
+                            },
+                            |detail| Json(detail.clone()).into_response(),
+                        )
+                    }
+                },
+            ),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (origin, server)
+}
+
+async fn diff_cli(origin: &str, extra: &[&str]) -> std::process::Output {
+    let mut args = vec!["diff", "--repo", "acme/web", "--pr", "7"];
+    args.extend_from_slice(extra);
+    cli(origin, &args).await
+}
+
+#[tokio::test]
+async fn diff_refuses_a_run_that_has_not_finished() {
+    let (origin, server) = serve_diff(
+        vec![2, 3],
+        vec![
+            (2, diff_detail(2, "COMPLETED", Vec::new())),
+            (3, diff_detail(3, "RUNNING", Vec::new())),
+        ],
+    )
+    .await;
+
+    let output = diff_cli(&origin, &[]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("run 3 has not finished"), "{stderr}");
+    server.abort();
+}
+
+#[tokio::test]
+async fn diff_never_reports_an_incomplete_run_as_resolved() {
+    let (origin, server) = serve_diff(
+        vec![2, 3],
+        vec![
+            (
+                2,
+                diff_detail(
+                    2,
+                    "COMPLETED",
+                    vec![diff_finding(Some("keep"), "SERIOUS", "still there")],
+                ),
+            ),
+            (3, diff_detail(3, "INCOMPLETE", Vec::new())),
+        ],
+    )
+    .await;
+
+    let output = diff_cli(&origin, &[]).await;
+
+    assert_eq!(output.status.code(), Some(2));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Not comparable:"), "{stdout}");
+    assert!(stdout.contains("environment:"), "{stdout}");
+    assert!(stdout.contains("still there"), "{stdout}");
+    assert!(stdout.contains("Resolved (0):"), "{stdout}");
+    assert!(!stdout.contains("Resolved (1):"), "{stdout}");
+    server.abort();
+}
+
+#[tokio::test]
+async fn diff_reports_a_missing_run_as_http_404() {
+    let (origin, server) = serve_diff(
+        vec![2, 3],
+        vec![(2, diff_detail(2, "COMPLETED", Vec::new()))],
+    )
+    .await;
+
+    let output = diff_cli(&origin, &[]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("HTTP 404"), "{stderr}");
+    server.abort();
+}
+
+#[tokio::test]
+async fn diff_needs_two_runs() {
+    let (origin, server) =
+        serve_diff(vec![1], vec![(1, diff_detail(1, "COMPLETED", Vec::new()))]).await;
+
+    let output = diff_cli(&origin, &[]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("only run 1; a diff needs two runs"),
+        "{stderr}"
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn diff_labels_findings_and_emits_the_documented_json() {
+    let (origin, server) = serve_diff(
+        vec![2, 3],
+        vec![
+            (
+                2,
+                diff_detail(
+                    2,
+                    "COMPLETED",
+                    vec![
+                        diff_finding(Some("keep"), "WARNING", "still there"),
+                        diff_finding(Some("fixed"), "SERIOUS", "was fixed"),
+                        diff_finding(None, "WARNING", "previous unknown"),
+                    ],
+                ),
+            ),
+            (
+                3,
+                diff_detail(
+                    3,
+                    "COMPLETED",
+                    vec![
+                        diff_finding(Some("keep"), "SERIOUS", "still there"),
+                        diff_finding(Some("new"), "WARNING", "brand new"),
+                        diff_finding(None, "NOTE", "current unknown"),
+                    ],
+                ),
+            ),
+        ],
+    )
+    .await;
+
+    let output = diff_cli(&origin, &[]).await;
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for label in [
+        "New (1):",
+        "Resolved (1):",
+        "Persisting (1):",
+        "Uncorrelated (2):",
+    ] {
+        assert!(stdout.contains(label), "{stdout}");
+    }
+    assert!(stdout.contains("was WARNING"), "{stdout}");
+
+    let output = diff_cli(&origin, &["--json"]).await;
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["repository"], "acme/web");
+    assert_eq!(document["pull_request"], 7);
+    assert_eq!(document["from"], 2);
+    assert_eq!(document["to"], 3);
+    assert_eq!(document["from_status"], "COMPLETED");
+    assert_eq!(document["to_status"], "COMPLETED");
+    assert_eq!(document["new"].as_array().unwrap().len(), 1);
+    assert_eq!(document["resolved"].as_array().unwrap().len(), 1);
+    assert_eq!(document["persisting"].as_array().unwrap().len(), 1);
+    assert_eq!(document["uncorrelated"].as_array().unwrap().len(), 2);
+    assert_eq!(document["not_comparable"], json!([]));
+    server.abort();
+}
+
+#[tokio::test]
+async fn diff_follows_a_truncated_run_history_to_the_newest_runs() {
+    let pages = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&pages);
+    let details: Arc<std::collections::HashMap<u64, Value>> = Arc::new(
+        [
+            (2, diff_detail(2, "COMPLETED", Vec::new())),
+            (3, diff_detail(3, "COMPLETED", Vec::new())),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    let app = Router::new()
+        .route(
+            &format!("/api/v1/organizations/{ORG}/reviews/pr/{{repository}}/{{number}}"),
+            get(move |uri: axum::http::Uri| {
+                let observed = Arc::clone(&observed);
+                async move {
+                    let second = observed.fetch_add(1, Ordering::SeqCst) == 1;
+                    if second {
+                        assert_eq!(uri.query(), Some("cursor=next"));
+                        Json(json!({
+                            "items": [diff_summary(3)],
+                            "next_cursor": null,
+                            "truncated": false,
+                            "filters": { "repositories": [{ "id": REPOSITORY, "name": "acme/web" }] },
+                        }))
+                    } else {
+                        assert_eq!(uri.query(), None);
+                        Json(json!({
+                            "items": [diff_summary(1), diff_summary(2)],
+                            "next_cursor": "next",
+                            "truncated": true,
+                            "filters": { "repositories": [{ "id": REPOSITORY, "name": "acme/web" }] },
+                        }))
+                    }
+                }
+            }),
+        )
+        .route(
+            &format!(
+                "/api/v1/organizations/{ORG}/reviews/pr/{{repository}}/{{number}}/runs/{{run}}"
+            ),
+            get(
+                move |Path((_repository, _number, run)): Path<(String, u64, u64)>| {
+                    let details = Arc::clone(&details);
+                    async move { Json(details.get(&run).unwrap().clone()) }
+                },
+            ),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let output = diff_cli(&origin, &["--json"]).await;
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["from"], 2);
+    assert_eq!(document["to"], 3);
+    assert_eq!(pages.load(Ordering::SeqCst), 2);
+    server.abort();
+}
