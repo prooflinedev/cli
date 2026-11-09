@@ -224,6 +224,9 @@ pub struct Finding {
     pub claim: String,
     pub impact: String,
     pub lifecycle_state: String,
+    /// The latest decision on the finding. Null when no decision is recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validation: Option<String>,
     pub remediation: Option<String>,
     pub evidence_refs: Vec<EvidenceRef>,
 }

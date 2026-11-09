@@ -10,6 +10,7 @@ pub mod device;
 pub mod git;
 mod github_actions;
 mod hooks;
+mod junit;
 mod mcp;
 pub mod model;
 pub mod origin;
@@ -169,6 +170,11 @@ struct CiReviewArgs {
     /// Also write the review as SARIF 2.1.0 to this file.
     #[arg(long, value_name = "FILE")]
     sarif: Option<PathBuf>,
+    /// Also write the review as `JUnit` XML to this file, for CI systems that
+    /// render a test report. Open findings are failures and an incomplete
+    /// assessment is an error; the file does not change the exit code.
+    #[arg(long, value_name = "FILE")]
+    junit: Option<PathBuf>,
     /// Print JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -976,19 +982,30 @@ fn poll_deadline(minutes: u64) -> Result<tokio::time::Instant, PollTimeoutTooLar
         .ok_or(PollTimeoutTooLarge { minutes })
 }
 
+/// Which report, if any, the review must be fit for. The check runs on every
+/// poll so a wrong review is refused at once, in that report's own words.
+#[derive(Clone, Copy)]
+enum ReportKind {
+    Unchecked,
+    Sarif,
+    Junit,
+}
+
 /// Reads the review, polling until it finishes or `deadline` passes. Without
 /// a deadline it reads once.
 async fn read_review(
     api: &Api,
     review_id: Uuid,
     deadline: Option<tokio::time::Instant>,
-    sarif: bool,
+    subject: ReportKind,
 ) -> anyhow::Result<(serde_json::Value, ReviewDetail, Option<Outcome>)> {
     let mut delay = FIRST_POLL_SECONDS;
     loop {
         let (raw, detail) = api.review(review_id).await?;
-        if sarif {
-            sarif::validate_subject(&detail, review_id)?;
+        match subject {
+            ReportKind::Unchecked => {}
+            ReportKind::Sarif => sarif::validate_subject(&detail, review_id, "SARIF")?,
+            ReportKind::Junit => sarif::validate_subject(&detail, review_id, "JUnit")?,
         }
         let state = outcome::terminal(&detail);
         let Some(deadline) = deadline else {
@@ -1021,8 +1038,12 @@ async fn show(
     } else {
         None
     };
-    let sarif = matches!(format, OutputFormat::Sarif);
-    let (raw, detail, state) = read_review(api, review_id, deadline, sarif).await?;
+    let subject = if matches!(format, OutputFormat::Sarif) {
+        ReportKind::Sarif
+    } else {
+        ReportKind::Unchecked
+    };
+    let (raw, detail, state) = read_review(api, review_id, deadline, subject).await?;
     print_review(api, review_id, raw, &detail, state, format)?;
     match state {
         Some(Outcome::Completed) => return Ok(Verdict::Done),
@@ -1163,18 +1184,44 @@ async fn ci_review(
         delay = (delay * 2).min(LONGEST_POLL_SECONDS);
     };
     let sarif_path = args.sarif.as_deref();
-    let (raw, detail, state) =
-        read_review(api, review_id, Some(deadline), sarif_path.is_some()).await?;
-    if let Some(path) = sarif_path {
-        let document = sarif::review(
-            &detail,
-            review_id,
-            api.organization_id(),
-            api.review_url(review_id).as_str(),
-        )?;
+    let subject = if sarif_path.is_some() {
+        ReportKind::Sarif
+    } else if args.junit.is_some() {
+        ReportKind::Junit
+    } else {
+        ReportKind::Unchecked
+    };
+    let (raw, detail, state) = read_review(api, review_id, Some(deadline), subject).await?;
+    // Both reports are built before either is written, so a refused review
+    // leaves no file behind.
+    let sarif_report = sarif_path
+        .map(|path| {
+            sarif::review(
+                &detail,
+                review_id,
+                api.organization_id(),
+                api.review_url(review_id).as_str(),
+            )
+            .map(|document| (path, document))
+        })
+        .transpose()?;
+    let junit_report = args
+        .junit
+        .as_deref()
+        .map(|path| {
+            junit::review(&detail, review_id, api.review_url(review_id).as_str())
+                .map(|document| (path, document))
+        })
+        .transpose()?;
+    if let Some((path, document)) = sarif_report {
         tokio::fs::write(path, serde_json::to_vec_pretty(&document)?)
             .await
             .with_context(|| format!("could not write SARIF to {}", path.display()))?;
+    }
+    if let Some((path, document)) = junit_report {
+        tokio::fs::write(path, document)
+            .await
+            .with_context(|| format!("could not write JUnit XML to {}", path.display()))?;
     }
     print_review(
         api,
@@ -1451,6 +1498,7 @@ mod tests {
             let args = CiReviewArgs {
                 commit: None,
                 sarif: None,
+                junit: None,
                 json: false,
                 timeout: 3,
                 fail_on: None,
