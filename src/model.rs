@@ -203,11 +203,26 @@ pub struct Checks {
     pub families: Vec<Check>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct UntrustedText {
+    pub untrusted_text: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CheckFile {
+    pub path: UntrustedText,
+    pub revision: String,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Check {
     pub name: String,
     pub outcome: String,
     pub lifecycle: String,
+    /// Empty when World cited no file, and on results recorded before World
+    /// cited files.
+    #[serde(default)]
+    pub files: Vec<CheckFile>,
     pub detail: Option<String>,
     pub unresolved_reason: Option<String>,
 }

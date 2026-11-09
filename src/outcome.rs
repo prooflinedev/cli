@@ -29,6 +29,10 @@ impl Outcome {
 const COMPLETE_CHECKS: [&str; 3] = ["READY", "BLOCKED", "NOT_APPLICABLE"];
 const COMPLETE_LIFECYCLES: [&str; 4] = ["GATING", "SHADOW", "QUARANTINED", "RETIRED"];
 const KNOWN_ASSESSMENTS: [&str; 5] = ["PENDING", "RUNNING", "COMPLETED", "INCOMPLETE", "FAILED"];
+
+pub(crate) fn known_check_lifecycle(lifecycle: &str) -> bool {
+    COMPLETE_LIFECYCLES.contains(&lifecycle)
+}
 // The server's classification policy owns this marker. The API publishes it in
 // place of every CODE finding's risk domain, claim and impact once the review's
 // protected evidence is missing or has expired.

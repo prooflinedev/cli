@@ -4,12 +4,12 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use proofline_cli::model::{
-    Assessment, Check, Checks, CodeAssessment, CommitReviewRequest, CommitReviewResponse,
-    CoverageUploadRequest, CoverageUploadResponse, EvidenceRef, FileReviewRequest,
-    FileReviewResponse, FileScope, FilterChoice, Finding, OpenItems, PatchReviewRequest,
-    PatchReviewResponse, RepositoryName, RepositoryNames, ReviewDetail, ReviewFilters, ReviewPage,
-    ReviewSubject, ReviewSummary, RunNowMode, RunNowRequest, RunNowResponse, StopResponse,
-    UploadedReport,
+    Assessment, Check, CheckFile, Checks, CodeAssessment, CommitReviewRequest,
+    CommitReviewResponse, CoverageUploadRequest, CoverageUploadResponse, EvidenceRef,
+    FileReviewRequest, FileReviewResponse, FileScope, FilterChoice, Finding, OpenItems,
+    PatchReviewRequest, PatchReviewResponse, RepositoryName, RepositoryNames, ReviewDetail,
+    ReviewFilters, ReviewPage, ReviewSubject, ReviewSummary, RunNowMode, RunNowRequest,
+    RunNowResponse, StopResponse, UntrustedText, UploadedReport,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -162,6 +162,8 @@ fn types_match_the_public_contract() {
     holds::<CodeAssessment>("CustomerCodeAssessment");
     holds::<Checks>("CustomerChecks");
     holds::<Check>("CustomerCheck");
+    holds::<CheckFile>("CheckFile");
+    holds::<UntrustedText>("UntrustedText");
     holds::<Finding>("CustomerFinding");
     holds::<EvidenceRef>("CustomerEvidenceRef");
     holds::<RunNowRequest>("RunNowRequest");

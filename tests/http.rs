@@ -2188,3 +2188,80 @@ async fn fix_commands_preserve_context_and_never_retry_verification() {
     assert_eq!(calls.lock().unwrap().len(), 4);
     server.abort();
 }
+
+#[tokio::test]
+async fn findings_print_cited_check_files_and_withhold_check_detail_from_text() {
+    const PRIVATE: &str = "WORLD_ENV_DETAIL_CANARY";
+    let body = json!({
+        "id": SELECTED_REVIEW,
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 1,
+        "head_commit_sha": "89abcdef0123456789abcdef0123456789abcdef",
+        "base_commit_sha": "0123456789abcdef0123456789abcdef01234567",
+        "pull_request_number": 42,
+        "repository_full_name": "acme/web",
+        "run_number": 1,
+        "subjects": [],
+        "assessments": [{
+            "id": "0190f3a0-0000-7000-8000-0000000000bb",
+            "environment_display_name": "production",
+            "status": "COMPLETED",
+            "findings": [],
+            "checks": {
+                "receipt_recorded": true,
+                "status": "UNRESOLVED",
+                "families": [{
+                    "name": "Required configuration",
+                    "outcome": "UNRESOLVED",
+                    "lifecycle": "GATING",
+                    "unresolved_reason": "UNSUPPORTED",
+                    "detail": PRIVATE,
+                    "files": [
+                        {
+                            "revision": "PROPOSED_CODE_REVISION",
+                            "path": { "untrusted_text": "<b>deploy</b>\u{1b}[2J.yml" }
+                        },
+                        {
+                            "revision": "BASE_CODE_REVISION",
+                            "path": { "untrusted_text": "deploy.yml" }
+                        }
+                    ]
+                }]
+            }
+        }]
+    });
+    let app = Router::new().route(
+        &format!("/api/v1/organizations/{ORG}/reviews/{SELECTED_REVIEW}"),
+        get(move || {
+            let body = body.clone();
+            async move { Json(body) }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let text_out = cli(&origin, &["findings", "--review", SELECTED_REVIEW]).await;
+    assert_eq!(text_out.status.code(), Some(2), "{text_out:?}");
+    let stdout = String::from_utf8(text_out.stdout).unwrap();
+    assert!(stdout.contains("production: COMPLETED (incomplete: CHECKS_UNRESOLVED)"));
+    assert!(stdout.contains("  check UNRESOLVED Required configuration (GATING, UNSUPPORTED)"));
+    assert!(stdout.contains("           file (proposed): <b>deploy</b>\u{FFFD}[2J.yml"));
+    assert!(stdout.contains("           file (base): deploy.yml"));
+    assert!(!stdout.contains('\u{1b}'));
+    assert!(!stdout.contains(PRIVATE));
+
+    let json_out = cli(
+        &origin,
+        &["findings", "--review", SELECTED_REVIEW, "--json"],
+    )
+    .await;
+    assert_eq!(json_out.status.code(), Some(2), "{json_out:?}");
+    let result: Value = serde_json::from_slice(&json_out.stdout).unwrap();
+    assert_eq!(
+        result["review"]["assessments"][0]["checks"]["families"][0]["files"][1]["revision"],
+        "BASE_CODE_REVISION"
+    );
+    server.abort();
+}
