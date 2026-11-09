@@ -5,7 +5,7 @@ use std::cmp::Reverse;
 
 use url::Url;
 
-use crate::model::{Assessment, CodeAssessment, Finding, ReviewDetail};
+use crate::model::{Assessment, Check, CodeAssessment, Finding, ReviewDetail};
 use crate::outcome::{self, Outcome};
 use crate::severity::Severity;
 use crate::text::{one_line, terminal_safe};
@@ -41,8 +41,52 @@ fn finding(out: &mut Vec<String>, finding: &Finding) {
     }
 }
 
+fn check_revision(revision: &str) -> String {
+    match revision {
+        "PROPOSED_CODE_REVISION" => "proposed".to_owned(),
+        "BASE_CODE_REVISION" => "base".to_owned(),
+        other => one_line(other),
+    }
+}
+
+fn check_noteworthy(check: &Check) -> bool {
+    !matches!(check.outcome.as_str(), "READY" | "NOT_APPLICABLE")
+        || !outcome::known_check_lifecycle(&check.lifecycle)
+}
+
+/// Prints a check that blocked or left an evidence gap, along with the
+/// repository files World cited. `check.detail` may carry environment values
+/// and never appears in terminal summaries.
+fn check_line(out: &mut Vec<String>, check: &Check) {
+    let reason = check
+        .unresolved_reason
+        .as_deref()
+        .map(|reason| format!(", {}", one_line(reason)))
+        .unwrap_or_default();
+    out.push(format!(
+        "  check {:<10} {} ({}{})",
+        one_line(&check.outcome),
+        one_line(&check.name),
+        one_line(&check.lifecycle),
+        reason,
+    ));
+    for file in &check.files {
+        out.push(format!(
+            "           file ({}): {}",
+            check_revision(&file.revision),
+            one_line(&file.path.untrusted_text),
+        ));
+    }
+}
+
 fn assessment(out: &mut Vec<String>, assessment: &Assessment) {
     let name = one_line(&assessment.environment_display_name);
+    let checks: Vec<&Check> = assessment
+        .checks
+        .families
+        .iter()
+        .filter(|item| check_noteworthy(item))
+        .collect();
     let mut findings: Vec<&Finding> = assessment.findings.iter().collect();
     // Most severe first; a severity this CLI does not know prints last.
     findings.sort_by_key(|item| Reverse(Severity::parse(&item.severity)));
@@ -53,15 +97,31 @@ fn assessment(out: &mut Vec<String>, assessment: &Assessment) {
                 one_line(&assessment.status),
                 one_line(&reasons.join(", "))
             ));
+            for item in &checks {
+                check_line(out, item);
+            }
             if !findings.is_empty() {
                 out.push("  findings so far, not a complete result:".to_owned());
             }
         }
-        None if findings.is_empty() => {
+        None if findings.is_empty() && checks.is_empty() => {
             out.push(format!("{name}: COMPLETED, no findings"));
+        }
+        None if findings.is_empty() => {
+            let noun = if checks.len() == 1 { "check" } else { "checks" };
+            out.push(format!(
+                "{name}: COMPLETED, no findings ({} blocked {noun})",
+                checks.len()
+            ));
+            for item in &checks {
+                check_line(out, item);
+            }
         }
         None => {
             out.push(format!("{name}: COMPLETED, {} findings", findings.len()));
+            for item in &checks {
+                check_line(out, item);
+            }
         }
     }
     for item in findings {
@@ -275,5 +335,92 @@ mod tests {
         let text = review(&detail, None, &url());
         assert!(!text.contains('\u{1b}'));
         assert!(text.contains("x\u{FFFD}[2J y"));
+    }
+
+    #[test]
+    fn check_evidence_prints_cited_files_and_never_world_detail() {
+        use crate::model::{CheckFile, UntrustedText};
+
+        const PRIVATE: &str = "WORLD_SECRET_DETAIL_CANARY";
+
+        let mut blocked = sample("COMPLETED", Vec::new());
+        blocked.assessments[0].checks = Checks {
+            receipt_recorded: true,
+            status: "BLOCKED".to_owned(),
+            families: vec![
+                Check {
+                    name: "Clean check".to_owned(),
+                    outcome: "READY".to_owned(),
+                    lifecycle: "GATING".to_owned(),
+                    files: vec![CheckFile {
+                        revision: "PROPOSED_CODE_REVISION".to_owned(),
+                        path: UntrustedText {
+                            untrusted_text: "quiet.tf".to_owned(),
+                        },
+                    }],
+                    detail: Some(PRIVATE.to_owned()),
+                    unresolved_reason: None,
+                },
+                Check {
+                    name: "IAM boundary".to_owned(),
+                    outcome: "BLOCKED".to_owned(),
+                    lifecycle: "GATING".to_owned(),
+                    files: vec![
+                        CheckFile {
+                            revision: "PROPOSED_CODE_REVISION".to_owned(),
+                            path: UntrustedText {
+                                untrusted_text: "infra/\u{1b}[2Jiam.tf\nnext".to_owned(),
+                            },
+                        },
+                        CheckFile {
+                            revision: "BASE_CODE_REVISION".to_owned(),
+                            path: UntrustedText {
+                                untrusted_text: "infra/roles.tf".to_owned(),
+                            },
+                        },
+                    ],
+                    detail: Some(PRIVATE.to_owned()),
+                    unresolved_reason: None,
+                },
+            ],
+        };
+        let text = review(&blocked, outcome::terminal(&blocked), &url());
+        assert!(text.contains("production: COMPLETED, no findings (1 blocked check)"));
+        assert!(text.contains("  check BLOCKED    IAM boundary (GATING)"));
+        assert!(text.contains("           file (proposed): infra/\u{FFFD}[2Jiam.tf next"));
+        assert!(text.contains("           file (base): infra/roles.tf"));
+        assert!(!text.contains("Clean check"));
+        assert!(!text.contains("quiet.tf"));
+        assert!(!text.contains('\u{1b}'));
+        assert!(!text.contains(PRIVATE));
+
+        let mut unresolved = sample("COMPLETED", Vec::new());
+        unresolved.assessments[0].incompleteness_kind = None;
+        unresolved.assessments[0].checks = Checks {
+            receipt_recorded: true,
+            status: "UNRESOLVED".to_owned(),
+            families: vec![Check {
+                name: "Environment reachability".to_owned(),
+                outcome: "UNRESOLVED".to_owned(),
+                lifecycle: "SHADOW".to_owned(),
+                files: vec![CheckFile {
+                    revision: "PROPOSED_CODE_REVISION".to_owned(),
+                    path: UntrustedText {
+                        untrusted_text: "<b>deploy</b>.yml".to_owned(),
+                    },
+                }],
+                detail: Some(PRIVATE.to_owned()),
+                unresolved_reason: Some("NEEDS_EVIDENCE".to_owned()),
+            }],
+        };
+        let gap_text = review(&unresolved, outcome::terminal(&unresolved), &url());
+        assert!(gap_text.contains("production: COMPLETED (incomplete: CHECKS_UNRESOLVED)"));
+        assert!(
+            gap_text
+                .contains("  check UNRESOLVED Environment reachability (SHADOW, NEEDS_EVIDENCE)")
+        );
+        assert!(gap_text.contains("           file (proposed): <b>deploy</b>.yml"));
+        assert!(!gap_text.contains("no findings"));
+        assert!(!gap_text.contains(PRIVATE));
     }
 }
