@@ -42,6 +42,8 @@ struct InstallArgs {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Client {
+    #[value(alias = "agy")]
+    Antigravity,
     #[value(alias = "claude")]
     ClaudeCode,
     Codex,
@@ -53,6 +55,7 @@ enum Client {
 impl Client {
     const fn relative_path(self) -> &'static str {
         match self {
+            Self::Antigravity => ".gemini/antigravity-cli/mcp_config.json",
             Self::ClaudeCode => ".claude.json",
             Self::Codex => ".codex/config.toml",
             Self::Cursor => ".cursor/mcp.json",
@@ -65,6 +68,7 @@ impl Client {
 impl fmt::Display for Client {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::Antigravity => "Antigravity",
             Self::ClaudeCode => "Claude Code",
             Self::Codex => "Codex",
             Self::Cursor => "Cursor",
