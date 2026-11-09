@@ -2188,3 +2188,114 @@ async fn fix_commands_preserve_context_and_never_retry_verification() {
     assert_eq!(calls.lock().unwrap().len(), 4);
     server.abort();
 }
+
+#[tokio::test]
+async fn ci_review_summary_writes_markdown_report_or_uses_github_step_summary() {
+    let (origin, _) = ci_console(
+        "PULL_REQUEST",
+        StatusCode::OK,
+        "COMPLETED",
+        Some([0, 0]),
+        None,
+    )
+    .await;
+
+    let directory = tempfile::tempdir().unwrap();
+    let explicit_summary = directory.path().join("summary.md");
+
+    // Case 1: Explicit path via --summary <path>
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_proofline"));
+    command
+        .args(["--base-url", &origin, "--org", ORG, "ci", "review"])
+        .args([
+            "--repo",
+            "acme/app",
+            "--timeout",
+            "0",
+            "--json",
+            "--summary",
+        ])
+        .arg(&explicit_summary)
+        .env("PROOFLINE_TOKEN", TOKEN)
+        .env("COMMIT_SHA", CI_HEAD)
+        .env_remove("GITHUB_SHA")
+        .env("PATH", "")
+        .current_dir(directory.path())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(15), command.output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let content = std::fs::read_to_string(&explicit_summary).unwrap();
+    assert!(content.contains("### ✅ Proofline Review: COMPLETED"));
+    assert!(content.contains("View review in Proofline"));
+    assert!(content.contains("| production | COMPLETED | 1 |"));
+    assert!(content.contains("Orders are dropped on retry."));
+    assert!(content.contains("🔴 **SERIOUS**"));
+
+    // Case 2: Bare --summary uses GITHUB_STEP_SUMMARY environment variable
+    let gha_summary = directory.path().join("github_step_summary.md");
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_proofline"));
+    command
+        .args(["--base-url", &origin, "--org", ORG, "ci", "review"])
+        .args([
+            "--repo",
+            "acme/app",
+            "--timeout",
+            "0",
+            "--json",
+            "--summary",
+        ])
+        .env("PROOFLINE_TOKEN", TOKEN)
+        .env("COMMIT_SHA", CI_HEAD)
+        .env("GITHUB_STEP_SUMMARY", &gha_summary)
+        .env_remove("GITHUB_SHA")
+        .env("PATH", "")
+        .current_dir(directory.path())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(15), command.output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let gha_content = std::fs::read_to_string(&gha_summary).unwrap();
+    assert!(gha_content.contains("### ✅ Proofline Review: COMPLETED"));
+
+    // Case 3: Bare --summary without GITHUB_STEP_SUMMARY fails gracefully
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_proofline"));
+    command
+        .args(["--base-url", &origin, "--org", ORG, "ci", "review"])
+        .args([
+            "--repo",
+            "acme/app",
+            "--timeout",
+            "0",
+            "--json",
+            "--summary",
+        ])
+        .env("PROOFLINE_TOKEN", TOKEN)
+        .env("COMMIT_SHA", CI_HEAD)
+        .env_remove("GITHUB_STEP_SUMMARY")
+        .env_remove("GITHUB_SHA")
+        .env("PATH", "")
+        .current_dir(directory.path())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(15), command.output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("GITHUB_STEP_SUMMARY"));
+}

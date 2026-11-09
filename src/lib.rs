@@ -19,6 +19,7 @@ pub mod render;
 mod result;
 mod sarif;
 mod severity;
+mod summary;
 pub mod text;
 pub mod update;
 
@@ -169,6 +170,10 @@ struct CiReviewArgs {
     /// Also write the review as SARIF 2.1.0 to this file.
     #[arg(long, value_name = "FILE")]
     sarif: Option<PathBuf>,
+    /// Also write a Markdown job summary of the review to this file. If passed
+    /// without a path, writes to `$GITHUB_STEP_SUMMARY` when set.
+    #[arg(long, num_args = 0..=1, value_name = "FILE")]
+    summary: Option<Option<PathBuf>>,
     /// Print JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -1176,6 +1181,23 @@ async fn ci_review(
             .await
             .with_context(|| format!("could not write SARIF to {}", path.display()))?;
     }
+    let summary_path = match &args.summary {
+        None => None,
+        Some(None) => {
+            let env_path = std::env::var_os("GITHUB_STEP_SUMMARY").ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--summary was passed without a file, and GITHUB_STEP_SUMMARY is not set in the environment"
+                )
+            })?;
+            Some(PathBuf::from(env_path))
+        }
+        Some(Some(path)) => Some(path.clone()),
+    };
+    if let Some(path) = &summary_path {
+        summary::write(&detail, api.review_url(review_id).as_str(), path)
+            .await
+            .with_context(|| format!("could not write job summary to {}", path.display()))?;
+    }
     print_review(
         api,
         review_id,
@@ -1451,6 +1473,7 @@ mod tests {
             let args = CiReviewArgs {
                 commit: None,
                 sarif: None,
+                summary: None,
                 json: false,
                 timeout: 3,
                 fail_on: None,
