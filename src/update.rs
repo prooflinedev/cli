@@ -122,6 +122,7 @@ fn suggestion(cache: &Cache, args: &[std::ffi::OsString], interactive: bool) -> 
                         | "setup"
                 )
             ) || arg == "history"
+                || arg == "diff"
                 || arg == "guidance"
                 || arg == "fix-prompt"
                 || arg == "export"

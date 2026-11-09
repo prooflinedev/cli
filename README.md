@@ -21,6 +21,15 @@ command preserves the real index and applies the usual secret preflight.
 It cannot be combined with pushed-commit, range or pull-request review.
 
 Read all recorded runs with `proofline history --repo owner/name --pr 7`.
+`proofline diff --repo owner/name --pr 7` compares the two newest recorded runs,
+matching findings by their retained fingerprint. It prints New, Resolved,
+Persisting, and Uncorrelated findings, plus a Not comparable section, and
+`--json` emits the same comparison as data: the repository, pull request, both
+run numbers and statuses, and the four lists. A run that is still `PENDING` or
+`RUNNING` refuses the diff, because its empty assessments are not a result. If
+either run is `INCOMPLETE`, `FAILED` or `STOPPED`, or one side lacks a CODE
+assessment, the affected lane is reported as not comparable rather than as
+resolved, and the command exits 2.
 `proofline rerun REVIEW_ID` requests the original immutable subject and waits;
 `--no-wait` returns its link. Reruns require `reviews:rerun`.
 `proofline guidance --repo owner/name` requires `guidance:read`.
