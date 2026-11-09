@@ -48,6 +48,7 @@ enum Client {
     Cursor,
     Gemini,
     Kiro,
+    Windsurf,
 }
 
 impl Client {
@@ -58,6 +59,7 @@ impl Client {
             Self::Cursor => ".cursor/mcp.json",
             Self::Gemini => ".gemini/settings.json",
             Self::Kiro => ".kiro/settings/mcp.json",
+            Self::Windsurf => ".codeium/windsurf/mcp_config.json",
         }
     }
 }
@@ -70,6 +72,7 @@ impl fmt::Display for Client {
             Self::Cursor => "Cursor",
             Self::Gemini => "Gemini CLI",
             Self::Kiro => "Kiro",
+            Self::Windsurf => "Windsurf",
         })
     }
 }
