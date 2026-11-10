@@ -146,7 +146,7 @@ pub struct Http {
 
 impl Http {
     pub fn new(origin: Origin) -> Result<Self, ApiError> {
-        let client = reqwest::Client::builder()
+        let client = crate::tls::apply(reqwest::Client::builder())
             .user_agent(USER_AGENT)
             .timeout(REQUEST_TIMEOUT)
             .connect_timeout(Duration::from_secs(10))
