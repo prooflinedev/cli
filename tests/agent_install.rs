@@ -39,11 +39,16 @@ fn unattended_registration_preserves_settings_and_uses_the_installed_binary() {
         ("claude-code", ".claude.json"),
         ("cursor", ".cursor/mcp.json"),
         ("codex", ".codex/config.toml"),
+        ("zed", ".config/zed/settings.json"),
     ] {
         let path = home.join(relative);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         let original = if client == "codex" {
             "# preserved\nmodel = 'chosen-model'\n".to_owned()
+        } else if client == "zed" {
+            json!({"theme": "One Dark",
+                "context_servers": {"other": {"command": "other-server", "args": []}}})
+            .to_string()
         } else {
             json!({"projects": {"private-project": {"hasTrustDialogAccepted": false}},
                 "mcpServers": {"other": {"command": "other-server"}}})
@@ -64,6 +69,15 @@ fn unattended_registration_preserves_settings_and_uses_the_installed_binary() {
             assert!(bytes.starts_with(&original));
             let config: toml::Value = toml::from_str(&bytes).unwrap();
             serde_json::to_value(&config["mcp_servers"]["proofline"]).unwrap()
+        } else if client == "zed" {
+            let mut config: Value = serde_json::from_str(&bytes).unwrap();
+            let server = config["context_servers"]
+                .as_object_mut()
+                .unwrap()
+                .remove("proofline")
+                .unwrap();
+            assert_eq!(config, serde_json::from_str::<Value>(&original).unwrap());
+            server
         } else {
             let mut config: Value = serde_json::from_str(&bytes).unwrap();
             let server = config["mcpServers"]
@@ -74,7 +88,12 @@ fn unattended_registration_preserves_settings_and_uses_the_installed_binary() {
             assert_eq!(config, serde_json::from_str::<Value>(&original).unwrap());
             server
         };
-        assert_eq!(server["command"], executable.to_str().unwrap());
+        assert_eq!(
+            Path::new(server["command"].as_str().unwrap())
+                .canonicalize()
+                .unwrap(),
+            executable
+        );
         assert_eq!(
             server["args"],
             json!(["--base-url", "https://proofline.sh", "mcp"])
