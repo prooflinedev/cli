@@ -46,7 +46,7 @@ pub(super) fn prepare(
 ) -> Result<Update, InstallError> {
     match client {
         Client::Codex => codex(original, origin),
-        Client::ClaudeCode | Client::Cursor | Client::Gemini | Client::Kiro => {
+        Client::ClaudeCode | Client::Cursor | Client::Gemini | Client::Kiro | Client::Zed => {
             json(client, original, origin)
         }
     }
@@ -127,16 +127,14 @@ fn json(client: Client, original: Option<&[u8]>, origin: &Origin) -> Result<Upda
             })?
         }
     };
-    let position = document.0.iter().position(|(key, _)| key == "mcpServers");
+    let member = match client {
+        Client::Zed => "context_servers",
+        _ => "mcpServers",
+    };
+    let position = document.0.iter().position(|(key, _)| key == member);
     let mut servers = match position {
-        Some(index) => {
-            serde_json::from_str::<RawObject>(document.0[index].1.get()).map_err(|_| {
-                InstallError::ConfigShape {
-                    client,
-                    member: "mcpServers",
-                }
-            })?
-        }
+        Some(index) => serde_json::from_str::<RawObject>(document.0[index].1.get())
+            .map_err(|_| InstallError::ConfigShape { client, member })?,
         None => RawObject(Vec::new()),
     };
     if servers.0.iter().any(|(key, _)| key == "proofline") {
@@ -158,7 +156,7 @@ fn json(client: Client, original: Option<&[u8]>, origin: &Origin) -> Result<Upda
     let value = to_raw_value(&servers).map_err(|_| InstallError::InvalidConfig(client))?;
     match position {
         Some(index) => document.0[index].1 = value,
-        None => document.0.push(("mcpServers".to_owned(), value)),
+        None => document.0.push((member.to_owned(), value)),
     }
     let mut bytes =
         serde_json::to_vec_pretty(&document).map_err(|_| InstallError::InvalidConfig(client))?;

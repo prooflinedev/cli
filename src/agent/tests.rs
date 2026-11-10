@@ -19,12 +19,13 @@ use crate::origin::Origin;
 use crate::{Cli, Command as CliCommand};
 
 const PRIVATE: &str = "installer-private-config-canary";
-const CLIENTS: [Client; 5] = [
+const CLIENTS: [Client; 6] = [
     Client::ClaudeCode,
     Client::Codex,
     Client::Cursor,
     Client::Gemini,
     Client::Kiro,
+    Client::Zed,
 ];
 
 #[derive(Debug)]
@@ -99,6 +100,14 @@ fn configuration(client: Client) -> Vec<u8> {
             "theme": "chosen-theme",
             "policy": {"trust": false, "autoApprove": [], "excluded": ["untrusted"]},
             "mcpServers": {
+                "other": {"command": "other-server", "args": ["a b"], "env": {"SECRET": PRIVATE}}
+            },
+            "privateSetting": PRIVATE
+        })).unwrap(),
+        Client::Zed => serde_json::to_vec_pretty(&json!({
+            "theme": "chosen-theme",
+            "policy": {"trust": false, "autoApprove": [], "excluded": ["untrusted"]},
+            "context_servers": {
                 "other": {"command": "other-server", "args": ["a b"], "env": {"SECRET": PRIVATE}}
             },
             "privateSetting": PRIVATE
@@ -195,6 +204,21 @@ fn all_clients_preserve_private_settings_and_add_only_the_launcher() {
                 let expected: Value = serde_json::from_slice(&original).unwrap();
                 let mut parsed: Value = serde_json::from_str(&actual).unwrap();
                 let server = parsed["mcpServers"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("proofline")
+                    .unwrap();
+                assert_new_server(client, &server, "https://proofline.sh");
+                assert_eq!(parsed, expected);
+                assert_eq!(
+                    parsed.as_object().unwrap().keys().collect::<Vec<_>>(),
+                    expected.as_object().unwrap().keys().collect::<Vec<_>>()
+                );
+            }
+            Client::Zed => {
+                let expected: Value = serde_json::from_slice(&original).unwrap();
+                let mut parsed: Value = serde_json::from_str(&actual).unwrap();
+                let server = parsed["context_servers"]
                     .as_object_mut()
                     .unwrap()
                     .remove("proofline")
@@ -309,6 +333,7 @@ fn custom_existing_entries_and_codex_home_are_never_overwritten() {
         let original = match client {
             Client::Codex => format!("# {PRIVATE}\nmcp_servers.proofline = {{ command = \"custom-launcher\", args = [\"custom\"] }}\n").into_bytes(),
             Client::ClaudeCode | Client::Cursor | Client::Gemini | Client::Kiro => format!("{{\"mcpServers\":{{\"proofline\":null}},\"private\":\"{PRIVATE}\"}}").into_bytes(),
+            Client::Zed => format!("{{\"context_servers\":{{\"proofline\":null}},\"private\":\"{PRIVATE}\"}}").into_bytes(),
         };
         let path = seed(home.path(), client, &original);
         let modified = fs::metadata(&path).unwrap().modified().unwrap();
@@ -438,6 +463,26 @@ fn toml_inline_tables_and_separate_arguments_round_trip_in_unicode_homes() {
             "http://[::1]:8080",
         );
     }
+    let precision = "{\"context_servers\":{\"other\":{\"value\":184467440737095516170}},\"precision\":1.2345678901234567890123456789}";
+    seed(&home, Client::Zed, precision.as_bytes());
+    let result = invoke(
+        &home,
+        Client::Zed,
+        false,
+        &mut Cursor::new(b"yes\n"),
+        &selected,
+        None,
+    );
+    assert_eq!(result.result.unwrap(), Outcome::Installed);
+    let actual = fs::read_to_string(target(&home, Client::Zed)).unwrap();
+    assert!(actual.contains("184467440737095516170"));
+    assert!(actual.contains("1.2345678901234567890123456789"));
+    let parsed: Value = serde_json::from_str(&actual).unwrap();
+    assert_new_server(
+        Client::Zed,
+        &parsed["context_servers"]["proofline"],
+        "http://[::1]:8080",
+    );
 }
 
 #[derive(Debug)]
@@ -704,6 +749,13 @@ fn invalid_duplicate_oversized_and_readonly_documents_stay_private_and_intact() 
                 "{\"mcpServers\": []}".to_owned(),
                 format!("{{\"private\":\"{PRIVATE}\",\"nested\":{{\"same\":1,\"same\":2}}}}"),
                 "{ /* comment */ \"mcpServers\": {} }".to_owned(),
+            ],
+            Client::Zed => vec![
+                format!("{{\"private\":\"{PRIVATE}\", \"unfinished\": "),
+                "[]".to_owned(),
+                "{\"context_servers\": []}".to_owned(),
+                format!("{{\"private\":\"{PRIVATE}\",\"nested\":{{\"same\":1,\"same\":2}}}}"),
+                "{ /* comment */ \"context_servers\": {} }".to_owned(),
             ],
         };
         for document in invalid {
