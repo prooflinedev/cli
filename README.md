@@ -116,6 +116,34 @@ Knowledge reads need `reviews:read` and `knowledge:read`. Implementation also ne
 opens that GitHub organization's installation page; `--print` only prints its address.
 Cloud trust and connection changes still require a signed-in administrator browser.
 
+## Deployment reviews
+
+Read a deployment review by its public key, `rev_` followed by 32 hexadecimal
+digits, as its console address shows:
+
+```sh
+proofline findings --deployment rev_0190f3a00000700080000000000000d1 --wait
+```
+
+The command reads the deployment operation of the review API and refuses a
+reply that is another review or not a deployment review. `--json`, `--wait` and
+`--timeout` behave as they do for `--review`; `--sarif` is for a retained
+pull-request review. Reads need `reviews:read`.
+
+A deploy job holds itself to the review of the commit it deploys:
+
+```sh
+proofline ci deployment --commit "$DEPLOYED_SHA" --fail-on serious
+```
+
+`ci deployment` waits for the deployment review whose head is that full commit
+SHA, defaulting to `COMMIT_SHA` and then the GitHub Actions job's commit. It
+authenticates as `ci review` does, with `PROOFLINE_TOKEN` or a GitHub Actions
+job granted `id-token: write`. It only reads: the review API has no operation
+that requests a deployment review, and a pull-request review of the same commit
+is not its answer. Exit codes match `ci review`: 0 complete, 2 not complete, 3 an
+open finding at or above `--fail-on`, 4 no answer before `--timeout`.
+
 ## Windows
 
 Official releases include `proofline-x86_64-pc-windows-msvc.tar.gz` with `proofline.exe`.

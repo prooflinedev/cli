@@ -233,6 +233,10 @@ fn operations_the_cli_calls_exist() {
     for (method, path) in [
         ("get", "/api/v1/organizations/{org_id}/reviews"),
         ("get", "/api/v1/organizations/{org_id}/reviews/{review_id}"),
+        (
+            "get",
+            "/api/v1/organizations/{org_id}/reviews/deployments/{public_key}",
+        ),
         ("get", "/api/v1/organizations/{org_id}/repository-names"),
         (
             "post",
@@ -268,6 +272,13 @@ fn operations_the_cli_calls_exist() {
         ["200"]["content"]["application/json"]["schema"];
     assert_eq!(
         resolve(&document, detail),
+        schema(&document, "CustomerReviewDetail")
+    );
+    // `findings --deployment` reads the reply as it reads any review.
+    let deployment = &document["paths"]["/api/v1/organizations/{org_id}/reviews/deployments/{public_key}"]
+        ["get"]["responses"]["200"]["content"]["application/json"]["schema"];
+    assert_eq!(
+        resolve(&document, deployment),
         schema(&document, "CustomerReviewDetail")
     );
     let list = &document["paths"]["/api/v1/organizations/{org_id}/reviews"]["get"]["parameters"];
