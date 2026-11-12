@@ -894,3 +894,61 @@ async fn local_path_never_expands_a_file_replaced_by_a_directory() {
     assert_eq!(checkout.index().await, index);
     server.close().await;
 }
+
+#[tokio::test]
+async fn watch_mode_detects_changes_and_requests_review() {
+    let checkout = Checkout::new(&[("tracked.txt", "initial\n")]).await;
+    let server = Server::start(true).await;
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_proofline"));
+    command
+        .current_dir(checkout.root())
+        .env("PROOFLINE_TOKEN", TOKEN)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .args([
+            "--base-url",
+            &server.origin,
+            "--org",
+            ORG,
+            "watch",
+            "--repo",
+            "acme/web",
+            "--interval",
+            "50",
+            "--debounce",
+            "50",
+        ]);
+    checkout.git_environment(&mut command);
+
+    let mut child = command.spawn().unwrap();
+
+    // Wait until the daemon starts up
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    checkout.write("tracked.txt", "initial\nmodified\n").await;
+
+    // Poll until the review request is received or 5 seconds elapse
+    let start = std::time::Instant::now();
+    while server.fixture.uploads.lock().unwrap().is_empty()
+        && start.elapsed() < std::time::Duration::from_secs(5)
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    child.kill().await.unwrap();
+    let output = child.wait_with_output().await.unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    {
+        let uploads = server.fixture.uploads.lock().unwrap();
+        assert_eq!(
+            uploads.len(),
+            1,
+            "watch mode should have uploaded 1 review request. stderr: {stderr}"
+        );
+        let patch = uploads[0]["patch"].as_str().unwrap();
+        assert!(patch.contains("+modified"));
+    }
+    server.close().await;
+}

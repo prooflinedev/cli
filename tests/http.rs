@@ -2188,3 +2188,65 @@ async fn fix_commands_preserve_context_and_never_retry_verification() {
     assert_eq!(calls.lock().unwrap().len(), 4);
     server.abort();
 }
+
+#[tokio::test]
+async fn read_retries_on_rate_limit_with_rfc7231_http_date_retry_after() {
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let attempts_clone = Arc::clone(&attempts);
+    let app = Router::new().route(
+        &format!("/api/v1/organizations/{ORG}/reviews"),
+        get(move || {
+            let attempts = Arc::clone(&attempts_clone);
+            async move {
+                let count = attempts.fetch_add(1, Ordering::SeqCst);
+                if count == 0 {
+                    let future = std::time::SystemTime::now() + std::time::Duration::from_secs(1);
+                    let http_date = httpdate::fmt_http_date(future);
+                    (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        [
+                            (header::RETRY_AFTER, http_date),
+                            (header::CONTENT_TYPE, "application/json".to_owned()),
+                        ],
+                        Json(json!({"title": "Too Many Requests", "status": 429, "detail": "Rate limit exceeded"})),
+                    )
+                        .into_response()
+                } else {
+                    (
+                        StatusCode::OK,
+                        [(header::CONTENT_TYPE, "application/json".to_owned())],
+                        Json(json!({
+                            "items": [],
+                            "next_cursor": null,
+                            "truncated": false,
+                            "filters": {
+                                "environments": [],
+                                "kinds": [],
+                                "repositories": []
+                            }
+                        })),
+                    )
+                        .into_response()
+                }
+            }
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let api = Api::new(
+        Http::new(Origin::parse(&origin).unwrap()).unwrap(),
+        SecretString::from(TOKEN),
+        org(),
+    );
+    let page = api.reviews(None, None, None).await.unwrap();
+    assert_eq!(page.items.len(), 0);
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        2,
+        "Api::read should have retried after honoring the HTTP-date header"
+    );
+    server.abort();
+}

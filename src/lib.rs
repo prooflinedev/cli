@@ -21,6 +21,7 @@ mod sarif;
 mod severity;
 pub mod text;
 pub mod update;
+pub mod watch;
 
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -130,6 +131,8 @@ enum Command {
     /// Review the checkout's local changes, pushed commits, or an open pull
     /// request's current head.
     Review(ReviewArgs),
+    /// Continuously watch the checkout's uncommitted changes and review incrementally.
+    Watch(watch::WatchArgs),
     /// Stop your own pending or running local patch, pushed-commit or named-file review.
     Stop(StopArgs),
     /// Show the findings of the latest review of a commit or pull request.
@@ -196,24 +199,24 @@ struct LoginArgs {
     no_browser: bool,
 }
 
-#[derive(Debug, Args)]
-struct RepositoryArgs {
+#[derive(Debug, Clone, Args)]
+pub(crate) struct RepositoryArgs {
     /// GitHub repository as owner/name. Defaults to the checkout's remote.
     #[arg(long, value_name = "OWNER/NAME")]
-    repo: Option<String>,
+    pub(crate) repo: Option<String>,
     /// Git remote that names the repository.
     #[arg(long, default_value = "origin")]
-    remote: String,
+    pub(crate) remote: String,
 }
 
-#[derive(Debug, Args)]
-struct OutputArgs {
+#[derive(Debug, Clone, Args)]
+pub(crate) struct OutputArgs {
     /// Print JSON instead of text.
     #[arg(long)]
-    json: bool,
+    pub(crate) json: bool,
     /// Minutes to wait for a running review.
     #[arg(long, default_value_t = 20, value_name = "MINUTES")]
-    timeout: u64,
+    pub(crate) timeout: u64,
 }
 
 #[derive(Debug, Args)]
@@ -225,14 +228,14 @@ struct StopArgs {
     json: bool,
 }
 
-#[derive(Debug, Args)]
-struct LocalSelectionArgs {
+#[derive(Debug, Clone, Args)]
+pub(crate) struct LocalSelectionArgs {
     /// Review the original index against the base, excluding unstaged changes.
     #[arg(long, conflicts_with_all = ["pr", "include_untracked"])]
-    staged: bool,
+    pub(crate) staged: bool,
     /// Add untracked files that Git does not ignore to the working-tree review.
     #[arg(long, conflicts_with_all = ["pr", "staged"])]
-    include_untracked: bool,
+    pub(crate) include_untracked: bool,
 }
 
 #[derive(Debug, Args)]
@@ -329,14 +332,14 @@ struct FindingsArgs {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum OutputFormat {
+pub(crate) enum OutputFormat {
     Text,
     Json,
     Sarif,
 }
 
 impl OutputFormat {
-    const fn from_json(json: bool) -> Self {
+    pub(crate) const fn from_json(json: bool) -> Self {
         if json { Self::Json } else { Self::Text }
     }
 }
@@ -465,6 +468,10 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
             let api = connect(Http::new(origin)?, token, cli.org).await?;
             review(&api, &args).await
         }
+        Command::Watch(args) => {
+            let api = connect(Http::new(origin)?, token, cli.org).await?;
+            watch::run(&api, &args).await
+        }
         Command::Stop(args) => {
             let api = connect(Http::new(origin)?, token, cli.org).await?;
             let (raw, stopped) = api.stop_review(args.review_id).await?;
@@ -545,7 +552,7 @@ async fn connect(
     Ok(Api::new(http, credential.token, credential.organization_id))
 }
 
-fn say(line: &str) {
+pub(crate) fn say(line: &str) {
     // Progress goes to standard error so standard output stays the result.
     let mut stderr = std::io::stderr().lock();
     if writeln!(stderr, "{line}").is_err() {
@@ -691,7 +698,10 @@ fn unique(
 }
 
 /// A connected repository, for requesting a review: it need not have one yet.
-async fn connected_repository(api: &Api, args: &RepositoryArgs) -> anyhow::Result<(String, Uuid)> {
+pub(crate) async fn connected_repository(
+    api: &Api,
+    args: &RepositoryArgs,
+) -> anyhow::Result<(String, Uuid)> {
     let name = repository_name(args).await?;
     let names = api.repository_names().await?;
     let candidates = names
@@ -1009,7 +1019,7 @@ async fn read_review(
 }
 
 /// Prints the review, after waiting for it to finish when `wait` is set.
-async fn show(
+pub(crate) async fn show(
     api: &Api,
     review_id: Uuid,
     wait: bool,
