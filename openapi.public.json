@@ -263,24 +263,6 @@
         ],
         "type": "string"
       },
-      "ApprovalGap": {
-        "properties": {
-          "assessment_id": {
-            "description": "Assessment whose approval could not supply deferred occurrence questions.",
-            "format": "uuid",
-            "type": "string"
-          },
-          "code": {
-            "description": "Reason the assessment's approval could not supply deferred occurrence questions.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "assessment_id",
-          "code"
-        ],
-        "type": "object"
-      },
       "AssessmentProjection": {
         "properties": {
           "assessment_id": {
@@ -325,111 +307,6 @@
         ],
         "type": "object"
       },
-      "AttributedChange": {
-        "description": "How one condition relates to the review's base revision.",
-        "oneOf": [
-          {
-            "const": "INTRODUCED",
-            "description": "The proposed revision holds the condition and the base did not.",
-            "type": "string"
-          },
-          {
-            "const": "CHANGED",
-            "description": "The site held a different condition at the base.",
-            "type": "string"
-          },
-          {
-            "const": "UNCHANGED",
-            "description": "The base already held this condition at this site. Pre-existing,\n not safe.",
-            "type": "string"
-          },
-          {
-            "const": "RESOLVED",
-            "description": "The base held this condition and the proposed revision no longer does.",
-            "type": "string"
-          },
-          {
-            "const": "UNATTRIBUTED",
-            "description": "World could not match the condition with its predecessor, such as a\n declaration that may have moved; its origin is unknown.",
-            "type": "string"
-          }
-        ]
-      },
-      "AttributedConditionView": {
-        "properties": {
-          "change": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/AttributedChange"
-              }
-            ],
-            "description": "How this condition relates to the review's base revision."
-          },
-          "reviewed_tree_citations": {
-            "description": "The member that declares the site at each revision that declares it.",
-            "items": {
-              "$ref": "#/components/schemas/ReviewedTreeCitationView"
-            },
-            "type": "array"
-          },
-          "revision": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/AttributedRevision"
-              }
-            ],
-            "description": "The revision that holds the condition: the base for `RESOLVED`, the\n proposed revision for `INTRODUCED`, `CHANGED` and `UNCHANGED`, and\n either for `UNATTRIBUTED`."
-          },
-          "subject": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/UntrustedText"
-              }
-            ],
-            "description": "World's label of the condition's site and what it declares, such as\n `.github/workflows/ci.yml jobs.test.steps[0].uses: actions/checkout@v4`.\n It quotes repository text."
-          }
-        },
-        "required": [
-          "change",
-          "revision",
-          "subject",
-          "reviewed_tree_citations"
-        ],
-        "type": "object"
-      },
-      "AttributedRevision": {
-        "oneOf": [
-          {
-            "const": "PROPOSED_CODE_REVISION",
-            "description": "The reviewed commit.",
-            "type": "string"
-          },
-          {
-            "const": "BASE_CODE_REVISION",
-            "description": "Its merge base.",
-            "type": "string"
-          }
-        ]
-      },
-      "AttributionStatus": {
-        "oneOf": [
-          {
-            "const": "COMPARED",
-            "description": "World read the complete set of conditions at both revisions.",
-            "type": "string"
-          },
-          {
-            "const": "UNAVAILABLE",
-            "description": "World could not read one revision's conditions, so no condition is\n called new or old.",
-            "type": "string"
-          },
-          {
-            "const": "UNREADABLE",
-            "description": "The receipt carries an attribution this build cannot read. No\n condition is called new or old.",
-            "type": "string"
-          }
-        ]
-      },
       "AuthorChoice": {
         "properties": {
           "id": {
@@ -447,180 +324,6 @@
         },
         "required": [
           "id"
-        ],
-        "type": "object"
-      },
-      "Authority": {
-        "enum": [
-          "ADVISORY",
-          "DEPLOYMENT_POLICY"
-        ],
-        "type": "string"
-      },
-      "Availability": {
-        "oneOf": [
-          {
-            "enum": [
-              "RECORDED",
-              "NOT_RECORDED",
-              "LEGACY",
-              "OPERATIONAL_FAILURE"
-            ],
-            "type": "string"
-          },
-          {
-            "const": "LIMITED",
-            "description": "The record is verified but too large for this projection to carry.\n Siblings still render; nothing is inferred from the omitted detail.",
-            "type": "string"
-          }
-        ]
-      },
-      "CaptureState": {
-        "description": "How the capture ended.",
-        "oneOf": [
-          {
-            "const": "PENDING",
-            "description": "Still waiting for an authorized execution or a decidable look.",
-            "type": "string"
-          },
-          {
-            "const": "RECORDED",
-            "description": "World recorded every deferred question.",
-            "type": "string"
-          },
-          {
-            "const": "UNBOUND",
-            "description": "At least one deferred question is not bound to the execution.",
-            "type": "string"
-          },
-          {
-            "const": "NOT_EXECUTED",
-            "description": "The gate never authorized the execution.",
-            "type": "string"
-          },
-          {
-            "const": "INCOMPLETE",
-            "description": "The capture failed before it wrote its receipt. The gate is\n unchanged; nothing is inferred about the deferred questions.",
-            "type": "string"
-          }
-        ]
-      },
-      "ChangeAttributionView": {
-        "description": "Which conditions behind a check's result the change brought, and which\n World found at the review's base revision. It sits beside the result and\n never changes it: a condition already at the base is still a condition.",
-        "properties": {
-          "complete_record": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/CompleteRecordView"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Where every condition is recorded when some are omitted. Absent when\n `conditions` lists them all."
-          },
-          "condition_count": {
-            "description": "How many conditions World attributed, listed or not. Zero unless\n `status` is `COMPARED`.",
-            "format": "uint32",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "conditions": {
-            "description": "Every condition, each once, in World's order, never netted against\n another. Empty unless `status` is `COMPARED`, and empty when some are\n omitted: it never lists only some of them.",
-            "items": {
-              "$ref": "#/components/schemas/AttributedConditionView"
-            },
-            "type": "array"
-          },
-          "counts": {
-            "description": "How many conditions there are of each change at each revision, over\n every condition, listed or not. Changes with none are left out.",
-            "items": {
-              "$ref": "#/components/schemas/ChangeCountView"
-            },
-            "type": "array"
-          },
-          "detail_code": {
-            "description": "World's code for why it could not read that revision, such as\n `BASE_REVIEWED_TREE_NOT_DECLARED`. Present exactly when `status` is\n `UNAVAILABLE`.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "listed_conditions": {
-            "description": "The conditions a summary lists when some are omitted: the first ones\n in the order `counts` gives, each whole, at most 50 and always fewer\n than `condition_count`. Present exactly when `omitted_condition_count`\n is not zero.",
-            "items": {
-              "$ref": "#/components/schemas/AttributedConditionView"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "omitted_condition_count": {
-            "description": "How many of those conditions this response does not list. Zero when\n the result kept World's attribution whole. Otherwise the result kept a\n summary: `listed_conditions` lists the first ones, `counts` is still\n exact, and World's recorded evaluation holds every condition.",
-            "format": "uint32",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "revision": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AttributedRevision"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The revision World could not read. Present exactly when `status` is\n `UNAVAILABLE`."
-          },
-          "status": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/AttributionStatus"
-              }
-            ],
-            "description": "Whether World compared both revisions, could not read one, or recorded\n an attribution this build cannot read."
-          }
-        },
-        "required": [
-          "status",
-          "condition_count",
-          "omitted_condition_count",
-          "counts",
-          "conditions"
-        ],
-        "type": "object"
-      },
-      "ChangeCountView": {
-        "description": "How many conditions are of one change at one revision.",
-        "properties": {
-          "change": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/AttributedChange"
-              }
-            ],
-            "description": "How the counted conditions relate to the review's base revision."
-          },
-          "count": {
-            "description": "How many conditions have this `change` at this `revision`, over every\n condition, listed or not.",
-            "format": "uint32",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "revision": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/AttributedRevision"
-              }
-            ],
-            "description": "The revision that holds the counted conditions."
-          }
-        },
-        "required": [
-          "change",
-          "revision",
-          "count"
         ],
         "type": "object"
       },
@@ -846,7 +549,7 @@
         "type": "string"
       },
       "CiFailureLine": {
-        "description": "One failed CI job as the Check states it.",
+        "description": "One failed CI job in the observation.",
         "properties": {
           "attribution": {
             "allOf": [
@@ -1073,24 +776,6 @@
         ],
         "type": "object"
       },
-      "CompleteRecordView": {
-        "description": "World's immutable record of the complete answer an omitted list comes\n from.",
-        "properties": {
-          "attribution_digest": {
-            "description": "The `sha256:` digest of the complete attribution in that record.",
-            "type": "string"
-          },
-          "world_evaluation_id": {
-            "description": "The evaluation World recorded, which holds every condition.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "world_evaluation_id",
-          "attribution_digest"
-        ],
-        "type": "object"
-      },
       "CoverageRefused": {
         "description": "An upload refused for its content: a symbolic or unknown commit, or a\n report that cannot be read. Nothing is stored.",
         "properties": {
@@ -1122,7 +807,7 @@
         "description": "The coverage reports a CI run produced for one commit.",
         "properties": {
           "reports": {
-            "description": "One to 50 reports, each LCOV, Cobertura XML, `JaCoCo` XML or a Go\n cover profile, in a JSON body of at most 64 MiB.",
+            "description": "One to 50 reports, each LCOV, Cobertura XML, `JaCoCo` XML or a Go\n cover profile, in a JSON body of at most 30 MiB.",
             "items": {
               "$ref": "#/components/schemas/UploadedReport"
             },
@@ -1202,28 +887,6 @@
               "string",
               "null"
             ]
-          },
-          "decision_presentation": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/CustomerDecision"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The retained decision disclosure, which grants no deployment\n authorization. Absent when none is recorded and the review kind\n records no decision basis."
-          },
-          "declared_reach": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/DeclaredReachView"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "What World declares depends on what this change deploys in this\n environment, at the assessment's pinned snapshot. Absent when the\n assessment's kind records no declared reach."
           },
           "domains": {
             "description": "The risk domains the assessment evaluated, each with its status and\n reason, ordered by domain.",
@@ -1313,28 +976,6 @@
               "null"
             ]
           },
-          "decision_presentation": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/CustomerDecision"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The retained decision disclosure, which grants no deployment\n authorization. Absent when none is recorded and the review kind\n records no decision basis."
-          },
-          "declared_reach": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/DeclaredReachView"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "What World declares depends on what this change deploys in this\n environment, at the assessment's pinned snapshot. Absent when the\n assessment's kind records no declared reach."
-          },
           "domains": {
             "description": "The risk domains the assessment evaluated, each with its status and\n reason, ordered by domain.",
             "items": {
@@ -1421,17 +1062,6 @@
       },
       "CustomerCheck": {
         "properties": {
-          "change_attribution": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ChangeAttributionView"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Which conditions behind the outcome the change brought and which were\n already at the review's base revision. It never changes the outcome:\n a condition already at the base is pre-existing, not safe. Absent for\n a check whose evaluator does not compare the two revisions."
-          },
           "detail": {
             "description": "Why World refused the check, or otherwise World's recorded explanation\n of the result. Null when neither is recorded.",
             "type": [
@@ -1582,83 +1212,6 @@
           "base_commit_sha",
           "status",
           "findings"
-        ],
-        "type": "object"
-      },
-      "CustomerDecision": {
-        "properties": {
-          "authority": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Authority"
-              }
-            ],
-            "description": "Whether the decision is `ADVISORY` or comes from a `DEPLOYMENT_POLICY`."
-          },
-          "availability": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Availability"
-              }
-            ],
-            "description": "Whether a verified decision record is present, absent, legacy, failed,\n or too large for this projection."
-          },
-          "basis": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/CustomerDecisionBasis"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The permission, evidence classification and reason code of the\n verified recorded basis. Null when no verified basis is recorded."
-          },
-          "gate_state": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/GateState"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The local deployment gate state and any recorded override. Null unless\n the decision belongs to a deployment gate."
-          }
-        },
-        "required": [
-          "availability",
-          "authority"
-        ],
-        "type": "object"
-      },
-      "CustomerDecisionBasis": {
-        "properties": {
-          "evidence": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/EvidenceView"
-              }
-            ],
-            "description": "How the recorded basis classified its evidence."
-          },
-          "permission": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/PermissionView"
-              }
-            ],
-            "description": "The permission the recorded basis reached: `PERMIT` or `BLOCK`."
-          },
-          "reason_code": {
-            "description": "The reason code the recorded basis gives for its permission.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "permission",
-          "evidence",
-          "reason_code"
         ],
         "type": "object"
       },
@@ -1959,6 +1512,13 @@
               "null"
             ]
           },
+          "actor_name": {
+            "description": "The actor's GitHub profile name, when known. Lead with it; the login\n is the fallback. Null for the automatic decision.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "covering_author_kind": {
             "description": "For `ALREADY_COVERED`, `HUMAN` or `BOT`. Null for every other decision.",
             "type": [
@@ -2195,7 +1755,7 @@
             "type": "boolean"
           },
           "kind": {
-            "description": "`PULL_REQUEST`, `DEPLOYMENT`, `PATCH`, a review of local changes\n sent as a patch, `COMMIT`, a review of pushed commits, or `FILES`,\n complete selected files at one pushed commit.",
+            "description": "`PULL_REQUEST`, `DEPLOYMENT`, `PATCH`, a review of local changes\n sent as a patch, `COMMIT`, a review of pushed commits, `FILES`,\n complete selected files at one pushed commit, `MERGE_GROUP`, the\n commit GitHub's merge queue built for a group of pull requests, or\n `REVISION_SCAN`, a scan of one captured commit.",
             "type": "string"
           },
           "local_reverifications": {
@@ -2215,6 +1775,14 @@
               }
             ],
             "description": "The deterministic policy for this exact repository/head, when opted in.\n Its captured review owner and GitHub bypass remain separate history."
+          },
+          "merge_group_pull_request_numbers": {
+            "description": "For a `MERGE_GROUP` review, the pull requests GitHub queued in the\n group, in number order. Absent for every other kind, and until\n Proofline has read the group's members.",
+            "items": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": "array"
           },
           "open_items": {
             "anyOf": [
@@ -2237,6 +1805,17 @@
               }
             ],
             "description": "Dated PR counts with head, evaluated-scope and bounded thread proof.\n Absent when that observation is unavailable; scalar counts remain separate."
+          },
+          "provider_wait": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProviderWait"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What holds the review now: GitHub's rate limit, and when it resets.\n Null unless one of the review's runs waits for it, and once the run\n continues."
           },
           "public_key": {
             "description": "The review's stable public address: `rev_` followed by its identifier without hyphens.",
@@ -2270,6 +1849,13 @@
           },
           "pull_request_author_login": {
             "description": "Provider display metadata for the pull request author, not the rerun requester.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pull_request_author_name": {
+            "description": "The author's GitHub profile name, when known. Lead with it; the login\n is the fallback. Display metadata, never identity.",
             "type": [
               "string",
               "null"
@@ -2497,79 +2083,6 @@
         ],
         "type": "string"
       },
-      "DeclaredReachOutcome": {
-        "enum": [
-          "READ",
-          "NO_ROOTS",
-          "ROOTS_UNKNOWN",
-          "UNAVAILABLE"
-        ],
-        "type": "string"
-      },
-      "DeclaredReachView": {
-        "description": "One assessment's declared reach receipt. A reached entity declares a\n dependency on what the change deploys; it is never a claim that the change\n breaks it.",
-        "properties": {
-          "complete": {
-            "description": "Whether World's walk ended with no gap. An empty, incomplete reach\n says nothing about what depends on the change.",
-            "type": "boolean"
-          },
-          "entities": {
-            "description": "Every reached entity, shorter paths first, then by kind.",
-            "items": {
-              "$ref": "#/components/schemas/ReachedEntityView"
-            },
-            "type": "array"
-          },
-          "gaps": {
-            "description": "Where World's walk or its evidence stopped.",
-            "items": {
-              "$ref": "#/components/schemas/ReachGapView"
-            },
-            "type": "array"
-          },
-          "outcome": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/DeclaredReachOutcome"
-              }
-            ],
-            "description": "`READ` when World answered, `NO_ROOTS` when no evidence bound a\n deployed artifact or workload to the repository, `ROOTS_UNKNOWN` when\n World's evidence does not establish which revision runs, and\n `UNAVAILABLE` when World gave no answer. Only `READ` carries entities or gaps."
-          },
-          "receipt_digest": {
-            "description": "World's digest of its full answer. Null unless `READ`.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "snapshot_id": {
-            "description": "The World snapshot the reach was read at. Null unless `READ`.",
-            "format": "uuid",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "terraform": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/TerraformRootsView"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "The Terraform addresses the reach also started from, or why it took\n none. Absent when the assessment read reach only from the deployed\n revision."
-          }
-        },
-        "required": [
-          "outcome",
-          "complete",
-          "entities",
-          "gaps"
-        ],
-        "type": "object"
-      },
       "DeepReviewEscalation": {
         "properties": {
           "reason": {
@@ -2659,14 +2172,6 @@
         ],
         "type": "object"
       },
-      "EvidenceView": {
-        "enum": [
-          "REQUIRED_PROPERTIES_ESTABLISHED",
-          "INCOMPLETE",
-          "NO_APPLICABLE_OBLIGATIONS"
-        ],
-        "type": "string"
-      },
       "ExportEvidenceKind": {
         "enum": [
           "repository_file",
@@ -2724,7 +2229,9 @@
           "DEPLOYMENT",
           "PATCH",
           "COMMIT",
-          "FILES"
+          "FILES",
+          "MERGE_GROUP",
+          "REVISION_SCAN"
         ],
         "type": "string"
       },
@@ -3749,37 +3256,6 @@
         ],
         "type": "object"
       },
-      "GateState": {
-        "properties": {
-          "occurrence_captures": {
-            "description": "The occurrence questions the gate's approval deferred, as each\n observed execution of its deployment answered them. Outcome-only\n records: none of them changes the gate or grades a prediction.",
-            "items": {
-              "$ref": "#/components/schemas/OccurrenceCapture"
-            },
-            "type": "array"
-          },
-          "override_record": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/Override"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Recorded override authorization, not confirmation of provider delivery."
-          },
-          "status": {
-            "description": "Local gate state. ALLOWED/BLOCKED can precede provider delivery.\n This field does not confirm that GitHub released or blocked a run.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "status",
-          "occurrence_captures"
-        ],
-        "type": "object"
-      },
       "GateStatus": {
         "enum": [
           "REQUESTED",
@@ -3876,108 +3352,6 @@
         },
         "required": [
           "environment_display_name"
-        ],
-        "type": "object"
-      },
-      "OccurrenceCapture": {
-        "description": "The capture of one observed execution of a gate's deployment.",
-        "properties": {
-          "approval_gaps": {
-            "description": "Assessments whose approval could defer nothing, with the reason.",
-            "items": {
-              "$ref": "#/components/schemas/ApprovalGap"
-            },
-            "type": "array"
-          },
-          "detail": {
-            "description": "Explanation of the capture's outcome, when available.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "occurrence_key": {
-            "description": "Retained identity of the deployment occurrence, when available.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "questions": {
-            "description": "Deferred questions and their binding or observed results for this occurrence.",
-            "items": {
-              "$ref": "#/components/schemas/OccurrenceQuestion"
-            },
-            "type": "array"
-          },
-          "state": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/CaptureState"
-              }
-            ],
-            "description": "Whether the capture is pending, recorded, unbound, not executed, or incomplete."
-          }
-        },
-        "required": [
-          "state",
-          "approval_gaps",
-          "questions"
-        ],
-        "type": "object"
-      },
-      "OccurrenceQuestion": {
-        "description": "One deferred question as the gate presents it.",
-        "properties": {
-          "assessment_id": {
-            "description": "Assessment whose approval deferred this question.",
-            "format": "uuid",
-            "type": "string"
-          },
-          "code": {
-            "description": "World's binding or refusal code, or the control plane's own gap.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "family_key": {
-            "description": "Hypothesis family key for the deferred question.",
-            "type": "string"
-          },
-          "family_version": {
-            "description": "Hypothesis family version for the deferred question.",
-            "format": "int32",
-            "type": "integer"
-          },
-          "observed_result": {
-            "description": "World's observed result once it recorded the question.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "outcome_id": {
-            "description": "World outcome record identifier, when an observed result was recorded.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "state": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/QuestionState"
-              }
-            ],
-            "description": "Whether the question is pending, recorded, unbound, or not executed."
-          }
-        },
-        "required": [
-          "assessment_id",
-          "family_key",
-          "family_version",
-          "state"
         ],
         "type": "object"
       },
@@ -4186,37 +3560,6 @@
         ],
         "type": "string"
       },
-      "Override": {
-        "properties": {
-          "comment": {
-            "description": "The comment recorded with the approval, truncated past 8000\n characters.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "github_environment_id": {
-            "description": "The GitHub environment ID the approval applied to.",
-            "format": "int64",
-            "type": "integer"
-          },
-          "github_user_id": {
-            "description": "The GitHub user ID of the person whose GitHub deployment approval\n overrode the gate.",
-            "format": "int64",
-            "type": "integer"
-          },
-          "github_user_login": {
-            "description": "That person's GitHub login as recorded with the approval, a display\n label truncated past 128 characters.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "github_user_id",
-          "github_user_login",
-          "github_environment_id"
-        ],
-        "type": "object"
-      },
       "PassProjection": {
         "properties": {
           "model_binding": {
@@ -4333,13 +3676,6 @@
           "iteration"
         ],
         "type": "object"
-      },
-      "PermissionView": {
-        "enum": [
-          "PERMIT",
-          "BLOCK"
-        ],
-        "type": "string"
       },
       "PlanProjection": {
         "properties": {
@@ -4492,6 +3828,36 @@
           }
         ]
       },
+      "ProviderWait": {
+        "description": "A provider wait that holds the review now.",
+        "properties": {
+          "reason": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProviderWaitReason"
+              }
+            ],
+            "description": "`GITHUB_RATE_LIMIT`: GitHub's rate limit for the organization's App\n installation is reached, and the review continues after it resets."
+          },
+          "until": {
+            "description": "When the wait ends: the reset GitHub named, or, when it named none,\n when the run is due again.",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason",
+          "until"
+        ],
+        "type": "object"
+      },
+      "ProviderWaitReason": {
+        "description": "Why a review's run waits on a provider.",
+        "enum": [
+          "GITHUB_RATE_LIMIT"
+        ],
+        "type": "string"
+      },
       "PullRequestMergeGate": {
         "properties": {
           "assessment_count": {
@@ -4620,105 +3986,6 @@
           "status",
           "policy_version",
           "blocking_severity"
-        ],
-        "type": "object"
-      },
-      "QuestionState": {
-        "description": "Where one deferred question stands.",
-        "oneOf": [
-          {
-            "const": "PENDING",
-            "description": "World has stored no record yet: the execution is not yet decidable\n inside the question's window.",
-            "type": "string"
-          },
-          {
-            "const": "RECORDED",
-            "description": "World recorded what the execution was observed to do.",
-            "type": "string"
-          },
-          {
-            "const": "UNBOUND",
-            "description": "The question is not bound to the execution: World's binding code, its\n refusal of the replay, or the control plane's own gap says why.",
-            "type": "string"
-          },
-          {
-            "const": "NOT_EXECUTED",
-            "description": "The gate never authorized the execution, so nothing ran to observe.",
-            "type": "string"
-          }
-        ]
-      },
-      "ReachGapView": {
-        "properties": {
-          "code": {
-            "description": "`COVERAGE_INCOMPLETE`, `SOURCE_CAPABILITY_MISSING` or `BOUND_REACHED`.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "code"
-        ],
-        "type": "object"
-      },
-      "ReachStepView": {
-        "properties": {
-          "assertion_id": {
-            "description": "The World relation assertion behind this step.",
-            "format": "uuid",
-            "type": "string"
-          },
-          "direction": {
-            "description": "`OUT` when the step follows the relation from its subject, `IN` when\n it follows it back to the subject.",
-            "type": "string"
-          },
-          "relation": {
-            "description": "The relation key, such as `proofline.relation.consumes_api`.",
-            "type": "string"
-          }
-        },
-        "required": [
-          "assertion_id",
-          "relation",
-          "direction"
-        ],
-        "type": "object"
-      },
-      "ReachedEntityView": {
-        "properties": {
-          "entity_id": {
-            "description": "World's entity ID.",
-            "format": "uuid",
-            "type": "string"
-          },
-          "kind": {
-            "description": "The entity's kind, such as `service` or `queue`.",
-            "type": "string"
-          },
-          "label": {
-            "description": "World's display label for the entity: environment evidence for\n readers of this organization, never published to GitHub.",
-            "type": "string"
-          },
-          "path": {
-            "description": "The recorded relation assertions from the deployed root to the entity.",
-            "items": {
-              "$ref": "#/components/schemas/ReachStepView"
-            },
-            "type": "array"
-          },
-          "type_keys": {
-            "description": "World's registry type keys for the entity.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "entity_id",
-          "kind",
-          "type_keys",
-          "label",
-          "path"
         ],
         "type": "object"
       },
@@ -5039,7 +4306,7 @@
             "type": "integer"
           },
           "ci_failures": {
-            "description": "Failed CI jobs diagnosed on the reviewed head, the newest diagnosed\n attempt of each run, in diagnosis order. The Check states each one;\n none is a Proofline open item. Absent when no job was diagnosed.",
+            "description": "Failed CI jobs diagnosed on the reviewed head, the newest diagnosed\n attempt of each run, in diagnosis order. The pull-request Check counts\n them; none is a Proofline open item. Absent when no job was diagnosed.",
             "items": {
               "$ref": "#/components/schemas/CiFailureLine"
             },
@@ -5268,17 +4535,6 @@
                 ],
                 "description": "Safe routing projection bound to this review's retained inputs."
               },
-              "specialist_execution": {
-                "anyOf": [
-                  {
-                    "$ref": "#/components/schemas/SpecialistExecutionView"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ],
-                "description": "Actual specialist selection and pass receipts for the applied workflow."
-              },
               "status": {
                 "const": "SUPPORTED",
                 "type": "string"
@@ -5357,8 +4613,16 @@
             "type": "string"
           },
           "kind": {
-            "description": "`PULL_REQUEST`, `DEPLOYMENT`, `PATCH`, a review of local changes\n sent as a patch, `COMMIT`, a review of pushed commits, or `FILES`,\n complete selected files at one pushed commit.",
+            "description": "`PULL_REQUEST`, `DEPLOYMENT`, `PATCH`, a review of local changes\n sent as a patch, `COMMIT`, a review of pushed commits, `FILES`,\n complete selected files at one pushed commit, `MERGE_GROUP`, the\n commit GitHub's merge queue built for a group of pull requests, or\n `REVISION_SCAN`, a scan of one captured commit.",
             "type": "string"
+          },
+          "merge_group_pull_request_numbers": {
+            "description": "For a `MERGE_GROUP` review, the pull requests GitHub queued in the\n group, in number order. Absent for every other kind, and until\n Proofline has read the group's members.",
+            "items": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": "array"
           },
           "public_key": {
             "description": "The review's stable public address: `rev_` followed by its identifier without hyphens.",
@@ -5392,6 +4656,13 @@
           },
           "pull_request_author_login": {
             "description": "Provider display metadata for the pull request author, not the rerun requester.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "pull_request_author_name": {
+            "description": "The author's GitHub profile name, when known. Lead with it; the login\n is the fallback. Display metadata, never identity.",
             "type": [
               "string",
               "null"
@@ -5504,45 +4775,6 @@
         ],
         "type": "object"
       },
-      "ReviewedTreeCitationView": {
-        "description": "One member of a review's declared tree that World cited.",
-        "properties": {
-          "content_sha256": {
-            "description": "The member's content hash. Absent for a member a `REJECTED`\n population refused, because such a population keeps no members.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "overlay_digest": {
-            "description": "The overlay World read the member from.",
-            "type": "string"
-          },
-          "path": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/UntrustedText"
-              }
-            ],
-            "description": "The member's path in the repository at that revision. Repository\n text, so it can hold bidirectional controls that reorder what the\n reader sees."
-          },
-          "population_kind": {
-            "description": "The population the member belongs to, such as\n `WORKFLOW_DEFINITIONS`.",
-            "type": "string"
-          },
-          "role": {
-            "description": "`PROPOSED_CODE_REVISION` (the reviewed commit) or\n `BASE_CODE_REVISION` (its merge base).",
-            "type": "string"
-          }
-        },
-        "required": [
-          "role",
-          "population_kind",
-          "path",
-          "overlay_digest"
-        ],
-        "type": "object"
-      },
       "ReviewsExportRow": {
         "description": "The NDJSON row and CSV column contract. Repository names are display data;\n the stable repository ID and recorded commit identify the reviewed input.",
         "properties": {
@@ -5594,7 +4826,7 @@
                 "$ref": "#/components/schemas/ExportReviewKind"
               }
             ],
-            "description": "Whether the review analyzes a pull request, a deployment, a local patch, pushed\n commits or selected whole files."
+            "description": "Whether the review analyzes a pull request, a deployment, a local patch, pushed\n commits, selected whole files, a merge group or a revision scan."
           },
           "organization_id": {
             "description": "The organization that owns the review.",
@@ -5753,8 +4985,7 @@
         "description": "Whether an explicit request may reuse a settled review of the live head.",
         "enum": [
           "EXISTING_OR_NEW",
-          "FULL",
-          "EXTENDED"
+          "FULL"
         ],
         "type": "string"
       },
@@ -5922,36 +5153,6 @@
               "reason"
             ],
             "type": "object"
-          },
-          {
-            "description": "Deep review policy, funding or worker availability prevents admission.",
-            "properties": {
-              "detail": {
-                "type": "string"
-              },
-              "reason": {
-                "const": "DEEP_REVIEW_UNAVAILABLE",
-                "type": "string"
-              }
-            },
-            "required": [
-              "reason",
-              "detail"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "The existing review already retains a different focus.",
-            "properties": {
-              "reason": {
-                "const": "DEEP_REVIEW_FOCUS_CONFLICT",
-                "type": "string"
-              }
-            },
-            "required": [
-              "reason"
-            ],
-            "type": "object"
           }
         ]
       },
@@ -5999,20 +5200,13 @@
         "additionalProperties": false,
         "description": "An empty body keeps the run-now behavior existing clients request.",
         "properties": {
-          "focus_text": {
-            "description": "Optional investigation focus for EXTENDED, trimmed and frozen at admission.\n Limited to 500 UTF-16 code units.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "mode": {
             "allOf": [
               {
                 "$ref": "#/components/schemas/RunNowMode"
               }
             ],
-            "description": "`EXISTING_OR_NEW`, the default, returns any review that already owns the live head.\n `FULL` returns a pending or running review of that head or starts a new one.\n `EXTENDED` admits one funded Deep Review for that head, with optional focus."
+            "description": "`EXISTING_OR_NEW`, the default, returns any review that already owns the live head.\n `FULL` returns a pending or running review of that head or starts a new one."
           }
         },
         "type": "object"
@@ -6047,105 +5241,65 @@
         ],
         "type": "object"
       },
-      "SpecialistAssessmentExecution": {
+      "ScanRequestBody": {
+        "additionalProperties": false,
+        "description": "One request to scan a ref or an exact commit of the repository.",
         "properties": {
-          "assessment_id": {
-            "description": "The immutable assessment whose specialist execution is reported.",
-            "format": "uuid",
-            "type": "string"
+          "budget_credits": {
+            "description": "The credits the whole scan may spend, at most the organization's\n on-demand ceiling.",
+            "format": "int64",
+            "type": "integer"
           },
-          "passes": {
-            "description": "Selected specialist passes and their retained execution outputs.",
-            "items": {
-              "$ref": "#/components/schemas/SpecialistPassExecution"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "assessment_id",
-          "passes"
-        ],
-        "type": "object"
-      },
-      "SpecialistExecutionView": {
-        "properties": {
-          "assessments": {
-            "description": "The applied specialist roster per exact assessment execution.",
-            "items": {
-              "$ref": "#/components/schemas/SpecialistAssessmentExecution"
-            },
-            "type": "array"
-          },
-          "selection_recorded": {
-            "description": "False until the applied parent captures its specialist choices.",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "selection_recorded",
-          "assessments"
-        ],
-        "type": "object"
-      },
-      "SpecialistOutputProjection": {
-        "description": "A pass receipt's bounded operational facts, without its proposals or prose.",
-        "properties": {
-          "gap_kind": {
-            "description": "Closed evidence-gap class, absent when the pass produced output.",
+          "commit_sha": {
+            "description": "An exact commit. Name it or `ref`.",
             "type": [
               "string",
               "null"
             ]
           },
-          "output_sha256": {
-            "description": "Verified digest of the retained output bytes.",
-            "type": "string"
+          "ref": {
+            "description": "A ref, resolved once when the request arrives. Name it or `commit_sha`.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
-          "status": {
-            "description": "`PRODUCED`, `UNAVAILABLE`, `INCOMPLETE` or `MALFORMED`.",
+          "request_id": {
+            "description": "The caller's identity for this request. Sending it again returns the\n first resolution instead of scanning again.",
+            "format": "uuid",
             "type": "string"
           }
         },
         "required": [
-          "status",
-          "output_sha256"
+          "request_id",
+          "budget_credits"
         ],
         "type": "object"
       },
-      "SpecialistPassExecution": {
+      "ScanResponse": {
+        "description": "What a scan request resolved to.",
         "properties": {
-          "files": {
-            "description": "Exact selected paths from the validated captured change.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "floor": {
-            "description": "Whether captured file facts required this pass.",
-            "type": "boolean"
-          },
-          "name": {
-            "description": "Closed registry key of the selected specialist.",
+          "outcome": {
+            "description": "`CREATED`, `EXISTING` when this request id was already resolved, or\n `REPOSITORY_UNAVAILABLE` when GitHub could not resolve it.",
             "type": "string"
           },
-          "output": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/SpecialistOutputProjection"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Missing means selected, with no retained output. It never means success."
+          "resolution_id": {
+            "description": "The request's one resolution receipt.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "review_id": {
+            "description": "The scan review, readable through the review routes. Absent when\n GitHub could not resolve the request.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
-          "name",
-          "files",
-          "floor"
+          "resolution_id",
+          "outcome"
         ],
         "type": "object"
       },
@@ -6419,48 +5573,6 @@
         ],
         "type": "string"
       },
-      "TerraformPlanView": {
-        "enum": [
-          "TAKEN",
-          "NOT_DECLARED",
-          "NOT_PINNED",
-          "HEAD_DIFFERS",
-          "ADDRESSES_UNREPORTED"
-        ],
-        "type": "string"
-      },
-      "TerraformRootsView": {
-        "description": "The Terraform roots of one declared reach read.",
-        "properties": {
-          "addresses": {
-            "description": "The changed resource instance addresses taken as roots.",
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "omitted": {
-            "description": "Changed addresses left out at World's limit of 100 roots per read.",
-            "format": "uint",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "plan": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/TerraformPlanView"
-              }
-            ],
-            "description": "`TAKEN` when the plan pinned for the reviewed commit named the roots,\n `NOT_DECLARED` when the environment captures no Terraform plan for this\n review, `NOT_PINNED` when it declares one and none was pinned,\n `HEAD_DIFFERS` when the pinned plan is for another commit, and\n `ADDRESSES_UNREPORTED` when the pinned plan records no changed\n addresses because it was pinned before World reported them."
-          }
-        },
-        "required": [
-          "plan",
-          "addresses",
-          "omitted"
-        ],
-        "type": "object"
-      },
       "ThreadObservationFreshness": {
         "enum": [
           "FRESH",
@@ -6724,7 +5836,7 @@
   },
   "info": {
     "title": "Proofline Review API",
-    "version": "1.0.0"
+    "version": "5.1.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -7236,7 +6348,7 @@
           },
           "400": {
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/RunNowRefused"
                 }
@@ -7324,7 +6436,7 @@
           },
           "422": {
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/CoverageRefused"
                 }
@@ -7402,7 +6514,7 @@
           },
           "400": {
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/RunNowRefused"
                 }
@@ -7480,7 +6592,7 @@
           },
           "400": {
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/RunNowRefused"
                 }
@@ -7567,7 +6679,7 @@
           },
           "400": {
             "content": {
-              "application/json": {
+              "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/RunNowRefused"
                 }
@@ -7650,6 +6762,84 @@
         ],
         "summary": "Get repository review guidance",
         "x-proofline-token-scope": "guidance:read"
+      }
+    },
+    "/api/v1/organizations/{org_id}/repositories/{repo_id}/scans": {
+      "post": {
+        "description": "Scans the whole repository at one commit, resolved once from `ref` or named by `commit_sha`, and records that resolution. Requires live GitHub write access, and `budget_credits` at most the organization's on-demand scan limit; a limit of 0 turns on-demand scans off. Sending the same `request_id` again returns the first resolution. Results remain in Proofline and are never posted to GitHub.",
+        "operationId": "request_scan",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "org_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "style": "simple"
+          },
+          {
+            "in": "path",
+            "name": "repo_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "style": "simple"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScanRequestBody"
+              }
+            }
+          },
+          "description": "One request to scan a ref or an exact commit of the repository.",
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanResponse"
+                }
+              }
+            },
+            "description": "What a scan request resolved to."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunNowRefused"
+                }
+              }
+            },
+            "description": "A run-now request that created nothing, as the 400 it is answered with.\n\n The refusal is a configuration fact, not a failure, and it is still sent\n as an RFC 9457 problem: `title`, `status` and `detail` are what a client\n that knows only problems shows, and `repository_name` and `refusal` are\n the extension members a client that knows refusals links from. During a\n rollout a page loaded from the previous bundle keeps working against\n this server, because a refusal was a 400 with a `detail` before too."
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "An RFC 9457 problem; the HTTP status remains authoritative."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Scan a repository revision",
+        "x-proofline-token-scope": "scans:request"
       }
     },
     "/api/v1/organizations/{org_id}/repository-names": {
@@ -7960,10 +7150,12 @@
             "style": "simple"
           },
           {
+            "description": "The repository's name without its owner, or a name it had before a rename.",
             "in": "path",
             "name": "repository",
             "required": true,
             "schema": {
+              "description": "The repository's name without its owner, or a name it had before a rename.",
               "type": "string"
             },
             "style": "simple"
@@ -8154,10 +7346,12 @@
             "style": "simple"
           },
           {
+            "description": "The repository's name without its owner, or a name it had before a rename.",
             "in": "path",
             "name": "repository",
             "required": true,
             "schema": {
+              "description": "The repository's name without its owner, or a name it had before a rename.",
               "type": "string"
             },
             "style": "simple"

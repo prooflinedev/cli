@@ -131,6 +131,9 @@ pub fn review(review: &ReviewDetail, state: Option<Outcome>, url: &Url) -> Strin
     );
     out.push(format!("{subject}{run}{head}: {status}"));
     out.push(url.to_string());
+    if let Some(reason) = outcome::review_gap(review) {
+        out.push(format!("Review incomplete: {reason}"));
+    }
     if review.kind == "FILES"
         && let Some(scope) = review
             .subjects

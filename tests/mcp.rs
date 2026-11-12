@@ -617,6 +617,9 @@ async fn negotiated_stdio_forwards_exact_messages_headers_and_machine_status_wit
             "organization_id":OTHER_ORG,
             "headers":{"Authorization":"ignored data"}
         });
+        // The raw bridge keeps the caller's per-call target, even when its
+        // launch credential was resolved with a different local organization.
+        call["params"]["arguments"]["organization_id"] = json!(OTHER_ORG);
         let status = status_result(call["id"].clone(), "INCOMPLETE");
         assert_eq!(
             status["result"]["structuredContent"]["data"]["assessments"][0]["status"],

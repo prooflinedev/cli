@@ -5,8 +5,10 @@ use serde::de::{Error as _, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, Stdin, Stdout};
+use uuid::Uuid;
 
 use crate::api::{Http, McpHttpError};
+use crate::credentials::Credential;
 
 const FRAME_LIMIT: usize = 8192;
 const PROTOCOL: &str = "2025-11-25";
@@ -33,6 +35,8 @@ pub(crate) enum McpError {
     Version,
     #[error("the MCP server sent an invalid or uncorrelated JSON-RPC response")]
     Response,
+    #[error("MCP organization_id must match the selected organization (--org or stored sign-in)")]
+    Organization,
     #[error("MCP output could not be written")]
     Output,
 }
@@ -41,7 +45,7 @@ impl McpError {
     fn code(&self) -> i32 {
         match self {
             Self::Utf8 | Self::Parse => -32700,
-            Self::TooLarge | Self::Incomplete | Self::Envelope => -32600,
+            Self::TooLarge | Self::Incomplete | Self::Envelope | Self::Organization => -32600,
             Self::Http(_)
             | Self::Input
             | Self::Lifecycle
@@ -54,7 +58,9 @@ impl McpError {
     fn category(&self) -> &'static str {
         match self {
             Self::Http(error) => error.category(),
-            Self::TooLarge | Self::Utf8 | Self::Incomplete | Self::Input => "input",
+            Self::TooLarge | Self::Utf8 | Self::Incomplete | Self::Input | Self::Organization => {
+                "input"
+            }
             Self::Parse | Self::Envelope => "jsonrpc",
             Self::Lifecycle | Self::Version => "lifecycle",
             Self::Response => "response",
@@ -341,13 +347,26 @@ pub(crate) async fn run(http: &Http, token: &SecretString) -> Result<(), McpErro
     }
 }
 
-/// One native command uses the same negotiated, bounded transport as the bridge.
+/// One native command targets its resolved organization using the bridge's
+/// negotiated, bounded transport. The raw stdio relay never uses this selector.
 pub(crate) async fn call(
     http: &Http,
-    token: &SecretString,
+    credential: &Credential,
     name: &str,
-    arguments: Value,
+    mut arguments: Value,
 ) -> Result<Value, McpError> {
+    let object = arguments.as_object_mut().ok_or(McpError::Organization)?;
+    if let Some(target) = object.get("organization_id") {
+        let target: Uuid =
+            serde_json::from_value(target.clone()).map_err(|_| McpError::Organization)?;
+        if target != credential.organization_id {
+            return Err(McpError::Organization);
+        }
+    }
+    object.insert(
+        "organization_id".to_owned(),
+        json!(credential.organization_id),
+    );
     let mut session = Session::New;
     let frames = [
         json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{
@@ -363,7 +382,7 @@ pub(crate) async fn call(
             return Err(McpError::TooLarge);
         }
         let message = Message::parse(&frame)?;
-        result = relay(http, token, &mut session, &message, frame).await?;
+        result = relay(http, &credential.token, &mut session, &message, frame).await?;
         if result.as_ref().is_some_and(|r| r.get("error").is_some()) {
             return Err(McpError::Response);
         }
@@ -371,4 +390,75 @@ pub(crate) async fn call(
     result
         .and_then(|mut r| r.get_mut("result").map(Value::take))
         .ok_or(McpError::Response)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use axum::{Json, Router, http::StatusCode, response::IntoResponse as _, routing::post};
+
+    use secrecy::SecretString;
+    use serde_json::{Value, json};
+    use uuid::Uuid;
+
+    use super::{PROTOCOL, call};
+    use crate::{
+        api::Http,
+        credentials::{Credential, Source},
+        origin::Origin,
+    };
+
+    #[tokio::test]
+    async fn native_call_preserves_a_resolved_device_credential_target() {
+        let organization_id = Uuid::parse_str("0190f3a0-0000-7000-8000-000000000001").unwrap();
+        // The credential loader returns this stored organization when no --org
+        // is supplied. Native calls must target it just as environment calls do.
+        let credential = Credential {
+            token: SecretString::from("pld_device_fixture"),
+            organization_id,
+            scope: Some("reviews:read knowledge:read".to_owned()),
+            expires_at: None,
+            source: Source::Keychain,
+        };
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&seen);
+        let app = Router::new().route(
+            "/mcp",
+            post(move |Json(body): Json<Value>| {
+                let observed = Arc::clone(&observed);
+                async move {
+                    match body["method"].as_str().unwrap() {
+                        "initialize" => Json(json!({"jsonrpc":"2.0","id":1,
+                            "result":{"protocolVersion":PROTOCOL}}))
+                        .into_response(),
+                        "notifications/initialized" => StatusCode::ACCEPTED.into_response(),
+                        "tools/call" => {
+                            observed.lock().unwrap().push(body["params"].clone());
+                            Json(json!({"jsonrpc":"2.0","id":2,"result":{"isError":false,"content":[]}})).into_response()
+                        }
+                        method => panic!("unexpected MCP method: {method}"),
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = Origin::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let result = call(
+            &Http::new(origin).unwrap(),
+            &credential,
+            "list_wiki_pages",
+            json!({"repository":"owner/name"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result["isError"], false);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![json!({"name":"list_wiki_pages","arguments":{
+                "organization_id":organization_id,"repository":"owner/name"}})]
+        );
+        server.abort();
+    }
 }

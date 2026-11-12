@@ -255,7 +255,7 @@ fn install(
             Ok(Outcome::Existing)
         }
         store::Saved::Installed => {
-            writeln!(diagnostics, "Added Proofline to {:?}. Sign in to the same console with `proofline login --scope reviews:read`, using the same `--base-url`; the coding agent uses the CLI's existing credential.", layout.target())
+            writeln!(diagnostics, "Added Proofline to {:?}. Sign in to the same console with `{}`, using the same `--base-url`; the coding agent uses the CLI's existing credential.", layout.target(), crate::config::LOGIN)
                 .map_err(|error| InstallError::console("report the saved configuration", error))?;
             Ok(Outcome::Installed)
         }

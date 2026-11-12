@@ -271,6 +271,18 @@ async fn code_results_keep_their_identity_and_cannot_complete_environment_assess
         1,
         true,
     ));
+    let catalog: Value = serde_json::from_str(include_str!("fixtures/risk-domains.json")).unwrap();
+    let categories: Vec<&str> = catalog["code"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect();
+    for category in &categories {
+        let mut document = complete.clone();
+        document["code_assessment"]["findings"][0]["risk_domain"] = json!(category);
+        cases.push((*category, document, Some("COMPLETED"), 0, 1, true));
+    }
     // Different occurrences keep their own IDs and share the retained
     // fingerprint. Every other row is an older response without one.
     let mut retained = complete.clone();
@@ -489,6 +501,8 @@ async fn code_results_keep_their_identity_and_cannot_complete_environment_assess
             );
             let domain = if label == "deterministic CODE finding" {
                 "committed_secret"
+            } else if categories.contains(&label) {
+                label
             } else {
                 "logic"
             };

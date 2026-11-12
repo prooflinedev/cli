@@ -1,0 +1,1833 @@
+{
+  "cases": [
+    {
+      "name": "review-pending",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "PENDING",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "COMPLETED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": null,
+      "gaps": []
+    },
+    {
+      "name": "review-running",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "RUNNING",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "COMPLETED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": null,
+      "gaps": []
+    },
+    {
+      "name": "review-completed",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "COMPLETED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "COMPLETED",
+      "gaps": []
+    },
+    {
+      "name": "review-incomplete",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "INCOMPLETE",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "COMPLETED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": null,
+          "reason_codes": ["REVIEW_STATE_UNAVAILABLE"]
+        }
+      ]
+    },
+    {
+      "name": "review-failed",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "FAILED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "COMPLETED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "FAILED",
+      "gaps": []
+    },
+    {
+      "name": "review-superseded",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "SUPERSEDED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "COMPLETED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "STOPPED",
+      "gaps": []
+    },
+    {
+      "name": "review-stopped",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "STOPPED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "COMPLETED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "STOPPED",
+      "gaps": []
+    },
+    {
+      "name": "review-excluded",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "EXCLUDED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "COMPLETED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": null,
+          "reason_codes": ["REVIEW_STATE_UNAVAILABLE"]
+        }
+      ]
+    },
+    {
+      "name": "review-future_review",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "FUTURE_REVIEW",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "COMPLETED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": null,
+          "reason_codes": ["REVIEW_STATE_UNAVAILABLE"]
+        }
+      ]
+    },
+    {
+      "name": "assessment-pending",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "PENDING",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": "00000000-0000-7000-8000-000000000003",
+          "reason_codes": ["ASSESSMENT_RESULT_UNAVAILABLE"]
+        }
+      ]
+    },
+    {
+      "name": "assessment-running",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "RUNNING",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": "00000000-0000-7000-8000-000000000003",
+          "reason_codes": ["ASSESSMENT_RESULT_UNAVAILABLE"]
+        }
+      ]
+    },
+    {
+      "name": "assessment-incomplete",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "INCOMPLETE",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": "00000000-0000-7000-8000-000000000003",
+          "reason_codes": ["ASSESSMENT_RESULT_UNAVAILABLE"]
+        }
+      ]
+    },
+    {
+      "name": "assessment-failed",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "FAILED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": "00000000-0000-7000-8000-000000000003",
+          "reason_codes": ["ASSESSMENT_RESULT_UNAVAILABLE"]
+        }
+      ]
+    },
+    {
+      "name": "assessment-stopped",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "STOPPED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": "00000000-0000-7000-8000-000000000003",
+          "reason_codes": ["ASSESSMENT_RESULT_UNAVAILABLE"]
+        }
+      ]
+    },
+    {
+      "name": "assessment-superseded",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "SUPERSEDED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": "00000000-0000-7000-8000-000000000003",
+          "reason_codes": ["ASSESSMENT_RESULT_UNAVAILABLE"]
+        }
+      ]
+    },
+    {
+      "name": "assessment-excluded",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "EXCLUDED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": "00000000-0000-7000-8000-000000000003",
+          "reason_codes": ["ASSESSMENT_RESULT_UNAVAILABLE"]
+        }
+      ]
+    },
+    {
+      "name": "assessment-future_assessment",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "FUTURE_ASSESSMENT",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": "00000000-0000-7000-8000-000000000003",
+          "reason_codes": ["UNKNOWN_ASSESSMENT_STATUS"]
+        }
+      ]
+    },
+    {
+      "name": "absent-check-receipt",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "COMPLETED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": false,
+              "status": "READY",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": "00000000-0000-7000-8000-000000000003",
+          "reason_codes": ["CHECK_RECEIPT_ABSENT"]
+        }
+      ]
+    },
+    {
+      "name": "unresolved-check-receipt",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "COMPLETED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "UNRESOLVED",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": "00000000-0000-7000-8000-000000000003",
+          "reason_codes": ["CHECKS_UNRESOLVED"]
+        }
+      ]
+    },
+    {
+      "name": "unknown-check-status",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "COMPLETED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "FUTURE_CHECK",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": "00000000-0000-7000-8000-000000000003",
+          "reason_codes": ["CHECKS_UNRESOLVED"]
+        }
+      ]
+    },
+    {
+      "name": "check-gating-unresolved",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "COMPLETED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": [
+                {
+                  "name": "example",
+                  "outcome": "UNRESOLVED",
+                  "lifecycle": "GATING",
+                  "files": []
+                }
+              ]
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": "00000000-0000-7000-8000-000000000003",
+          "reason_codes": ["CHECKS_UNRESOLVED"]
+        }
+      ]
+    },
+    {
+      "name": "check-shadow-blocked",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "COMPLETED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": [
+                {
+                  "name": "example",
+                  "outcome": "BLOCKED",
+                  "lifecycle": "SHADOW",
+                  "files": []
+                }
+              ]
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "COMPLETED",
+      "gaps": []
+    },
+    {
+      "name": "evidence-gap",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "COMPLETED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": []
+            },
+            "release_evidence_gap": "RELEASE_SET_UNAVAILABLE"
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": "00000000-0000-7000-8000-000000000003",
+          "reason_codes": ["RELEASE_SET_UNAVAILABLE"]
+        }
+      ]
+    },
+    {
+      "name": "assessment-kind",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "COMPLETED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": []
+            },
+            "incompleteness_kind": "EVIDENCE_UNAVAILABLE"
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": "00000000-0000-7000-8000-000000000003",
+          "reason_codes": ["EVIDENCE_UNAVAILABLE"]
+        }
+      ]
+    },
+    {
+      "name": "combined-gaps",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "COMPLETED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": false,
+              "status": "READY",
+              "families": []
+            },
+            "reason_codes": ["OUT_OF_CREDITS"],
+            "incompleteness_kind": "MODEL_BUDGET_EXHAUSTED",
+            "release_evidence_gap": "RELEASE_SET_UNAVAILABLE"
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": "00000000-0000-7000-8000-000000000003",
+          "reason_codes": [
+            "OUT_OF_CREDITS",
+            "MODEL_BUDGET_EXHAUSTED",
+            "RELEASE_SET_UNAVAILABLE",
+            "CHECK_RECEIPT_ABSENT"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "assessment-count-0",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 0,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "COMPLETED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": null,
+          "reason_codes": ["ASSESSMENT_HISTORY_UNAVAILABLE"]
+        }
+      ]
+    },
+    {
+      "name": "assessment-count-2",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 2,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "COMPLETED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": null,
+          "reason_codes": ["ASSESSMENT_HISTORY_UNAVAILABLE"]
+        }
+      ]
+    },
+    {
+      "name": "missing-environment-history",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": null,
+          "reason_codes": ["ASSESSMENT_HISTORY_UNAVAILABLE"]
+        }
+      ]
+    },
+    {
+      "name": "code-only-completed",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 0,
+        "environment_display_names": [],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "code_assessment": {
+          "id": "00000000-0000-7000-8000-000000000005",
+          "status": "COMPLETED",
+          "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "findings": [],
+          "incompleteness_kind": null
+        }
+      },
+      "outcome": "COMPLETED",
+      "gaps": []
+    },
+    {
+      "name": "code-missing",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 0,
+        "environment_display_names": [],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": null,
+          "reason_codes": ["CODE_ASSESSMENT_UNAVAILABLE"]
+        }
+      ]
+    },
+    {
+      "name": "code-withheld",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 0,
+        "environment_display_names": [],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "code_assessment": {
+          "id": "00000000-0000-7000-8000-000000000005",
+          "status": "COMPLETED",
+          "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "findings": [
+            {
+              "id": "00000000-0000-7000-8000-000000000006",
+              "severity": "SERIOUS",
+              "risk_domain": "[withheld: environment value]",
+              "claim": "[withheld: environment value]",
+              "impact": "[withheld: environment value]",
+              "symbols": [],
+              "lifecycle_state": "NEW",
+              "evidence_refs": [],
+              "comment_reactions": [],
+              "rule_refs": []
+            }
+          ],
+          "incompleteness_kind": null
+        }
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": null,
+          "reason_codes": ["CODE_ASSESSMENT_UNAVAILABLE"]
+        }
+      ]
+    },
+    {
+      "name": "code-other-head",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 0,
+        "environment_display_names": [],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "code_assessment": {
+          "id": "00000000-0000-7000-8000-000000000005",
+          "status": "COMPLETED",
+          "head_commit_sha": "cccccccccccccccccccccccccccccccccccccccc",
+          "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "findings": [],
+          "incompleteness_kind": null
+        }
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": null,
+          "reason_codes": ["CODE_ASSESSMENT_UNAVAILABLE"]
+        }
+      ]
+    },
+    {
+      "name": "code-other-base",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 0,
+        "environment_display_names": [],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "code_assessment": {
+          "id": "00000000-0000-7000-8000-000000000005",
+          "status": "COMPLETED",
+          "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base_commit_sha": "cccccccccccccccccccccccccccccccccccccccc",
+          "findings": [],
+          "incompleteness_kind": null
+        }
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": null,
+          "reason_codes": ["CODE_ASSESSMENT_UNAVAILABLE"]
+        }
+      ]
+    },
+    {
+      "name": "code-unpinned-base",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 0,
+        "environment_display_names": [],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": null,
+        "code_assessment": {
+          "id": "00000000-0000-7000-8000-000000000005",
+          "status": "COMPLETED",
+          "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "findings": [],
+          "incompleteness_kind": null
+        }
+      },
+      "outcome": "COMPLETED",
+      "gaps": []
+    },
+    {
+      "name": "code-unpinned-head",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 0,
+        "environment_display_names": [],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": null,
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "code_assessment": {
+          "id": "00000000-0000-7000-8000-000000000005",
+          "status": "COMPLETED",
+          "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "findings": [],
+          "incompleteness_kind": null
+        }
+      },
+      "outcome": "COMPLETED",
+      "gaps": []
+    },
+    {
+      "name": "code-case-insensitive-commits",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 0,
+        "environment_display_names": [],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "code_assessment": {
+          "id": "00000000-0000-7000-8000-000000000005",
+          "status": "COMPLETED",
+          "head_commit_sha": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+          "base_commit_sha": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+          "findings": [],
+          "incompleteness_kind": null
+        }
+      },
+      "outcome": "COMPLETED",
+      "gaps": []
+    },
+    {
+      "name": "code-incomplete",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 0,
+        "environment_display_names": [],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "code_assessment": {
+          "id": "00000000-0000-7000-8000-000000000005",
+          "status": "INCOMPLETE",
+          "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "findings": [],
+          "incompleteness_kind": null
+        }
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": "00000000-0000-7000-8000-000000000005",
+          "reason_codes": ["CODE_ASSESSMENT_STATE_UNAVAILABLE"]
+        }
+      ]
+    },
+    {
+      "name": "code-evidence-gap",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 0,
+        "environment_display_names": [],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "code_assessment": {
+          "id": "00000000-0000-7000-8000-000000000005",
+          "status": "COMPLETED",
+          "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "findings": [],
+          "incompleteness_kind": "EVIDENCE_UNAVAILABLE"
+        }
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": "00000000-0000-7000-8000-000000000005",
+          "reason_codes": ["EVIDENCE_UNAVAILABLE"]
+        }
+      ]
+    },
+    {
+      "name": "code-excluded",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 0,
+        "environment_display_names": [],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "code_assessment": {
+          "id": "00000000-0000-7000-8000-000000000005",
+          "status": "EXCLUDED",
+          "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "findings": [],
+          "incompleteness_kind": null
+        }
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": "00000000-0000-7000-8000-000000000005",
+          "reason_codes": ["CODE_ASSESSMENT_STATE_UNAVAILABLE"]
+        }
+      ]
+    },
+    {
+      "name": "complete-environment-with-partial-code",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 1,
+        "environment_display_names": ["production"],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [
+          {
+            "id": "00000000-0000-7000-8000-000000000003",
+            "environment_display_name": "production",
+            "status": "COMPLETED",
+            "domains": [],
+            "findings": [],
+            "checks": {
+              "receipt_recorded": true,
+              "status": "READY",
+              "families": []
+            }
+          }
+        ],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "code_assessment": {
+          "id": "00000000-0000-7000-8000-000000000005",
+          "status": "INCOMPLETE",
+          "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "findings": [],
+          "incompleteness_kind": null
+        }
+      },
+      "outcome": "COMPLETED",
+      "gaps": []
+    }
+  ]
+}

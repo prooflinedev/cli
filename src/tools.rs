@@ -204,10 +204,10 @@ pub(crate) enum SessionCommand {
 
 pub(crate) async fn session(api: &Api, command: SessionCommand) -> anyhow::Result<Verdict> {
     let value = match command {
-        SessionCommand::Prompt { finding_id } => api.tool_get(&["findings", &finding_id.to_string(), "agent-session-prompt"]).await?,
-        SessionCommand::Get { session_id } => api.tool_get(&["agent-sessions", &session_id.to_string()]).await?,
+        SessionCommand::Prompt { finding_id } => api.get(api.url_get_agent_session_prompt(&finding_id.to_string())).await?,
+        SessionCommand::Get { session_id } => api.get(api.url_get_agent_session(&session_id.to_string())).await?,
         SessionCommand::Start { finding_id, connection_id, prompt_digest } => api.tool_post(
-            &["findings", &finding_id.to_string(), "agent-sessions"],
+            api.url_start_agent_session(&finding_id.to_string()),
             &serde_json::json!({"connection_id": connection_id, "prompt_digest": prompt_digest}),
         ).await?,
     };

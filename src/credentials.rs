@@ -155,7 +155,11 @@ pub fn default_session_bus() -> Option<String> {
     let named = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
     let environment_names_bus = named("DBUS_SESSION_BUS_ADDRESS") || named("XDG_RUNTIME_DIR");
     // `/proc/self` belongs to the effective user, who owns the session bus.
-    let uid = std::fs::metadata("/proc/self").ok()?.uid();
+    let uid = match std::fs::metadata("/proc/self") {
+        Ok(metadata) => metadata.uid(),
+        // Without the user identity, leave discovery to the keychain library.
+        Err(_) => return None,
+    };
     let bus = std::path::Path::new("/run/user")
         .join(uid.to_string())
         .join("bus");
@@ -171,7 +175,11 @@ fn user_bus_address(environment_names_bus: bool, bus: &std::path::Path) -> Optio
     if environment_names_bus {
         return None;
     }
-    let socket = std::fs::metadata(bus).ok()?.file_type().is_socket();
+    let socket = match std::fs::metadata(bus) {
+        Ok(metadata) => metadata.file_type().is_socket(),
+        // An unavailable path establishes no fallback; normal lookup still runs.
+        Err(_) => return None,
+    };
     socket.then(|| format!("unix:path={}", bus.display()))
 }
 

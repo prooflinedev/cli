@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 const ORG: &str = "0190f3a0-0000-7000-8000-000000000001";
+const OTHER_ORG: &str = "0190f3a0-0000-7000-8000-000000000002";
 const TOKEN: &str = "pld_secretsecretsecret";
 const REPOSITORY: &str = "0190f3a0-0000-7000-8000-000000000022";
 const SELECTED_REVIEW: &str = "0190f3a0-0000-7000-8000-000000000033";
@@ -161,11 +162,11 @@ async fn coverage_upload_rejects_ambiguous_and_oversized_files_before_http() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("report names must be distinct"));
     std::fs::File::create(&report)
         .unwrap()
-        .set_len((64 << 20) + 1)
+        .set_len((30 << 20) + 1)
         .unwrap();
     let output = cli("http://127.0.0.1:1", &args[..8]).await;
     assert_eq!(output.status.code(), Some(1));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("larger than 64 MiB"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("larger than 30 MiB"));
 }
 
 async fn cli(origin: &str, args: &[&str]) -> std::process::Output {
@@ -174,16 +175,40 @@ async fn cli(origin: &str, args: &[&str]) -> std::process::Output {
 }
 
 async fn cli_in(origin: &str, args: &[&str], directory: &std::path::Path) -> std::process::Output {
+    cli_for_organization(origin, args, directory, ORG, true).await
+}
+
+async fn cli_for_organization(
+    origin: &str,
+    args: &[&str],
+    directory: &std::path::Path,
+    organization: &str,
+    use_flag: bool,
+) -> std::process::Output {
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_proofline"));
+    command
+        .args(["--base-url", origin])
+        .env("PROOFLINE_TOKEN", TOKEN)
+        // An explicit token must work without a reachable keychain bus.
+        .env(
+            "DBUS_SESSION_BUS_ADDRESS",
+            "unix:path=/proofline-test-unavailable-bus",
+        )
+        .env("PROOFLINE_NO_UPDATE_CHECK", "1")
+        .env("PATH", "")
+        .current_dir(directory);
+    if use_flag {
+        // A flag takes precedence over a different environment target.
+        command.args(["--org", organization]).env(
+            "PROOFLINE_ORGANIZATION_ID",
+            if organization == ORG { OTHER_ORG } else { ORG },
+        );
+    } else {
+        command.env("PROOFLINE_ORGANIZATION_ID", organization);
+    }
     tokio::time::timeout(
         std::time::Duration::from_secs(15),
-        tokio::process::Command::new(env!("CARGO_BIN_EXE_proofline"))
-            .args(["--base-url", origin, "--org", ORG])
-            .args(args)
-            .env("PROOFLINE_TOKEN", TOKEN)
-            .env("PATH", "")
-            .current_dir(directory)
-            .kill_on_drop(true)
-            .output(),
+        command.args(args).kill_on_drop(true).output(),
     )
     .await
     .unwrap()
@@ -1929,18 +1954,13 @@ async fn native_tools_keep_tenant_paths_and_reruns_make_one_attempt() {
     let server = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    for args in [
-        vec!["history", "--pr", "7", "--repo", "owner/repo"],
-        vec!["fix-prompt", SELECTED_REVIEW],
-    ] {
-        let output = cli(&origin, &args).await;
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(!output.stdout.contains(&27));
-    }
+    let output = cli(&origin, &["fix-prompt", SELECTED_REVIEW]).await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!output.stdout.contains(&27));
     let output = cli(&origin, &["rerun", SELECTED_REVIEW, "--no-wait"]).await;
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
@@ -1974,6 +1994,138 @@ async fn native_tools_keep_tenant_paths_and_reruns_make_one_attempt() {
     assert_eq!(output.stdout, b"dataset_version,claim\r\n1,\"a,b\"\r\n");
     assert!(String::from_utf8_lossy(&output.stderr).contains("next-cursor: opaque-next"));
     server.abort();
+}
+
+/// The pull-request review routes take the repository's name without its
+/// owner. The CLI takes `owner/name` and sends the name only after the review
+/// collection confirms that full name, so another owner's repository with the
+/// same name is never read.
+#[tokio::test]
+async fn history_and_run_send_the_matched_name_without_its_owner() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&requests);
+    let prefix = format!("/api/v1/organizations/{ORG}");
+    let app = Router::new().fallback(move |request: axum::extract::Request| {
+        let seen = Arc::clone(&seen);
+        let prefix = prefix.clone();
+        async move {
+            let path = request.uri().path().to_owned();
+            seen.lock().unwrap().push(path.clone());
+            if path == format!("{prefix}/reviews") {
+                return Json(json!({
+                    "items": [],
+                    "next_cursor": null,
+                    "truncated": false,
+                    "filters": {"repositories": [{"id": REPOSITORY, "name": "Owner/Repo"}]},
+                }));
+            }
+            if path == format!("{prefix}/reviews/pr/Repo/7") {
+                return Json(json!({"items": [{"run_number": 2}]}));
+            }
+            if path == format!("{prefix}/reviews/pr/Repo/7/runs/2") {
+                return Json(json!({"run_number": 2}));
+            }
+            Json(json!({}))
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let checkout = tempfile::tempdir().unwrap();
+    for args in [
+        ["init", "--quiet"].as_slice(),
+        &["remote", "add", "origin", "git@github.com:owner/repo.git"],
+    ] {
+        let status = tokio::process::Command::new("git")
+            .args(args)
+            .current_dir(checkout.path())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .status()
+            .await
+            .unwrap();
+        assert!(status.success());
+    }
+    let reads = |requests: &Mutex<Vec<String>>| {
+        requests
+            .lock()
+            .unwrap()
+            .drain(..)
+            .filter(|path| path.contains("/reviews/pr/"))
+            .collect::<Vec<_>>()
+    };
+    for (args, read) in [
+        (
+            vec!["history", "--repo", "owner/repo", "--pr", "7"],
+            "reviews/pr/Repo/7",
+        ),
+        (vec!["history", "--pr", "7"], "reviews/pr/Repo/7"),
+        (
+            vec!["run", "--repo", "owner/repo", "--pr", "7", "--run", "2"],
+            "reviews/pr/Repo/7/runs/2",
+        ),
+        (
+            vec!["run", "--pr", "7", "--run", "2"],
+            "reviews/pr/Repo/7/runs/2",
+        ),
+    ] {
+        let output = cli_with_git(&origin, &args, checkout.path()).await;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{args:?}: {stderr}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("\"run_number\": 2"),
+            "{args:?}"
+        );
+        assert_eq!(
+            reads(&requests),
+            [format!("/api/v1/organizations/{ORG}/{read}")],
+            "{args:?}"
+        );
+    }
+    for args in [
+        vec!["history", "--repo", "other/repo", "--pr", "7"],
+        vec!["run", "--repo", "other/repo", "--pr", "7", "--run", "2"],
+    ] {
+        let output = cli(&origin, &args).await;
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("other/repo has no reviews"),
+            "{args:?}"
+        );
+        assert!(output.stdout.is_empty(), "{args:?}");
+        assert!(reads(&requests).is_empty(), "{args:?}");
+    }
+    server.abort();
+}
+
+/// The CLI in `directory` with `git` on its path, for commands that read the
+/// checkout's remote.
+async fn cli_with_git(
+    origin: &str,
+    args: &[&str],
+    directory: &std::path::Path,
+) -> std::process::Output {
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_proofline"));
+    command
+        .args(["--base-url", origin, "--org", ORG])
+        .env("PROOFLINE_TOKEN", TOKEN)
+        .env(
+            "DBUS_SESSION_BUS_ADDRESS",
+            "unix:path=/proofline-test-unavailable-bus",
+        )
+        .env("PROOFLINE_NO_UPDATE_CHECK", "1")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .current_dir(directory);
+    tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        command.args(args).kill_on_drop(true).output(),
+    )
+    .await
+    .unwrap()
+    .unwrap()
 }
 
 #[tokio::test]
@@ -2056,7 +2208,7 @@ async fn native_knowledge_negotiates_and_reports_a_tool_refusal() {
                 }
                 2 => {
                     assert_eq!(headers["mcp-protocol-version"], "2025-11-25");
-                    assert_eq!(body["params"], json!({"name":"get_wiki_page", "arguments":{"repository":"owner/name", "page_key":"index", "commit":"a".repeat(40)}}));
+                    assert_eq!(body["params"], json!({"name":"get_wiki_page", "arguments":{"organization_id":ORG, "repository":"owner/name", "page_key":"index", "commit":"a".repeat(40)}}));
                     Json(json!({"jsonrpc":"2.0", "id":2, "result":{"isError":true, "content":[{"type":"text", "text":"RESOURCE_NOT_FOUND"}]}})).into_response()
                 }
                 _ => panic!("tool call retried"),
@@ -2164,10 +2316,10 @@ async fn fix_commands_preserve_context_and_never_retry_verification() {
     assert_eq!(
         *calls.lock().unwrap(),
         vec![
-            json!({"name":"list_open_findings", "arguments":{"repository":"owner/name", "pull_request_number":7}}),
-            json!({"name":"get_fix_context", "arguments":{"finding_id":SELECTED_REVIEW}}),
-            json!({"name":"get_reverification", "arguments":{"request_id":SELECTED_REVIEW}}),
-            json!({"name":"request_reverification", "arguments":{"review_id":SELECTED_REVIEW, "finding_ids":[SELECTED_REVIEW], "commit_sha":sha, "note":"fixed code"}}),
+            json!({"name":"list_open_findings", "arguments":{"organization_id":ORG, "repository":"owner/name", "pull_request_number":7}}),
+            json!({"name":"get_fix_context", "arguments":{"organization_id":ORG, "finding_id":SELECTED_REVIEW}}),
+            json!({"name":"get_reverification", "arguments":{"organization_id":ORG, "request_id":SELECTED_REVIEW}}),
+            json!({"name":"request_reverification", "arguments":{"organization_id":ORG, "review_id":SELECTED_REVIEW, "finding_ids":[SELECTED_REVIEW], "commit_sha":sha, "note":"fixed code"}}),
         ]
     );
     let output = cli(
@@ -2187,4 +2339,580 @@ async fn fix_commands_preserve_context_and_never_retry_verification() {
     assert!(!output.status.success());
     assert_eq!(calls.lock().unwrap().len(), 4);
     server.abort();
+}
+
+// Configuration uses opaque hosted results: sensitivity, scope and tenant rules
+// must continue to come from the server, even as its operation catalog grows.
+struct ConfigServer {
+    origin: String,
+    calls: Arc<Mutex<Vec<Value>>>,
+    frames: Arc<AtomicUsize>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl ConfigServer {
+    async fn start(result: Value) -> Self {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let frames = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&calls);
+        let observed_frames = Arc::clone(&frames);
+        let app = Router::new().route(
+            "/mcp",
+            post(move |headers: HeaderMap, Json(body): Json<Value>| {
+                let calls = Arc::clone(&observed);
+                let frames = Arc::clone(&observed_frames);
+                let result = result.clone();
+                async move {
+                    assert_eq!(headers[header::AUTHORIZATION], format!("Bearer {TOKEN}"));
+                    assert_eq!(body["jsonrpc"], "2.0");
+                    frames.fetch_add(1, Ordering::SeqCst);
+                    match body["method"].as_str().unwrap() {
+                        "initialize" => {
+                            assert_eq!(body["params"]["protocolVersion"], "2025-11-25");
+                            Json(json!({"jsonrpc":"2.0", "id":body["id"],
+                                "result":{"protocolVersion":"2025-11-25"}}))
+                            .into_response()
+                        }
+                        "notifications/initialized" => StatusCode::ACCEPTED.into_response(),
+                        "tools/call" => {
+                            assert_eq!(headers["mcp-protocol-version"], "2025-11-25");
+                            calls.lock().unwrap().push(body["params"].clone());
+                            Json(json!({"jsonrpc":"2.0", "id":body["id"], "result":result}))
+                                .into_response()
+                        }
+                        method => panic!("unexpected MCP method: {method}"),
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        Self {
+            origin,
+            calls,
+            frames,
+            task,
+        }
+    }
+
+    fn requests(&self) -> Vec<Value> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+impl Drop for ConfigServer {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+fn configuration_result(data: Value) -> Value {
+    let body = json!({"ok":true, "data":data});
+    json!({"isError":false, "structuredContent":body,
+        "content":[{"type":"text", "text":body.to_string()}],
+        "_meta":{"untrustedContentHint":true}})
+}
+
+#[tokio::test]
+async fn config_reads_forward_selectors_filters_and_route_parameters_and_print_the_result() {
+    let cases = [
+        (
+            vec!["get"],
+            "get_configuration",
+            json!({}),
+            json!({"target":{"kind":"ORGANIZATION","id":ORG},"problems":[],"operations":[]}),
+        ),
+        (
+            vec!["get", "--environment", REPOSITORY],
+            "get_configuration",
+            json!({"environment_id":REPOSITORY}),
+            json!({"target":{"kind":"ENVIRONMENT","id":REPOSITORY}}),
+        ),
+        (
+            vec!["get", "--repo", "owner/name"],
+            "get_configuration",
+            json!({"repository":"owner/name"}),
+            json!({"target":{"kind":"REPOSITORY","id":REPOSITORY}}),
+        ),
+        (
+            vec!["operations"],
+            "list_operations",
+            json!({}),
+            json!({"operations":[{"name":"repository.wiki_settings.update","sensitivity":"ordinary"}]}),
+        ),
+        (
+            vec![
+                "operations",
+                "--area",
+                "REPOSITORY_REVIEW_SETTINGS",
+                "--subject",
+                "repository",
+            ],
+            "list_operations",
+            json!({"area":"REPOSITORY_REVIEW_SETTINGS","subject":"repository"}),
+            json!({"operations":[]}),
+        ),
+        (
+            vec!["describe", "organization.settings.update"],
+            "describe_operation",
+            json!({"operation":"organization.settings.update","parameters":{}}),
+            json!({"current":{"name":"Example"},"revision":"a".repeat(64),"input_schema":{}}),
+        ),
+        (
+            vec![
+                "describe",
+                "repository.wiki_settings.update",
+                "--param",
+                "repo_id=repo-slug",
+                "--param",
+                "label=a=b",
+            ],
+            "describe_operation",
+            json!({"operation":"repository.wiki_settings.update","parameters":{"repo_id":"repo-slug","label":"a=b"}}),
+            json!({"current":{"enabled":false},"revision":"b".repeat(64),"sensitivity":"ordinary"}),
+        ),
+    ];
+    for (args, name, mut arguments, data) in cases {
+        arguments["organization_id"] = json!(ORG);
+        let result = configuration_result(data);
+        let server = ConfigServer::start(result.clone()).await;
+        let mut command = vec!["config"];
+        command.extend(args);
+        let output = cli(&server.origin, &command).await;
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            result
+        );
+        assert!(output.stderr.is_empty());
+        assert_eq!(
+            server.requests(),
+            vec![json!({"name":name,"arguments":arguments})]
+        );
+        assert_eq!(server.frames.load(Ordering::SeqCst), 3);
+    }
+}
+
+#[tokio::test]
+async fn config_propose_preserves_the_file_and_prints_ordinary_and_sensitive_diffs() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("change.json");
+    let mut ids = BTreeSet::new();
+    for sensitive in [false, true] {
+        let mut change = json!({"operation":"repository.wiki_settings.update", "parameters":{"repo_id":REPOSITORY}, "input":{"enabled":true}});
+        let mut data = json!({"applied":false, "change_id":SELECTED_REVIEW,
+            "reason":"Call apply_change with this change_id.",
+            "diff":{"current":{"enabled":false},"proposed":{"enabled":true}}});
+        if sensitive {
+            change = json!({"operation":"environment.review_focus.update", "parameters":{"env_id":REPOSITORY},
+                "input":{"focus":"<untrusted_text>production</untrusted_text>"},
+                "expected_revision":"a".repeat(64), "request_id":ORG,
+                "cited_files":[{"repository_id":REPOSITORY,"commit_sha":"b".repeat(40),"path":"infra/main.tf"}]});
+            // The hosted sensitive response names the ID inside the change.
+            data = json!({"applied":false, "reason":"Browser approval required.",
+                "approval_url":format!("https://proofline.sh/orgs/by-id/{ORG}/configuration-changes/{SELECTED_REVIEW}"),
+                "change":{"id":SELECTED_REVIEW,"cited_files":change["cited_files"]},
+                "diff":{"current":{"focus":""},"proposed":change["input"]}});
+        }
+        let bytes = serde_json::to_vec_pretty(&change).unwrap();
+        std::fs::write(&file, &bytes).unwrap();
+        let result = configuration_result(data);
+        let server = ConfigServer::start(result.clone()).await;
+        // Every invocation proposes once, with a fresh UUID, even for the same file.
+        for _ in 0..2 {
+            let output = cli(
+                &server.origin,
+                &["config", "propose", file.to_str().unwrap()],
+            )
+            .await;
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+                result
+            );
+        }
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(server.frames.load(Ordering::SeqCst), 6);
+        for mut request in requests {
+            assert_eq!(request["name"], "propose_change");
+            let id = request["arguments"]
+                .as_object_mut()
+                .unwrap()
+                .remove("request_id")
+                .unwrap();
+            let id = Uuid::parse_str(id.as_str().unwrap()).unwrap();
+            assert_eq!(id.get_version_num(), 7);
+            assert_ne!(id.to_string(), ORG);
+            assert!(ids.insert(id));
+            let mut expected = change.clone();
+            expected["organization_id"] = json!(ORG);
+            expected.as_object_mut().unwrap().remove("request_id");
+            assert_eq!(request["arguments"], expected);
+        }
+        assert_eq!(std::fs::read(&file).unwrap(), bytes);
+    }
+}
+
+#[tokio::test]
+async fn config_apply_prints_the_route_result_or_sensitive_approval_and_exits_when_held() {
+    for sensitive in [false, true] {
+        let data = if sensitive {
+            json!({"applied":false,"reason":"An administrator must approve this change in the browser.",
+                "approval_url":format!("https://proofline.sh/orgs/by-id/{ORG}/configuration-changes/{SELECTED_REVIEW}"),
+                "change":{"id":SELECTED_REVIEW}})
+        } else {
+            // Successful hosted apply results have a route status, not applied:true.
+            json!({"operation":"repository.wiki_settings.update","status":200,"response":{"enabled":true},
+                "previous_revision":"a".repeat(64),"revision":"b".repeat(64),"change_id":SELECTED_REVIEW,"replayed":false})
+        };
+        let result = configuration_result(data);
+        let server = ConfigServer::start(result.clone()).await;
+        let output = cli(&server.origin, &["config", "apply", SELECTED_REVIEW]).await;
+        assert_eq!(output.status.code(), Some(i32::from(sensitive)));
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            result
+        );
+        assert_eq!(
+            server.requests(),
+            vec![
+                json!({"name":"apply_change","arguments":{"organization_id":ORG,"change_id":SELECTED_REVIEW}})
+            ]
+        );
+        assert_eq!(server.frames.load(Ordering::SeqCst), 3);
+    }
+}
+
+#[tokio::test]
+async fn config_refusals_keep_server_reasons_and_do_not_retry_or_apply() {
+    for (args, code, message) in [
+        (
+            vec!["get"],
+            "NOT_AUTHORIZED",
+            "This agent's sign-in lacks the setup:write permission; reconnect the agent and approve setup:write as an organization administrator.",
+        ),
+        (
+            vec![
+                "describe",
+                "repository.wiki_settings.update",
+                "--param",
+                "repo_id=foreign",
+            ],
+            "NOT_AUTHORIZED",
+            "This agent's sign-in lacks the org:configure permission; reconnect the agent and approve org:configure as an organization administrator.",
+        ),
+        (
+            vec!["apply", SELECTED_REVIEW],
+            "INVALID_INPUT",
+            "The revision changed; current revision is bbbbbbbb.",
+        ),
+        (
+            vec!["get", "--environment", REPOSITORY],
+            "RESOURCE_NOT_FOUND",
+            "Environment not found",
+        ),
+        (
+            vec!["get", "--repo", "another/repository"],
+            "RESOURCE_NOT_FOUND",
+            "Repository not found",
+        ),
+        (
+            vec!["apply", SELECTED_REVIEW],
+            "RESOURCE_NOT_FOUND",
+            "Configuration change not found",
+        ),
+        (
+            vec!["operations", "--area", "NEW_SERVER_AREA"],
+            "INVALID_INPUT",
+            "Unknown configuration area",
+        ),
+        (
+            vec!["get", "--environment", REPOSITORY, "--repo", "owner/name"],
+            "INVALID_INPUT",
+            "Choose an environment or repository, not both",
+        ),
+        (
+            vec![
+                "describe",
+                "new.catalog.operation",
+                "--param",
+                "org_id=foreign",
+            ],
+            "INVALID_INPUT",
+            "A parameter the route does not name is refused",
+        ),
+    ] {
+        let body = json!({"ok":false,"error":{"code":code,"message":message,"retryable":false}});
+        let result = json!({"isError":true,"structuredContent":body,
+            "content":[{"type":"text","text":body.to_string()}]});
+        let server = ConfigServer::start(result.clone()).await;
+        let mut command = vec!["config"];
+        command.extend(args);
+        let output = cli(&server.origin, &command).await;
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            result
+        );
+        if code == "NOT_AUTHORIZED" {
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("proofline login --scope reviews:read --scope findings:read --scope guidance:read --scope reviews:request --scope setup:write --scope org:configure")
+            );
+        }
+        assert_eq!(server.requests().len(), 1);
+        assert_eq!(server.frames.load(Ordering::SeqCst), 3);
+    }
+}
+
+#[tokio::test]
+async fn config_input_and_credential_failures_make_no_tool_call() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("change.json");
+    let server = ConfigServer::start(configuration_result(json!({}))).await;
+    let path = file.to_str().unwrap();
+    for bytes in [None, Some(b"not json".as_slice()), Some(b"[]".as_slice())] {
+        if let Some(bytes) = bytes {
+            std::fs::write(&file, bytes).unwrap();
+        }
+        let output = cli(&server.origin, &["config", "propose", path]).await;
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert!(!output.stderr.is_empty());
+    }
+    let output = cli(
+        &server.origin,
+        &[
+            "config",
+            "describe",
+            "operation",
+            "--param",
+            "missing-equals",
+        ],
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("NAME=VALUE"));
+    assert_eq!(server.frames.load(Ordering::SeqCst), 0);
+
+    let oversized =
+        json!({"operation":"repository.wiki_settings.update", "input":{"text":"x".repeat(8192)}});
+    std::fs::write(&file, serde_json::to_vec(&oversized).unwrap()).unwrap();
+    let output = cli(&server.origin, &["config", "propose", path]).await;
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("MCP input exceeds 8192 bytes"));
+    assert!(server.requests().is_empty());
+    // The existing transport negotiates before checking the tool-call frame.
+    assert_eq!(server.frames.load(Ordering::SeqCst), 2);
+
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_proofline"))
+            .args(["--base-url", &server.origin, "config", "get"])
+            .env_remove("PROOFLINE_TOKEN")
+            .env_remove("PROOFLINE_ORGANIZATION_ID")
+            .env("PROOFLINE_NO_UPDATE_CHECK", "1")
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("proofline login --scope reviews:read --scope findings:read --scope guidance:read --scope reviews:request --scope setup:write --scope org:configure")
+    );
+    assert_eq!(server.frames.load(Ordering::SeqCst), 2);
+}
+
+// A shared bearer can authorize both targets; each invocation must name its own
+// selected organization, even when the tool has no other arguments.
+#[tokio::test]
+async fn native_mcp_commands_send_each_selected_organization() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("change.json");
+    std::fs::write(&file, r#"{"operation":"repository.wiki_settings.update","parameters":{},"input":{"enabled":true}}"#).unwrap();
+    let cases = [
+        (
+            vec!["wiki", "list", "--repo", "owner/name"],
+            "list_wiki_pages",
+        ),
+        (
+            vec!["wiki", "get", "index", "--repo", "owner/name"],
+            "get_wiki_page",
+        ),
+        (
+            vec!["ask", "--repo", "owner/name", "Where is auth?"],
+            "ask_codebase",
+        ),
+        (
+            vec!["architecture", REPOSITORY],
+            "get_architecture_document",
+        ),
+        (vec!["plan", "get", SELECTED_REVIEW], "get_plan"),
+        (
+            vec!["plan", "implement", SELECTED_REVIEW],
+            "start_plan_implementation",
+        ),
+        (
+            vec!["plan", "implementation", SELECTED_REVIEW],
+            "get_plan_implementation",
+        ),
+        (
+            vec!["fix", "list", "--repo", "owner/name", "--pr", "7"],
+            "list_open_findings",
+        ),
+        (vec!["fix", "context", SELECTED_REVIEW], "get_fix_context"),
+        (vec!["fix", "status", SELECTED_REVIEW], "get_reverification"),
+        (
+            vec![
+                "fix",
+                "verify",
+                "--review",
+                SELECTED_REVIEW,
+                "--findings",
+                SELECTED_REVIEW,
+                "--commit",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ],
+            "request_reverification",
+        ),
+        (vec!["config", "get"], "get_configuration"),
+        (vec!["config", "operations"], "list_operations"),
+        (
+            vec!["config", "describe", "organization.settings.update"],
+            "describe_operation",
+        ),
+        (
+            vec!["config", "propose", file.to_str().unwrap()],
+            "propose_change",
+        ),
+        (vec!["config", "apply", SELECTED_REVIEW], "apply_change"),
+    ];
+    let server = ConfigServer::start(configuration_result(json!({}))).await;
+    for (args, tool) in cases {
+        for organization in [ORG, OTHER_ORG] {
+            for use_flag in [false, true] {
+                let output = cli_for_organization(
+                    &server.origin,
+                    &args,
+                    directory.path(),
+                    organization,
+                    use_flag,
+                )
+                .await;
+                assert!(
+                    output.status.success(),
+                    "{args:?}: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                let requests = server.requests();
+                let request = requests.last().unwrap();
+                assert_eq!(request["name"], tool);
+                assert_eq!(
+                    request["arguments"]["organization_id"], organization,
+                    "{args:?}"
+                );
+            }
+        }
+    }
+    assert_eq!(server.requests().len(), 64);
+    assert_eq!(server.frames.load(Ordering::SeqCst), 192);
+}
+
+#[tokio::test]
+async fn foreign_native_targets_preserve_server_refusals_without_fallback_or_retry() {
+    let body = json!({"ok":false,"error":{"code":"NOT_AUTHORIZED","message":"The selected organization is not authorized","retryable":false}});
+    let result = json!({"isError":true,"structuredContent":body,"content":[{"type":"text","text":body.to_string()}]});
+    // This fixture represents a bearer restricted to ORG, refusing OTHER_ORG.
+    let server = ConfigServer::start(result.clone()).await;
+    for args in [
+        vec!["wiki", "list", "--repo", "owner/name"],
+        vec![
+            "fix",
+            "verify",
+            "--review",
+            SELECTED_REVIEW,
+            "--findings",
+            SELECTED_REVIEW,
+            "--commit",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ],
+        vec!["config", "get"],
+        vec!["config", "apply", SELECTED_REVIEW],
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let output =
+            cli_for_organization(&server.origin, &args, directory.path(), OTHER_ORG, true).await;
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            result
+        );
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(TOKEN));
+    }
+    let requests = server.requests();
+    assert_eq!(requests.len(), 4);
+    assert!(
+        requests
+            .iter()
+            .all(|request| request["arguments"]["organization_id"] == OTHER_ORG)
+    );
+    assert_eq!(server.frames.load(Ordering::SeqCst), 12);
+}
+
+#[tokio::test]
+async fn config_proposal_targets_must_match_the_selected_organization() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("change.json");
+    let server = ConfigServer::start(configuration_result(json!({}))).await;
+    for target in [
+        json!(OTHER_ORG),
+        Value::Null,
+        json!(42),
+        json!("invalid-secret-canary"),
+    ] {
+        let change = json!({"organization_id":target,"operation":"repository.wiki_settings.update","parameters":{},"input":{"enabled":true}});
+        let bytes = serde_json::to_vec(&change).unwrap();
+        std::fs::write(&file, &bytes).unwrap();
+        let output = cli(
+            &server.origin,
+            &["config", "propose", file.to_str().unwrap()],
+        )
+        .await;
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        let diagnostic = String::from_utf8_lossy(&output.stderr);
+        assert!(diagnostic.contains("organization_id"), "{diagnostic}");
+        assert!(!diagnostic.contains("invalid-secret-canary"));
+        assert!(!diagnostic.contains(TOKEN));
+        assert_eq!(std::fs::read(&file).unwrap(), bytes);
+    }
+    assert_eq!(server.frames.load(Ordering::SeqCst), 0);
+    let change = json!({"organization_id":ORG,"operation":"repository.wiki_settings.update","parameters":{},"input":{"enabled":true}});
+    std::fs::write(&file, serde_json::to_vec(&change).unwrap()).unwrap();
+    let output = cli(
+        &server.origin,
+        &["config", "propose", file.to_str().unwrap()],
+    )
+    .await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(server.requests()[0]["arguments"]["organization_id"], ORG);
+    assert_eq!(server.frames.load(Ordering::SeqCst), 3);
 }

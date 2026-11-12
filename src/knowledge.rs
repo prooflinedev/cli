@@ -96,7 +96,7 @@ pub(crate) async fn run(
     (name, arguments): Request,
 ) -> anyhow::Result<Verdict> {
     let credential = credentials::load(&origin, token, org).await?;
-    let value = mcp::call(&Http::new(origin)?, &credential.token, name, arguments).await?;
+    let value = mcp::call(&Http::new(origin)?, &credential, name, arguments).await?;
     tools::json(&value)?;
     Ok(
         if value.get("isError").and_then(Value::as_bool) == Some(true) {

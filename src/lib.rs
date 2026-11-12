@@ -4,6 +4,7 @@
 
 mod agent;
 pub mod api;
+mod config;
 mod coverage;
 pub mod credentials;
 pub mod device;
@@ -64,8 +65,9 @@ pub struct Cli {
     base_url: String,
 
     /// Organization ID. Required for a token from the environment; a browser sign-in
-    /// already names its organization. MCP uses the token's server-side tenant;
-    /// an environment organization ID is local metadata, not a tenant assertion.
+    /// already names its organization. Native knowledge, fix and config commands
+    /// send this target per MCP call; the server authorizes it. The raw mcp bridge
+    /// preserves the caller's per-call target.
     #[arg(long, global = true, env = "PROOFLINE_ORGANIZATION_ID")]
     org: Option<Uuid>,
 
@@ -75,6 +77,9 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Read, propose and apply configuration through the hosted tools.
+    #[command(subcommand)]
+    Config(config::Command),
     /// Read fix context and verify fixes at an explicitly pushed commit.
     #[command(subcommand)]
     Fix(fixes::FixCommand),
@@ -395,6 +400,7 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
             }
             Ok(Verdict::Done)
         }
+        Command::Config(command) => config::run(origin, token, cli.org, command).await,
         Command::Fix(command) => knowledge::run(origin, token, cli.org, command.request()?).await,
         Command::Wiki(command) => knowledge::run(origin, token, cli.org, command.request()?).await,
         Command::Ask(args) => knowledge::run(origin, token, cli.org, args.request()?).await,
@@ -425,22 +431,19 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
         Command::Routing { review_id } => {
             let api = connect(Http::new(origin)?, token, cli.org).await?;
             tools::json(
-                &api.tool_get(&["reviews", &review_id.to_string(), "routing"])
+                &api.get(api.url_get_review_routing(&review_id.to_string()))
                     .await?,
             )
         }
         Command::Run(args) => {
             let api = connect(Http::new(origin)?, token, cli.org).await?;
-            let name = repository_name(&args.repository).await?;
+            let (full_name, _) = reviewed_repository(&api, &args.repository).await?;
             tools::json(
-                &api.tool_get(&[
-                    "reviews",
-                    "pr",
-                    &name,
+                &api.get(api.url_get_pull_request_review(
+                    route_name(&full_name),
                     &args.pr.to_string(),
-                    "runs",
                     &args.run.to_string(),
-                ])
+                ))
                 .await?,
             )
         }
@@ -482,8 +485,8 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
         }
         Command::History(args) => {
             let api = connect(Http::new(origin)?, token, cli.org).await?;
-            let name = repository_name(&args.repository).await?;
-            tools::json(&api.history(&name, args.pr).await?)
+            let (full_name, _) = reviewed_repository(&api, &args.repository).await?;
+            tools::json(&api.history(route_name(&full_name), args.pr).await?)
         }
         Command::Guidance(args) => {
             let api = connect(Http::new(origin)?, token, cli.org).await?;
@@ -671,17 +674,18 @@ async fn repository_name(args: &RepositoryArgs) -> anyhow::Result<String> {
     }
 }
 
-/// The one ID among `candidates` whose name is `name`, ignoring case. A name
-/// shared by two IDs is refused rather than guessed.
+/// The one candidate whose name is `name`, ignoring case, with the name as
+/// the server spells it. A name shared by two IDs is refused rather than
+/// guessed.
 fn unique(
     api: &Api,
     name: &str,
     candidates: impl Iterator<Item = (Uuid, String)>,
     absent: impl FnOnce() -> anyhow::Error,
-) -> anyhow::Result<Uuid> {
+) -> anyhow::Result<(Uuid, String)> {
     let mut found = candidates.filter(|(_, candidate)| candidate.eq_ignore_ascii_case(name));
     match (found.next(), found.next()) {
-        (Some((id, _)), None) => Ok(id),
+        (Some(choice), None) => Ok(choice),
         (None, _) => Err(absent()),
         (Some(_), Some(_)) => bail!(
             "{} lists more than one repository named {name}, so the CLI cannot tell which one to use",
@@ -698,7 +702,7 @@ async fn connected_repository(api: &Api, args: &RepositoryArgs) -> anyhow::Resul
         .repositories
         .into_iter()
         .map(|repository| (repository.id, repository.full_name));
-    let id = unique(api, &name, candidates, || {
+    let (id, _) = unique(api, &name, candidates, || {
         anyhow::anyhow!(
             "{name} is not a repository in organization {} that this token can read; check the repository name and the token's repositories",
             api.organization_id()
@@ -707,9 +711,10 @@ async fn connected_repository(api: &Api, args: &RepositoryArgs) -> anyhow::Resul
     Ok((name, id))
 }
 
-/// A repository with reviews the token can read, for finding one of them. A
-/// repository that has since left the installation keeps its reviews, so this
-/// reads the review collection's repositories, not the connected ones.
+/// A repository with reviews the token can read, for finding one of them, as
+/// its full name and ID. A repository that has since left the installation
+/// keeps its reviews, so this reads the review collection's repositories, not
+/// the connected ones.
 async fn reviewed_repository(api: &Api, args: &RepositoryArgs) -> anyhow::Result<(String, Uuid)> {
     let name = repository_name(args).await?;
     let page = api.reviews(None, None, None).await?;
@@ -718,13 +723,22 @@ async fn reviewed_repository(api: &Api, args: &RepositoryArgs) -> anyhow::Result
         .repositories
         .into_iter()
         .map(|choice| (choice.id, choice.name));
-    let id = unique(api, &name, candidates, || {
+    let (id, full_name) = unique(api, &name, candidates, || {
         anyhow::anyhow!(
             "{name} has no reviews in organization {} that this token can read; check the repository name and the token's repositories",
             api.organization_id()
         )
     })?;
-    Ok((name, id))
+    Ok((full_name, id))
+}
+
+/// The `{repository}` segment of the pull-request review routes: the name
+/// without its owner. Callers pass a full name already matched against the
+/// organization's repositories, so the owner it drops is the organization's.
+fn route_name(full_name: &str) -> &str {
+    full_name
+        .rsplit_once('/')
+        .map_or(full_name, |(_, name)| name)
 }
 
 /// The newest review in `repository` that `matches`, searching with `search`.

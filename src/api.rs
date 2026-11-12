@@ -305,6 +305,8 @@ pub struct Api {
     organization_id: Uuid,
 }
 
+include!(concat!(env!("OUT_DIR"), "/routes.rs"));
+
 impl Api {
     pub const fn new(http: Http, token: SecretString, organization_id: Uuid) -> Self {
         Self {
@@ -368,23 +370,19 @@ impl Api {
             .protocol("the retry budget ended without a response"))
     }
 
-    async fn get(&self, url: Url) -> Result<serde_json::Value, ApiError> {
+    pub(crate) async fn get(&self, url: Url) -> Result<serde_json::Value, ApiError> {
         let reply = self.read(url, "application/json").await?;
         self.decode(&reply.body)
     }
 
-    pub(crate) async fn tool_get(&self, path: &[&str]) -> Result<serde_json::Value, ApiError> {
-        self.get(self.url(path)).await
-    }
-
     pub(crate) async fn tool_post(
         &self,
-        path: &[&str],
+        url: Url,
         body: &serde_json::Value,
     ) -> Result<serde_json::Value, ApiError> {
         let (reply, _) = self
             .http
-            .send(self.request(Method::POST, self.url(path)).json(body))
+            .send(self.request(Method::POST, url).json(body))
             .await?;
         if !reply.status.is_success() {
             return Err(self.http.problem(&reply));
@@ -398,7 +396,7 @@ impl Api {
         search: Option<&str>,
         cursor: Option<&str>,
     ) -> Result<serde_json::Value, ApiError> {
-        let mut url = self.url(&["reviews"]);
+        let mut url = self.url_list_reviews();
         {
             let mut query = url.query_pairs_mut();
             query.append_pair("limit", "50");
@@ -420,27 +418,24 @@ impl Api {
         repository: &str,
         number: u64,
     ) -> Result<serde_json::Value, ApiError> {
-        self.get(self.url(&["reviews", "pr", repository, &number.to_string()]))
+        self.get(self.url_list_pull_request_reviews(repository, &number.to_string()))
             .await
     }
 
     pub(crate) async fn guidance(&self, repository: Uuid) -> Result<serde_json::Value, ApiError> {
-        self.get(self.url(&["repositories", &repository.to_string(), "review-guidance"]))
+        self.get(self.url_get_review_guidance(&repository.to_string()))
             .await
     }
 
     pub(crate) async fn fix_prompt(&self, finding: Uuid) -> Result<serde_json::Value, ApiError> {
-        self.get(self.url(&["findings", &finding.to_string(), "fix-prompt"]))
+        self.get(self.url_get_finding_fix_prompt(&finding.to_string()))
             .await
     }
 
     pub(crate) async fn rerun(&self, review: Uuid) -> Result<serde_json::Value, ApiError> {
         let (reply, _) = self
             .http
-            .send(self.request(
-                Method::POST,
-                self.url(&["reviews", &review.to_string(), "rerun"]),
-            ))
+            .send(self.request(Method::POST, self.url_rerun_review(&review.to_string())))
             .await?;
         if !reply.status.is_success() {
             return Err(self.http.problem(&reply));
@@ -454,7 +449,7 @@ impl Api {
         query: &[(&str, String)],
         accept: &str,
     ) -> Result<Reply, ApiError> {
-        let mut url = self.url(&["exports", dataset]);
+        let mut url = self.url_export_reviews(dataset);
         url.query_pairs_mut()
             .extend_pairs(query.iter().map(|(key, value)| (*key, value.as_str())));
         self.read(url, accept).await
@@ -470,7 +465,7 @@ impl Api {
         review_id: Uuid,
     ) -> Result<(serde_json::Value, ReviewDetail), ApiError> {
         let id = review_id.to_string();
-        let raw = self.get(self.url(&["reviews", &id])).await?;
+        let raw = self.get(self.url_get_review(&id)).await?;
         let typed = serde_json::from_value(raw.clone())
             .map_err(|error| self.http.protocol(error.to_string()))?;
         Ok((raw, typed))
@@ -483,7 +478,7 @@ impl Api {
         search: Option<&str>,
         cursor: Option<&str>,
     ) -> Result<ReviewPage, ApiError> {
-        let mut url = self.url(&["reviews"]);
+        let mut url = self.url_list_reviews();
         {
             let mut query = url.query_pairs_mut();
             query.append_pair("limit", "50");
@@ -504,7 +499,7 @@ impl Api {
     /// The organization's connected repositories that the token may read,
     /// including those with no review yet.
     pub async fn repository_names(&self) -> Result<RepositoryNames, ApiError> {
-        let raw = self.get(self.url(&["repository-names"])).await?;
+        let raw = self.get(self.url_list_repositories()).await?;
         serde_json::from_value(raw).map_err(|error| self.http.protocol(error.to_string()))
     }
 
@@ -537,19 +532,10 @@ impl Api {
     ) -> Result<RunNowResponse, ApiError> {
         let repository = repository_id.to_string();
         let number = number.to_string();
-        let url = self.url(&[
-            "repositories",
-            &repository,
-            "pull-requests",
-            &number,
-            "review",
-        ]);
+        let url = self.url_request_review(&repository, &number);
         let request = self.request(Method::POST, url);
         let request = match mode {
-            Some(mode) => request.json(&RunNowRequest {
-                mode,
-                focus_text: None,
-            }),
+            Some(mode) => request.json(&RunNowRequest { mode }),
             None => request,
         };
         let (reply, _) = self.http.send(request).await?;
@@ -567,7 +553,7 @@ impl Api {
         request: &PatchReviewRequest,
     ) -> Result<PatchReviewResponse, ApiError> {
         let repository = repository_id.to_string();
-        let url = self.url(&["repositories", &repository, "patch-reviews"]);
+        let url = self.url_request_patch_review(&repository);
         let (reply, _) = self
             .http
             .send(self.request(Method::POST, url).json(request))
@@ -586,7 +572,7 @@ impl Api {
         request: &CoverageUploadRequest,
     ) -> Result<CoverageUploadResponse, ApiError> {
         let repository = repository_id.to_string();
-        let url = self.url(&["repositories", &repository, "coverage-reports"]);
+        let url = self.url_upload_coverage_reports(&repository);
         let (reply, _) = self
             .http
             .send(self.request(Method::POST, url).json(request))
@@ -604,7 +590,7 @@ impl Api {
         request: &FileReviewRequest,
     ) -> Result<FileReviewResponse, ApiError> {
         let repository = repository_id.to_string();
-        let url = self.url(&["repositories", &repository, "file-reviews"]);
+        let url = self.url_request_file_review(&repository);
         let (reply, _) = self
             .http
             .send(self.request(Method::POST, url).json(request))
@@ -623,7 +609,7 @@ impl Api {
         request: &CommitReviewRequest,
     ) -> Result<CommitReviewResponse, ApiError> {
         let repository = repository_id.to_string();
-        let url = self.url(&["repositories", &repository, "commit-reviews"]);
+        let url = self.url_request_commit_review(&repository);
         let (reply, _) = self
             .http
             .send(self.request(Method::POST, url).json(request))
@@ -643,7 +629,7 @@ impl Api {
         let id = review_id.to_string();
         let (reply, _) = self
             .http
-            .send(self.request(Method::POST, self.url(&["reviews", &id, "stop"])))
+            .send(self.request(Method::POST, self.url_stop_review(&id)))
             .await?;
         if !reply.status.is_success() {
             return Err(self.http.problem(&reply));

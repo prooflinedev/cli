@@ -1,6 +1,6 @@
 [package]
 name = "proofline-cli"
-version = "0.1.9"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.95"
 description = "Proofline command-line client for the review API"
@@ -32,8 +32,11 @@ thiserror = "2"
 tokio = { version = "1", features = ["rt", "macros", "time", "process", "io-std", "io-util", "fs"] }
 toml_edit = "=0.25.15"
 url = "2"
-uuid = { version = "1", features = ["serde"] }
+uuid = { version = "1", features = ["serde", "v7"] }
 webbrowser = "1"
+
+[build-dependencies]
+serde_json = "1"
 
 [dev-dependencies]
 axum = "0.8"
@@ -45,9 +48,7 @@ tokio = { version = "1", features = ["net", "test-util"] }
 workspace = true
 
 [workspace.lints.rust]
-# `deny` rather than `forbid`, so the one start-up environment write in
-# `src/main.rs` can state its reason with `expect`.
-unsafe_code = "deny"
+unsafe_code = "forbid"
 ambiguous_negative_literals = "deny"
 explicit_outlives_requirements = "deny"
 ffi_unwind_calls = "deny"

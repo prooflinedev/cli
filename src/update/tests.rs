@@ -125,7 +125,8 @@ async fn discovery_rejects_bad_bounded_and_offline_responses() {
         .unwrap();
     });
     let http = reqwest::Client::builder()
-        .timeout(Duration::from_millis(50))
+        // Successful local requests still need scheduling time on a busy CI worker.
+        .timeout(Duration::from_secs(2))
         .build()
         .unwrap();
     assert_eq!(
@@ -134,13 +135,25 @@ async fn discovery_rejects_bad_bounded_and_offline_responses() {
             .unwrap(),
         "10.2.0"
     );
-    for path in ["invalid", "large", "slow", "missing"] {
+    for path in ["invalid", "large", "missing"] {
         assert!(
             latest_from(&http, &format!("{address}/{path}"))
                 .await
                 .is_err()
         );
     }
+    let short_deadline = reqwest::Client::builder()
+        .timeout(Duration::from_millis(50))
+        .build()
+        .unwrap();
+    let timeout = latest_from(&short_deadline, &format!("{address}/slow"))
+        .await
+        .unwrap_err();
+    assert!(
+        timeout
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(reqwest::Error::is_timeout)
+    );
     // Production clients refuse HTTP before a release request can leave the process.
     assert!(
         latest_from(

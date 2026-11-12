@@ -1,6 +1,5 @@
 //! Holds the CLI's API types to the bundled public contract.
 
-use std::path::PathBuf;
 use std::process::Command;
 
 use proofline_cli::model::{
@@ -15,13 +14,12 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
 
-fn saas() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-}
-
 fn contract() -> Value {
-    let raw = std::fs::read_to_string(saas().join("openapi.public.json")).unwrap();
-    serde_json::from_str(&raw).unwrap()
+    serde_json::from_str(include_str!(concat!(
+        env!("OUT_DIR"),
+        "/openapi.public.json"
+    )))
+    .unwrap()
 }
 
 fn schema<'a>(document: &'a Value, name: &str) -> &'a Value {
@@ -300,7 +298,6 @@ fn operations_the_cli_calls_exist() {
         json!([
             serde_json::to_value(RunNowMode::ExistingOrNew).unwrap(),
             serde_json::to_value(RunNowMode::Full).unwrap(),
-            serde_json::to_value(RunNowMode::Extended).unwrap(),
         ])
     );
     assert_eq!(
@@ -312,38 +309,10 @@ fn operations_the_cli_calls_exist() {
     for invalid in [
         json!({"mode": null}),
         json!({"mode": "INCREMENTAL"}),
+        json!({"mode": "EXTENDED"}),
+        json!({"mode": "FULL", "focus_text": "legacy focus"}),
         json!({"mode": "FULL", "head_sha": "caller-chosen"}),
     ] {
         assert!(serde_json::from_value::<RunNowRequest>(invalid).is_err());
     }
-}
-
-#[test]
-fn review_requests_preserve_deep_focus_and_omit_absent_focus() {
-    for wire in [
-        json!({}),
-        json!({"mode":"FULL"}),
-        json!({"mode":"FULL","focus_text":null}),
-    ] {
-        let request: RunNowRequest = serde_json::from_value(wire).unwrap();
-        assert!(request.focus_text.is_none());
-        assert!(
-            serde_json::to_value(request)
-                .unwrap()
-                .get("focus_text")
-                .is_none()
-        );
-    }
-    let wire = json!({"mode":"EXTENDED","focus_text":"Verify tenant authorization"});
-    let request: RunNowRequest = serde_json::from_value(wire.clone()).unwrap();
-    assert_eq!(request.mode, RunNowMode::Extended);
-    assert_eq!(
-        request.focus_text.as_deref(),
-        Some("Verify tenant authorization")
-    );
-    assert_eq!(serde_json::to_value(request).unwrap(), wire);
-    assert!(
-        serde_json::from_value::<RunNowRequest>(json!({"mode":"EXTENDED","focus_text":42}))
-            .is_err()
-    );
 }

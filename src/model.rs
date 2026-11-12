@@ -263,7 +263,6 @@ pub enum RunNowMode {
     #[default]
     ExistingOrNew,
     Full,
-    Extended,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -271,9 +270,6 @@ pub enum RunNowMode {
 pub struct RunNowRequest {
     #[serde(default)]
     pub mode: RunNowMode,
-    /// Optional investigation focus preserved by the review request.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub focus_text: Option<String>,
 }
 
 /// Local changes to review: a `git diff` against a commit GitHub has.
