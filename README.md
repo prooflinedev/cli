@@ -13,6 +13,11 @@ A custom `CLAUDE_CONFIG_DIR` requires manual configuration with `--print`.
 
 See the [CLI documentation](https://proofline.sh/docs/cli/) for commands.
 
+`proofline completions SHELL` prints a completion script for `zsh`, `bash`,
+`fish`, `powershell` or `elvish`. It needs no sign-in and makes no network call.
+For example, add `source <(proofline completions zsh)` to `~/.zshrc`, or write
+`proofline completions fish > ~/.config/fish/completions/proofline.fish`.
+
 `proofline review --path src/main.rs` reviews only that file's local changes
 against the normal merge-base. The path is literal and repository-relative;
 directories, globs and `..` are refused. Combine it with `--staged` to read

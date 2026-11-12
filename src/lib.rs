@@ -115,6 +115,17 @@ enum Command {
     FixPrompt { finding_id: Uuid },
     /// Export one page of analytics as CSV or NDJSON.
     Export(tools::ExportArgs),
+    /// Print a shell completion script to standard output.
+    ///
+    /// For example, add `source <(proofline completions zsh)` to `~/.zshrc`,
+    /// `proofline completions bash > ~/.local/share/bash-completion/completions/proofline`,
+    /// `proofline completions fish > ~/.config/fish/completions/proofline.fish`, or
+    /// `proofline completions powershell | Out-String | Invoke-Expression` to a
+    /// PowerShell profile.
+    Completions {
+        /// The shell to complete for.
+        shell: clap_complete::Shell,
+    },
     /// Install the newest official release over this installer-managed binary.
     Update,
     #[command(name = "__update-check", hide = true)]
@@ -367,6 +378,10 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
         return Ok(Verdict::Done);
     }
     match &cli.command {
+        Command::Completions { shell } => {
+            completions(*shell, &mut std::io::stdout().lock())?;
+            return Ok(Verdict::Done);
+        }
         Command::Update => return update::install().await.map(|()| Verdict::Done),
         Command::UpdateCheck => {
             update::check().await;
@@ -376,6 +391,10 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
     }
     let origin = Origin::parse(&cli.base_url)?;
     match cli.command {
+        Command::Completions { shell } => {
+            completions(shell, &mut std::io::stdout().lock())?;
+            Ok(Verdict::Done)
+        }
         Command::Update => update::install().await.map(|()| Verdict::Done),
         Command::UpdateCheck => {
             update::check().await;
@@ -543,6 +562,26 @@ async fn connect(
 ) -> anyhow::Result<Api> {
     let credential = credentials::load(http.origin(), token, org).await?;
     Ok(Api::new(http, credential.token, credential.organization_id))
+}
+
+/// Writes the completion script for `shell`. It needs no origin, token or
+/// network, so it works before `proofline login`.
+fn completions(shell: clap_complete::Shell, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+    const NAME: &str = "proofline";
+    let full = <Cli as clap::CommandFactory>::command();
+    // The static generators offer hidden subcommands too, so leave them out.
+    let mut command = full.get_arguments().cloned().fold(
+        clap::Command::new(NAME).version(env!("CARGO_PKG_VERSION")),
+        clap::Command::arg,
+    );
+    command = full
+        .get_subcommands()
+        .filter(|subcommand| !subcommand.is_hide_set())
+        .cloned()
+        .fold(command, clap::Command::subcommand);
+    clap_complete::generate(shell, &mut command, NAME, out);
+    out.flush()?;
+    Ok(())
 }
 
 fn say(line: &str) {

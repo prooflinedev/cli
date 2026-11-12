@@ -90,7 +90,8 @@ pub fn on_invocation() {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     if args
         .iter()
-        .any(|arg| arg == "update" || arg == "__update-check")
+        // A shell evaluates `completions` at every start-up; keep it offline.
+        .any(|arg| arg == "update" || arg == "__update-check" || arg == "completions")
     {
         return;
     }
