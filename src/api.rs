@@ -1,7 +1,7 @@
 //! The review API over HTTP: bearer authentication, bounded bodies, explicit
 //! timeouts, no redirects, and bounded retries for reads.
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use reqwest::{Method, StatusCode, header};
 use secrecy::{ExposeSecret as _, SecretString};
@@ -106,6 +106,22 @@ fn json_content_type(headers: &header::HeaderMap) -> bool {
         })
 }
 
+/// Parses an RFC 7231 `Retry-After` header value, supporting both `delay-seconds`
+/// (an integer number of seconds) and `HTTP-date` (an absolute timestamp).
+pub(crate) fn parse_retry_after(value: &header::HeaderValue) -> Option<u64> {
+    let text = value.to_str().ok()?.trim();
+    if let Ok(seconds) = text.parse::<u64>() {
+        return Some(seconds);
+    }
+    if let Ok(system_time) = httpdate::parse_http_date(text) {
+        let wait = system_time
+            .duration_since(SystemTime::now())
+            .map_or(0, |duration| duration.as_secs());
+        return Some(wait);
+    }
+    None
+}
+
 impl ApiError {
     pub const fn status(&self) -> Option<u16> {
         match self {
@@ -192,12 +208,10 @@ impl Http {
             .map_err(|error| self.transport(&error))?;
         let status = response.status();
         let headers = response.headers().clone();
-        let retry_after = response.headers().get(header::RETRY_AFTER).map(|value| {
-            value
-                .to_str()
-                .ok()
-                .and_then(|text| text.trim().parse::<u64>().ok())
-        });
+        let retry_after = response
+            .headers()
+            .get(header::RETRY_AFTER)
+            .map(parse_retry_after);
         let body = read_body(response).await.map_err(|error| match error {
             BodyError::Transport(error) => self.transport(&error),
             BodyError::TooLarge => self.protocol("the response body exceeds 8 MiB"),
@@ -667,5 +681,43 @@ impl Api {
         self.http
             .origin
             .join(["orgs", "by-id", &organization, "reviews", &review])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_retry_after_integer_seconds() {
+        let value = header::HeaderValue::from_static("30");
+        assert_eq!(parse_retry_after(&value), Some(30));
+
+        let value_spaces = header::HeaderValue::from_static("  120 \t");
+        assert_eq!(parse_retry_after(&value_spaces), Some(120));
+    }
+
+    #[test]
+    fn parse_retry_after_http_date() {
+        let now = SystemTime::now();
+        let future = now + Duration::from_secs(45);
+        let date_str = httpdate::fmt_http_date(future);
+        let value = header::HeaderValue::from_str(&date_str).unwrap();
+        let wait = parse_retry_after(&value).unwrap();
+        assert!((43..=45).contains(&wait), "expected ~45s, got {wait}s");
+
+        let past = now - Duration::from_secs(60);
+        let past_str = httpdate::fmt_http_date(past);
+        let past_value = header::HeaderValue::from_str(&past_str).unwrap();
+        assert_eq!(parse_retry_after(&past_value), Some(0));
+    }
+
+    #[test]
+    fn parse_retry_after_invalid_or_malformed() {
+        let invalid = header::HeaderValue::from_static("not-a-date-or-number");
+        assert_eq!(parse_retry_after(&invalid), None);
+
+        let empty = header::HeaderValue::from_static("");
+        assert_eq!(parse_retry_after(&empty), None);
     }
 }
