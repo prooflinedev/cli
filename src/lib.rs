@@ -6,6 +6,7 @@ mod agent;
 pub mod api;
 mod coverage;
 pub mod credentials;
+pub mod deployment;
 pub mod device;
 pub mod git;
 mod github_actions;
@@ -158,6 +159,72 @@ enum CiCommand {
     /// Such a job on a `pull_request` event that finds no review after two
     /// minutes asks once for a withheld review of its head.
     Review(CiReviewArgs),
+    /// Wait for the deployment review of the commit being deployed and report it.
+    ///
+    /// A deploy job runs this to hold its pipeline to Proofline's result for
+    /// that exact commit. It authenticates as `ci review` does and only reads:
+    /// the review API has no operation that requests a deployment review.
+    Deployment(CiDeploymentArgs),
+}
+
+/// Which review of the commit under test a CI job waits for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CiKind {
+    PullRequest,
+    Deployment,
+}
+
+impl CiKind {
+    /// The review `kind` the API lists.
+    const fn api(self) -> &'static str {
+        match self {
+            Self::PullRequest => "PULL_REQUEST",
+            Self::Deployment => deployment::KIND,
+        }
+    }
+
+    const fn noun(self) -> &'static str {
+        match self {
+            Self::PullRequest => "pull-request review",
+            Self::Deployment => "deployment review",
+        }
+    }
+}
+
+#[derive(Debug, Args)]
+struct CiDeploymentArgs {
+    /// Full commit SHA being deployed. Defaults to `COMMIT_SHA`, then the
+    /// GitHub Actions job's commit.
+    #[arg(long, value_name = "SHA")]
+    commit: Option<String>,
+    /// Print JSON instead of text.
+    #[arg(long)]
+    json: bool,
+    /// Minutes to wait for the review to appear and finish.
+    #[arg(long, default_value_t = 30, value_name = "MINUTES")]
+    timeout: u64,
+    /// Exit 3 when the completed review has an open finding at or above this
+    /// severity, as `ci review --fail-on` does. Without this flag, findings
+    /// never fail the job. An incomplete review exits 2 whatever it found.
+    #[arg(long, value_enum, value_name = "SEVERITY")]
+    fail_on: Option<Severity>,
+    #[command(flatten)]
+    repository: RepositoryArgs,
+}
+
+impl From<CiDeploymentArgs> for CiReviewArgs {
+    /// A deployment job waits as a pull-request job does. It writes no SARIF:
+    /// that projection is of a retained pull-request review.
+    fn from(args: CiDeploymentArgs) -> Self {
+        Self {
+            commit: args.commit,
+            sarif: None,
+            json: args.json,
+            timeout: args.timeout,
+            fail_on: args.fail_on,
+            repository: args.repository,
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -310,6 +377,45 @@ struct Selector {
     /// This review.
     #[arg(long, value_name = "ID")]
     review: Option<Uuid>,
+    /// This deployment review, by its public key: `rev_` and 32 hexadecimal
+    /// digits, as its console address shows.
+    #[arg(long, value_name = "KEY")]
+    deployment: Option<deployment::PublicKey>,
+}
+
+/// How a command addresses the review it reads: by identifier, or by a
+/// deployment review's public key through the operation that serves it.
+#[derive(Debug, Clone, Copy)]
+enum Address {
+    Review(Uuid),
+    Deployment(deployment::PublicKey),
+}
+
+impl Address {
+    const fn review_id(self) -> Uuid {
+        match self {
+            Self::Review(id) => id,
+            Self::Deployment(key) => key.review_id(),
+        }
+    }
+
+    /// One read. A deployment key's answer must be that deployment review.
+    async fn fetch(self, api: &Api) -> anyhow::Result<(serde_json::Value, ReviewDetail)> {
+        match self {
+            Self::Review(id) => Ok(api.review(id).await?),
+            Self::Deployment(key) => {
+                let (raw, detail) = api.deployment_review(key).await?;
+                deployment::validate(&detail, key)?;
+                Ok((raw, detail))
+            }
+        }
+    }
+}
+
+impl From<Uuid> for Address {
+    fn from(id: Uuid) -> Self {
+        Self::Review(id)
+    }
 }
 
 #[derive(Debug, Args)]
@@ -320,7 +426,7 @@ struct FindingsArgs {
     #[arg(long)]
     wait: bool,
     /// Export this retained pull-request review as SARIF 2.1.0.
-    #[arg(long, requires = "review", conflicts_with_all = ["json", "pr", "head"])]
+    #[arg(long, requires = "review", conflicts_with_all = ["json", "pr", "head", "deployment"])]
     sarif: bool,
     #[command(flatten)]
     repository: RepositoryArgs,
@@ -350,7 +456,8 @@ pub enum Verdict {
     /// Proofline did not answer: it was unreachable, failed on its side, or
     /// had no finished review before the deadline.
     Unavailable,
-    /// A complete review has an open finding at or above `ci review --fail-on`.
+    /// A complete review has an open finding at or above the `--fail-on` of
+    /// `ci review` or `ci deployment`.
     ThresholdReached,
     /// A Git hook's exit policy refuses the commit or push.
     Blocked,
@@ -511,12 +618,16 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
             mcp::run(&http, &credential.token).await?;
             Ok(Verdict::Done)
         }
-        Command::Ci(CiCommand::Review(args)) => {
+        Command::Ci(command) => {
+            let (kind, args) = match command {
+                CiCommand::Review(args) => (CiKind::PullRequest, args),
+                CiCommand::Deployment(args) => (CiKind::Deployment, args.into()),
+            };
             let commit = ci_commit(args.commit.as_deref())?;
             let http = Http::new(origin)?;
             let event = std::env::var(github_actions::EVENT_NAME).unwrap_or_default();
             let issuer = github_actions::Issuer::from_environment();
-            let result = ci_job(http, token, issuer, &event, cli.org, &args, &commit).await;
+            let result = ci_job(http, token, issuer, &event, cli.org, kind, &args, &commit).await;
             match result {
                 Err(error) if unavailable(&error) => {
                     say(&format!("proofline: {error:#}"));
@@ -931,6 +1042,17 @@ async fn finish(api: &Api, review_id: Uuid, args: &ReviewArgs) -> anyhow::Result
 }
 
 async fn findings(api: &Api, args: &FindingsArgs) -> anyhow::Result<Verdict> {
+    if let Some(key) = args.selector.deployment {
+        let format = OutputFormat::from_json(args.output.json);
+        return show(
+            api,
+            Address::Deployment(key),
+            args.wait,
+            &args.output,
+            format,
+        )
+        .await;
+    }
     let review_id = match (&args.selector.review, args.selector.pr) {
         (Some(id), _) => *id,
         (None, Some(number)) => {
@@ -980,13 +1102,15 @@ fn poll_deadline(minutes: u64) -> Result<tokio::time::Instant, PollTimeoutTooLar
 /// a deadline it reads once.
 async fn read_review(
     api: &Api,
-    review_id: Uuid,
+    address: impl Into<Address>,
     deadline: Option<tokio::time::Instant>,
     sarif: bool,
 ) -> anyhow::Result<(serde_json::Value, ReviewDetail, Option<Outcome>)> {
+    let address = address.into();
+    let review_id = address.review_id();
     let mut delay = FIRST_POLL_SECONDS;
     loop {
-        let (raw, detail) = api.review(review_id).await?;
+        let (raw, detail) = address.fetch(api).await?;
         if sarif {
             sarif::validate_subject(&detail, review_id)?;
         }
@@ -1011,18 +1135,20 @@ async fn read_review(
 /// Prints the review, after waiting for it to finish when `wait` is set.
 async fn show(
     api: &Api,
-    review_id: Uuid,
+    address: impl Into<Address>,
     wait: bool,
     output: &OutputArgs,
     format: OutputFormat,
 ) -> anyhow::Result<Verdict> {
+    let address = address.into();
+    let review_id = address.review_id();
     let deadline = if wait {
         Some(poll_deadline(output.timeout)?)
     } else {
         None
     };
     let sarif = matches!(format, OutputFormat::Sarif);
-    let (raw, detail, state) = read_review(api, review_id, deadline, sarif).await?;
+    let (raw, detail, state) = read_review(api, address, deadline, sarif).await?;
     print_review(api, review_id, raw, &detail, state, format)?;
     match state {
         Some(Outcome::Completed) => return Ok(Verdict::Done),
@@ -1084,32 +1210,40 @@ async fn ci_job(
     issuer: Option<github_actions::Issuer>,
     event: &str,
     org: Option<Uuid>,
+    kind: CiKind,
     args: &CiReviewArgs,
     commit: &str,
 ) -> anyhow::Result<Verdict> {
-    let (api, request) = match (token, issuer) {
-        (None, Some(issuer)) => {
+    let (api, request) = match (token, issuer, kind) {
+        (None, Some(issuer), CiKind::PullRequest) => {
             let head = github_actions::pull_request_head(event, commit);
             let api = github_actions::api(http.clone(), &issuer, org, head).await?;
             let request = github_actions::ReviewRequest::for_event(event, http, issuer, commit);
             (api, request)
         }
-        (token, _) => (connect(http, token, org).await?, None),
+        // A deployment job names no pull-request head for the exchange to
+        // verify, and the review API has nothing for it to request.
+        (None, Some(issuer), CiKind::Deployment) => {
+            (github_actions::api(http, &issuer, org, None).await?, None)
+        }
+        (token, _, _) => (connect(http, token, org).await?, None),
     };
-    ci_review(&api, args, commit, request.as_ref()).await
+    ci_review(&api, kind, args, commit, request.as_ref()).await
 }
 
 /// How long a pull-request job waits for the App's review of its head before
 /// it asks for one.
 const REQUEST_AFTER: Duration = Duration::from_secs(120);
 
-/// Waits for the review the App runs for the pull request whose head is
-/// `commit`, then reports it. With `request`, a job that has found no review
+/// Waits for the `kind` of review Proofline runs at `commit`, the pull
+/// request's head or the deployed commit, then reports it. With `request`, a
+/// job that has found no review
 /// after [`REQUEST_AFTER`] asks once for one and reports the review it gets;
 /// a refusal is reported and the wait goes on. Without it nothing is
 /// requested, so the job never starts a second review of the head.
 async fn ci_review(
     api: &Api,
+    kind: CiKind,
     args: &CiReviewArgs,
     commit: &str,
     mut request: Option<&github_actions::ReviewRequest>,
@@ -1120,7 +1254,7 @@ async fn ci_review(
     let mut delay = FIRST_POLL_SECONDS;
     let review_id = loop {
         let found = latest(api, repository_id, commit, |item| {
-            item.kind == "PULL_REQUEST" && item.head_commit_sha.as_deref() == Some(commit)
+            item.kind == kind.api() && item.head_commit_sha.as_deref() == Some(commit)
         })
         .await?;
         if let Some(id) = found {
@@ -1128,8 +1262,15 @@ async fn ci_review(
         }
         let now = tokio::time::Instant::now();
         if now >= deadline {
+            let noun = kind.noun();
+            let hint = match kind {
+                CiKind::PullRequest => {
+                    " Proofline reviews a commit once it is the head of an open pull request."
+                }
+                CiKind::Deployment => "",
+            };
             say(&format!(
-                "No pull-request review of {name} has head commit {commit} after {} minutes. Proofline reviews a commit once it is the head of an open pull request.",
+                "No {noun} of {name} has head commit {commit} after {} minutes.{hint}",
                 args.timeout
             ));
             return Ok(Verdict::Unavailable);
@@ -1150,8 +1291,13 @@ async fn ci_review(
                 )),
             }
         }
+        // The pull-request wording is unchanged from before `ci deployment`.
+        let waiting = match kind {
+            CiKind::PullRequest => "review",
+            CiKind::Deployment => kind.noun(),
+        };
         say(&format!(
-            "No review of {name} at {commit} yet; checking again in {delay} seconds."
+            "No {waiting} of {name} at {commit} yet; checking again in {delay} seconds."
         ));
         let wake = if request.is_some() {
             deadline.min(request_at)
@@ -1434,13 +1580,33 @@ mod tests {
         });
         let review = "POST /api/v1/ci/github-actions/review".to_owned();
         let token_requests = "GET /github/token".to_owned();
-        // Whether the job holds `PROOFLINE_TOKEN`, its event, and the verdict.
-        for (stored_token, event, verdict) in [
-            (false, "pull_request", Verdict::Done),
-            (true, "pull_request", Verdict::Unavailable),
-            (false, "push", Verdict::Unavailable),
+        let exchange = "POST /api/v1/ci/github-actions/credentials".to_owned();
+        // Whether the job holds `PROOFLINE_TOKEN`, its event, the review it
+        // waits for, and the verdict.
+        for (stored_token, event, kind, verdict) in [
+            (false, "pull_request", CiKind::PullRequest, Verdict::Done),
+            (
+                true,
+                "pull_request",
+                CiKind::PullRequest,
+                Verdict::Unavailable,
+            ),
+            (false, "push", CiKind::PullRequest, Verdict::Unavailable),
+            // A deployment job never asks, whatever event started it.
+            (
+                false,
+                "pull_request",
+                CiKind::Deployment,
+                Verdict::Unavailable,
+            ),
+            (
+                false,
+                "deployment",
+                CiKind::Deployment,
+                Verdict::Unavailable,
+            ),
         ] {
-            let case = format!("token {stored_token}, {event}");
+            let case = format!("token {stored_token}, {event}, {kind:?}");
             let start = tokio::time::Instant::now();
             let (origin, received) = console(start).await;
             let http = Http::new(Origin::parse(&origin).unwrap()).unwrap();
@@ -1461,7 +1627,7 @@ mod tests {
             };
             let token = stored_token.then(|| SecretString::from("plp_stored"));
             let org = stored_token.then(|| ORG.parse().unwrap());
-            let ended = ci_job(http, token, Some(issuer), event, org, &args, HEAD)
+            let ended = ci_job(http, token, Some(issuer), event, org, kind, &args, HEAD)
                 .await
                 .unwrap();
             assert_eq!(ended, verdict, "{case}");
@@ -1493,6 +1659,15 @@ mod tests {
                 let last = received.iter().map(|(_, at, ..)| *at).max().unwrap();
                 assert!(last >= Duration::from_secs(180), "{case}: {last:?}");
                 assert_eq!(issued, usize::from(!stored_token), "{case}");
+            }
+            if kind == CiKind::Deployment {
+                // Its exchange names no pull-request head to verify.
+                let exchanges: Vec<_> = received
+                    .iter()
+                    .filter(|(request, ..)| *request == exchange)
+                    .map(|(.., query)| query.as_str())
+                    .collect();
+                assert_eq!(exchanges, [""], "{case}");
             }
         }
         ticker.abort();

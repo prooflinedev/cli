@@ -10,6 +10,7 @@ use serde::de::DeserializeOwned;
 use url::Url;
 use uuid::Uuid;
 
+use crate::deployment::PublicKey;
 use crate::model::{
     CommitReviewRequest, CommitReviewResponse, CoverageUploadRequest, CoverageUploadResponse,
     FileReviewRequest, FileReviewResponse, PatchReviewRequest, PatchReviewResponse,
@@ -471,6 +472,21 @@ impl Api {
     ) -> Result<(serde_json::Value, ReviewDetail), ApiError> {
         let id = review_id.to_string();
         let raw = self.get(self.url(&["reviews", &id])).await?;
+        let typed = serde_json::from_value(raw.clone())
+            .map_err(|error| self.http.protocol(error.to_string()))?;
+        Ok((raw, typed))
+    }
+
+    /// Fetches a deployment review by its public key, as the raw document and
+    /// its typed reading. The caller holds the result to the key.
+    pub async fn deployment_review(
+        &self,
+        key: PublicKey,
+    ) -> Result<(serde_json::Value, ReviewDetail), ApiError> {
+        let key = key.to_string();
+        let raw = self
+            .get(self.url(&["reviews", "deployments", &key]))
+            .await?;
         let typed = serde_json::from_value(raw.clone())
             .map_err(|error| self.http.protocol(error.to_string()))?;
         Ok((raw, typed))
