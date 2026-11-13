@@ -298,14 +298,18 @@ async fn refresh(client: &reqwest::Client, address: &str, path: PathBuf) -> anyh
 
 fn install_path(executable: &Path, directory: &Path) -> anyhow::Result<PathBuf> {
     let expected = fs::canonicalize(directory)?.join("proofline");
-    if executable != expected {
+    // Checked first: on Linux `current_exe` already names the link's target,
+    // so the comparison below would hide why the update is refused.
+    if fs::symlink_metadata(&expected).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        bail!("the installed binary is a symbolic link; update it through its package manager");
+    }
+    // `current_exe` is not canonical on every platform (macOS reports the path
+    // the binary was started through), while `expected` is.
+    if fs::canonicalize(executable).ok().as_deref() != Some(expected.as_path()) {
         bail!(
             "this binary is outside the installer directory {}; update it through its package manager or rebuild it from source",
             directory.display()
         );
-    }
-    if fs::symlink_metadata(&expected)?.file_type().is_symlink() {
-        bail!("the installed binary is a symbolic link; update it through its package manager");
     }
     Ok(expected)
 }
