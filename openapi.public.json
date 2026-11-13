@@ -3938,6 +3938,20 @@
               "null"
             ]
           },
+          "merged_by_login": {
+            "description": "The merger's GitHub login as this organization's developer record last saw it. Display\n metadata only. Null when the organization has no record of that user.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "merged_by_name": {
+            "description": "The merger's name, from the organization's developer record or their Proofline account.\n Display metadata only: `merged_by_github_user_id` stays the identity. Null when unknown.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "merged_pull_request_number": {
             "description": "The actual pull request merged in the recorded bypass, which may differ from the captured PR.",
             "format": "int64",
@@ -5836,7 +5850,7 @@
   },
   "info": {
     "title": "Proofline Review API",
-    "version": "5.1.0"
+    "version": "5.2.0"
   },
   "openapi": "3.1.0",
   "paths": {
