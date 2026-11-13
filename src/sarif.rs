@@ -303,10 +303,14 @@ enum AssessmentSource<'a> {
 }
 
 pub(super) fn validate_subject(detail: &ReviewDetail, requested: Uuid) -> Result<(), SarifError> {
-    if detail.id != requested {
+    if let Err(outcome::WrongReview {
+        requested,
+        returned,
+    }) = outcome::same_review(detail, requested)
+    {
         return Err(SarifError::WrongReview {
             requested,
-            returned: detail.id,
+            returned,
         });
     }
     if detail.kind != "PULL_REQUEST" {

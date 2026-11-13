@@ -82,6 +82,10 @@ pub struct ReviewDetail {
     pub head_commit_sha: Option<String>,
     pub open_items: Option<OpenItems>,
     pub pull_request_number: Option<i64>,
+    /// The review's repository. Set only on a single-review read, and
+    /// absent there when the review names no repository. Stable across a
+    /// repository rename, unlike `repository_full_name`.
+    pub repository_id: Option<Uuid>,
     pub repository_full_name: Option<String>,
     pub run_number: Option<i64>,
     #[serde(default)]

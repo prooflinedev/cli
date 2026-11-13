@@ -2,10 +2,36 @@
 //! rules match `waitForReview` in the TypeScript SDK: unknown is never
 //! complete, and an assessment with a gap is never reported as clean.
 
+use uuid::Uuid;
+
 use crate::model::{
     Assessment, CodeAssessment, CodeAssessmentRead, CodeAssessmentStatus, ReviewDetail,
 };
 use crate::severity::Severity;
+
+/// A review-reading endpoint is keyed by review id, so its response should
+/// always echo the id requested. A cache or routing bug that serves another
+/// review's body under that id would otherwise read as a clean result for
+/// the wrong subject.
+#[derive(Debug, thiserror::Error)]
+#[error("requested review {requested}, but the server returned review {returned}")]
+pub(crate) struct WrongReview {
+    pub(crate) requested: Uuid,
+    pub(crate) returned: Uuid,
+}
+
+/// Confirms `detail` is the review `requested`, not merely a review that
+/// happened to come back from that endpoint.
+pub(crate) fn same_review(detail: &ReviewDetail, requested: Uuid) -> Result<(), WrongReview> {
+    if detail.id == requested {
+        Ok(())
+    } else {
+        Err(WrongReview {
+            requested,
+            returned: detail.id,
+        })
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -267,7 +293,7 @@ mod tests {
 
     fn assessment(status: &str) -> Assessment {
         Assessment {
-            id: uuid::Uuid::nil(),
+            id: Uuid::nil(),
             environment_display_name: "production".to_owned(),
             status: status.to_owned(),
             findings: Vec::new(),
@@ -284,7 +310,7 @@ mod tests {
 
     fn review(status: &str, assessments: Vec<Assessment>, count: i64) -> ReviewDetail {
         ReviewDetail {
-            id: uuid::Uuid::nil(),
+            id: Uuid::nil(),
             kind: "PULL_REQUEST".to_owned(),
             status: status.to_owned(),
             assessment_count: count,
@@ -295,6 +321,7 @@ mod tests {
             head_commit_sha: None,
             open_items: None,
             pull_request_number: Some(7),
+            repository_id: None,
             repository_full_name: Some("acme/web".to_owned()),
             run_number: Some(1),
             local_reverifications: Vec::new(),

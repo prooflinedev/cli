@@ -1904,6 +1904,420 @@ async fn ci_review_fail_on_exits_three_for_an_open_finding_of_a_complete_review(
     assert!(requests.lock().unwrap().is_empty());
 }
 
+/// A console whose search page names `CI_REVIEW` as the pull-request review of
+/// `CI_HEAD`, but whose `/reviews/{CI_REVIEW}` detail disagrees with that: the
+/// body it serves names a different review id and a different head commit, as
+/// a stale search index or a mixed-up cache response would. `sarif::validate_subject`
+/// already refuses exactly this mismatch, but only when `--sarif` is passed;
+/// `ci_review`'s plain and `--json` paths never call it, so they compute
+/// `ci_verdict` from a detail that was never confirmed to be the review, or
+/// the commit, actually under test.
+async fn mismatched_identity_console() -> String {
+    let other_review = "0190f3a0-0000-7000-8000-0000000000e1";
+    let other_head = "fedcba9876543210fedcba9876543210fedcba98";
+    let app = Router::new()
+        .route(
+            &format!("/api/v1/organizations/{ORG}/repository-names"),
+            get(|| async {
+                Json(json!({ "repositories": [{ "id": CI_REPOSITORY, "full_name": "acme/app" }] }))
+            }),
+        )
+        .route(
+            &format!("/api/v1/organizations/{ORG}/reviews"),
+            get(|| async {
+                Json(json!({
+                    "items": [{
+                        "id": CI_REVIEW,
+                        "kind": "PULL_REQUEST",
+                        "status": "COMPLETED",
+                        "created_at": "2026-10-01T00:00:00Z",
+                        "head_commit_sha": CI_HEAD,
+                        "pull_request_number": 12,
+                        "repository_id": CI_REPOSITORY,
+                        "run_number": 1,
+                    }],
+                    "next_cursor": null,
+                    "truncated": false,
+                    "filters": { "repositories": [], "environments": [], "authors": [] },
+                }))
+            }),
+        )
+        .route(
+            &format!("/api/v1/organizations/{ORG}/reviews/{CI_REVIEW}"),
+            get(move || async move {
+                Json(json!({
+                    "id": other_review,
+                    "kind": "PULL_REQUEST",
+                    "status": "COMPLETED",
+                    "assessment_count": 1,
+                    "assessments": [{
+                        "id": "0190f3a0-0000-7000-8000-0000000000f2",
+                        "environment_display_name": "production",
+                        "status": "COMPLETED",
+                        "findings": [],
+                        "checks": { "receipt_recorded": true, "status": "READY", "families": [] },
+                    }],
+                    "open_items": { "open_findings": 0, "serious_findings": 0, "accepted_risks": 0, "not_assessed": [] },
+                    "head_commit_sha": other_head,
+                    "base_commit_sha": "0123456789abcdef0123456789abcdef01234567",
+                    "pull_request_number": 99,
+                    "repository_full_name": "acme/app",
+                    "run_number": 1,
+                }))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    origin
+}
+
+#[tokio::test]
+async fn ci_review_refuses_a_completed_review_whose_detail_names_another_review_and_head() {
+    let origin = mismatched_identity_console().await;
+    let args = [
+        "ci",
+        "review",
+        "--repo",
+        "acme/app",
+        "--commit",
+        CI_HEAD,
+        "--timeout",
+        "0",
+        "--json",
+    ];
+    let output = cli(&origin, &args).await;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // The CLI asked about CI_HEAD and found CI_REVIEW for it, then fetched a
+    // detail that names a different review id and a different head commit.
+    // That is exactly the mismatch `sarif::validate_subject` already refuses
+    // for `--sarif`; the plain and `--json` paths must refuse it too rather
+    // than report success for a result that was never confirmed to be the
+    // review, or the commit, under test.
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "exited successfully for a detail naming a different review and head: {stderr}"
+    );
+    assert!(!stderr.contains(TOKEN));
+
+    // The same mismatch, surfaced through `--sarif`, is already refused:
+    // `read_review` runs `sarif::validate_subject` only when SARIF is
+    // requested, so the identity check exists but is not wired into the path
+    // `ci review` actually uses to decide pass/fail.
+    let directory = tempfile::tempdir().unwrap();
+    let sarif_path = directory.path().join("proofline.sarif");
+    let mut sarif_args = args.to_vec();
+    sarif_args.extend(["--sarif", sarif_path.to_str().unwrap()]);
+    let sarif_output = cli_in(&origin, &sarif_args, directory.path()).await;
+    let sarif_stderr = String::from_utf8_lossy(&sarif_output.stderr);
+    assert_eq!(sarif_output.status.code(), Some(1), "{sarif_stderr}");
+    assert!(
+        sarif_stderr.contains("but the server returned review"),
+        "{sarif_stderr}"
+    );
+    assert!(!sarif_path.exists());
+}
+
+/// A console whose search page names `CI_REVIEW` as the pull-request review
+/// of `CI_HEAD` in `acme/app` (repository id `CI_REPOSITORY`), and whose
+/// `/reviews/{CI_REVIEW}` detail reports `id`, `head`, `kind` and
+/// `repository_id` exactly as given, with `status` and an otherwise clean
+/// completed environment assessment. `repository_full_name` is always
+/// `acme/app`: the repository check compares ids, not names, so the name
+/// never needs to vary to exercise it. `mismatched_identity_console`
+/// mismatches a review id and a head commit together; this isolates one
+/// field at a time, so each check `confirm_ci_subject` makes is exercised on
+/// its own, and lets a still-running status exercise the same checks
+/// mid-poll.
+async fn identity_console(
+    id: &'static str,
+    head: &'static str,
+    kind: &'static str,
+    repository_id: &'static str,
+    status: &'static str,
+) -> String {
+    let app = Router::new()
+        .route(
+            &format!("/api/v1/organizations/{ORG}/repository-names"),
+            get(|| async {
+                Json(json!({ "repositories": [{ "id": CI_REPOSITORY, "full_name": "acme/app" }] }))
+            }),
+        )
+        .route(
+            &format!("/api/v1/organizations/{ORG}/reviews"),
+            get(|| async {
+                Json(json!({
+                    "items": [{
+                        "id": CI_REVIEW,
+                        "kind": "PULL_REQUEST",
+                        "status": "COMPLETED",
+                        "created_at": "2026-10-01T00:00:00Z",
+                        "head_commit_sha": CI_HEAD,
+                        "pull_request_number": 12,
+                        "repository_id": CI_REPOSITORY,
+                        "run_number": 1,
+                    }],
+                    "next_cursor": null,
+                    "truncated": false,
+                    "filters": { "repositories": [], "environments": [], "authors": [] },
+                }))
+            }),
+        )
+        .route(
+            &format!("/api/v1/organizations/{ORG}/reviews/{CI_REVIEW}"),
+            get(move || async move {
+                Json(json!({
+                    "id": id,
+                    "kind": kind,
+                    "status": status,
+                    "assessment_count": 1,
+                    "assessments": [{
+                        "id": "0190f3a0-0000-7000-8000-0000000000f2",
+                        "environment_display_name": "production",
+                        "status": "COMPLETED",
+                        "findings": [],
+                        "checks": { "receipt_recorded": true, "status": "READY", "families": [] },
+                    }],
+                    "open_items": { "open_findings": 0, "serious_findings": 0, "accepted_risks": 0, "not_assessed": [] },
+                    "head_commit_sha": head,
+                    "base_commit_sha": "0123456789abcdef0123456789abcdef01234567",
+                    "pull_request_number": 12,
+                    "repository_id": repository_id,
+                    "repository_full_name": "acme/app",
+                    "run_number": 1,
+                }))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    origin
+}
+
+const OTHER_REVIEW_ID: &str = "0190f3a0-0000-7000-8000-0000000000e1";
+const OTHER_HEAD_COMMIT: &str = "fedcba9876543210fedcba9876543210fedcba98";
+const OTHER_REPOSITORY_ID: &str = "0190f3a0-0000-7000-8000-0000000000f9";
+
+#[tokio::test]
+async fn ci_review_refuses_a_detail_that_mismatches_one_identity_field_at_a_time() {
+    // Each case matches every identity field except the one named, so the
+    // specific check that catches it is unambiguous.
+    let cases = [
+        (
+            "head commit",
+            CI_REVIEW,
+            OTHER_HEAD_COMMIT,
+            "PULL_REQUEST",
+            CI_REPOSITORY,
+        ),
+        (
+            "review id",
+            OTHER_REVIEW_ID,
+            CI_HEAD,
+            "PULL_REQUEST",
+            CI_REPOSITORY,
+        ),
+        ("kind", CI_REVIEW, CI_HEAD, "DEPLOYMENT", CI_REPOSITORY),
+        (
+            "repository",
+            CI_REVIEW,
+            CI_HEAD,
+            "PULL_REQUEST",
+            OTHER_REPOSITORY_ID,
+        ),
+    ];
+    for (mismatched, id, head, kind, repository_id) in cases {
+        let origin = identity_console(id, head, kind, repository_id, "COMPLETED").await;
+        let output = cli(
+            &origin,
+            &[
+                "ci",
+                "review",
+                "--repo",
+                "acme/app",
+                "--commit",
+                CI_HEAD,
+                "--timeout",
+                "0",
+                "--json",
+            ],
+        )
+        .await;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_ne!(
+            output.status.code(),
+            Some(0),
+            "a detail mismatched on {mismatched} alone was accepted: {stderr}"
+        );
+        assert!(!stderr.contains(TOKEN), "{mismatched}: {stderr}");
+    }
+}
+
+/// Before `confirm_ci_subject`, `--sarif` refused a detail naming the wrong
+/// review id (`sarif::validate_subject` already checked that), but not one
+/// that kept the requested id while naming a different head commit: nothing
+/// compared the SARIF-eligible head it validates against the commit CI was
+/// actually asked about. This is consistent with the plain and `--json`
+/// paths now, rather than a narrower guarantee.
+#[tokio::test]
+async fn ci_review_sarif_also_refuses_a_matching_id_with_a_mismatched_head_commit() {
+    let origin = identity_console(
+        CI_REVIEW,
+        OTHER_HEAD_COMMIT,
+        "PULL_REQUEST",
+        CI_REPOSITORY,
+        "COMPLETED",
+    )
+    .await;
+    let directory = tempfile::tempdir().unwrap();
+    let sarif_path = directory.path().join("proofline.sarif");
+    let output = cli_in(
+        &origin,
+        &[
+            "ci",
+            "review",
+            "--repo",
+            "acme/app",
+            "--commit",
+            CI_HEAD,
+            "--timeout",
+            "0",
+            "--json",
+            "--sarif",
+            sarif_path.to_str().unwrap(),
+        ],
+        directory.path(),
+    )
+    .await;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{stderr}");
+    assert!(!stderr.contains(TOKEN));
+    assert!(!sarif_path.exists());
+}
+
+/// A mismatched id must be refused as soon as it is read, whether or not the
+/// review it names has finished: waiting out the timeout on a review that
+/// was never the one requested would just delay the same wrong answer.
+#[tokio::test]
+async fn ci_review_refuses_a_mismatched_id_while_the_named_review_is_still_running() {
+    let origin = identity_console(
+        OTHER_REVIEW_ID,
+        CI_HEAD,
+        "PULL_REQUEST",
+        CI_REPOSITORY,
+        "RUNNING",
+    )
+    .await;
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        cli(
+            &origin,
+            &[
+                "ci",
+                "review",
+                "--repo",
+                "acme/app",
+                "--commit",
+                CI_HEAD,
+                "--timeout",
+                "1",
+                "--json",
+            ],
+        ),
+    )
+    .await
+    .expect("a mismatched id should be refused well before the one-minute timeout elapses");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_ne!(output.status.code(), Some(0), "{stderr}");
+    assert!(!stderr.contains(TOKEN));
+}
+
+/// A GitHub rename (or an alias the console still resolves to the same
+/// repository) changes `repository_full_name` but not the repository's id.
+/// `confirm_ci_subject` compares the detail's `repository_id` against the id
+/// `connected_repository` resolved for `--repo acme/app`, not the name, so a
+/// detail that reports the repository's new name, `acme/renamed`, alongside
+/// its unchanged id must still be accepted.
+#[tokio::test]
+async fn ci_review_accepts_a_review_whose_detail_names_the_repository_by_its_new_name() {
+    let app = Router::new()
+        .route(
+            &format!("/api/v1/organizations/{ORG}/repository-names"),
+            get(|| async {
+                Json(json!({ "repositories": [{ "id": CI_REPOSITORY, "full_name": "acme/app" }] }))
+            }),
+        )
+        .route(
+            &format!("/api/v1/organizations/{ORG}/reviews"),
+            get(|| async {
+                Json(json!({
+                    "items": [{
+                        "id": CI_REVIEW,
+                        "kind": "PULL_REQUEST",
+                        "status": "COMPLETED",
+                        "created_at": "2026-10-01T00:00:00Z",
+                        "head_commit_sha": CI_HEAD,
+                        "pull_request_number": 12,
+                        "repository_id": CI_REPOSITORY,
+                        "run_number": 1,
+                    }],
+                    "next_cursor": null,
+                    "truncated": false,
+                    "filters": { "repositories": [], "environments": [], "authors": [] },
+                }))
+            }),
+        )
+        .route(
+            &format!("/api/v1/organizations/{ORG}/reviews/{CI_REVIEW}"),
+            get(|| async {
+                Json(json!({
+                    "id": CI_REVIEW,
+                    "kind": "PULL_REQUEST",
+                    "status": "COMPLETED",
+                    "assessment_count": 1,
+                    "assessments": [{
+                        "id": "0190f3a0-0000-7000-8000-0000000000f2",
+                        "environment_display_name": "production",
+                        "status": "COMPLETED",
+                        "findings": [],
+                        "checks": { "receipt_recorded": true, "status": "READY", "families": [] },
+                    }],
+                    "open_items": { "open_findings": 0, "serious_findings": 0, "accepted_risks": 0, "not_assessed": [] },
+                    "head_commit_sha": CI_HEAD,
+                    "base_commit_sha": "0123456789abcdef0123456789abcdef01234567",
+                    "pull_request_number": 12,
+                    "repository_id": CI_REPOSITORY,
+                    "repository_full_name": "acme/renamed",
+                    "run_number": 1,
+                }))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let output = cli(
+        &origin,
+        &[
+            "ci",
+            "review",
+            "--repo",
+            "acme/app",
+            "--commit",
+            CI_HEAD,
+            "--timeout",
+            "0",
+            "--json",
+        ],
+    )
+    .await;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "{stderr}");
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["outcome"], "COMPLETED");
+    assert_eq!(result["review"]["repository_full_name"], "acme/renamed");
+}
+
 #[tokio::test]
 async fn native_tools_keep_tenant_paths_and_reruns_make_one_attempt() {
     let requests = Arc::new(Mutex::new(Vec::new()));

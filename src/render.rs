@@ -215,6 +215,7 @@ mod tests {
             head_commit_sha: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
             open_items: None,
             pull_request_number: Some(42),
+            repository_id: None,
             repository_full_name: Some("acme/web".to_owned()),
             run_number: Some(2),
             local_reverifications: Vec::new(),
