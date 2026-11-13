@@ -1189,6 +1189,16 @@
               "null"
             ]
           },
+          "reason_codes": {
+            "description": "Public causes of an `INCOMPLETE` code assessment: `OUT_OF_CREDITS`\n when credits refused its model. Absent otherwise; other recorded\n details stay private.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "started_at": {
             "description": "When the code assessment started. Null until it starts.",
             "format": "date-time",
