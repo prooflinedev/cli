@@ -1715,6 +1715,13 @@
             },
             "type": "array"
           },
+          "environments": {
+            "description": "For a pull-request review, each environment its repository linked\n when the review was created and each environment it assessed, with\n whether the review checked it and why not. Absent for any other\n review, and when the repository links no environment.",
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentCheck"
+            },
+            "type": "array"
+          },
           "finding_count": {
             "description": "How many findings this review's assessments recorded, across all of them.",
             "format": "int64",
@@ -1749,6 +1756,13 @@
             "description": "The review's identifier.",
             "format": "uuid",
             "type": "string"
+          },
+          "incomplete_causes": {
+            "description": "Why an `INCOMPLETE` review ended incomplete, as its incomplete\n assessments recorded it, in name order. `UNKNOWN` alone when none\n recorded a cause. Absent for every other status, and on reads other\n than the reviews list and a single review.",
+            "items": {
+              "$ref": "#/components/schemas/IncompleteCause"
+            },
+            "type": "array"
           },
           "is_deep_review": {
             "description": "Present and true when this run is a Deep Review.",
@@ -1953,7 +1967,7 @@
                 "type": "null"
               }
             ],
-            "description": "Who asked for this review, for a review a person requested. Null on\n automatic reviews and on reviews recorded before requesters were."
+            "description": "Who asked for this review, for the reviews a person asked for: the\n run-now button, a rerun, a pull request `review` command, or local\n changes and pushed commits sent from the CLI or an editor. Absent on\n automatic reviews, and on reviews recorded before requesters were."
           },
           "review_comment_url": {
             "description": "The pull request review Proofline submitted for this review. Null when\n it submitted none.",
@@ -2171,6 +2185,92 @@
           "severity"
         ],
         "type": "object"
+      },
+      "EnvironmentCheck": {
+        "description": "One environment linked to the reviewed repository, and whether this\n review checked it.",
+        "properties": {
+          "environment_display_name": {
+            "description": "The environment's display name.",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EnvironmentCheckReason"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why the environment was not checked or does not apply. Null when it\n was checked or its check is still running."
+          },
+          "state": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EnvironmentCheckState"
+              }
+            ],
+            "description": "Whether this review checked the environment."
+          }
+        },
+        "required": [
+          "environment_display_name",
+          "state"
+        ],
+        "type": "object"
+      },
+      "EnvironmentCheckReason": {
+        "oneOf": [
+          {
+            "const": "NOT_COVERED",
+            "description": "`NOT_CHECKED`: Proofline does not check this environment for pull\n requests, so the review assessed its code only.",
+            "type": "string"
+          },
+          {
+            "const": "FORK_PULL_REQUEST",
+            "description": "`NOT_CHECKED`: the pull request comes from a fork, which Proofline\n does not check against an environment.",
+            "type": "string"
+          },
+          {
+            "const": "UNFINISHED",
+            "description": "`NOT_CHECKED`: the environment's assessment did not finish.",
+            "type": "string"
+          },
+          {
+            "const": "ENDED",
+            "description": "`NOT_CHECKED`: the review or the assessment stopped before the\n environment was checked.",
+            "type": "string"
+          },
+          {
+            "const": "PULL_REQUEST_REVIEWS_OFF",
+            "description": "`NOT_APPLICABLE`: pull request reviews are off on this repository's\n link to the environment.",
+            "type": "string"
+          }
+        ]
+      },
+      "EnvironmentCheckState": {
+        "oneOf": [
+          {
+            "const": "CHECKED",
+            "description": "The environment's assessment finished.",
+            "type": "string"
+          },
+          {
+            "const": "CHECKING",
+            "description": "The environment's assessment is still running.",
+            "type": "string"
+          },
+          {
+            "const": "NOT_CHECKED",
+            "description": "The review did not check the environment; `reason` says why.",
+            "type": "string"
+          },
+          {
+            "const": "NOT_APPLICABLE",
+            "description": "The repository's link to the environment does not ask for pull\n request reviews; `reason` says so.",
+            "type": "string"
+          }
+        ]
       },
       "ExportEvidenceKind": {
         "enum": [
@@ -3266,6 +3366,26 @@
           "SUPERSEDED"
         ],
         "type": "string"
+      },
+      "IncompleteCause": {
+        "description": "Why an assessment of the review ended incomplete, as the assessment\n recorded it (`incompleteness_kind`), or `UNKNOWN` when none did.",
+        "oneOf": [
+          {
+            "enum": [
+              "NOT_CONFIGURED",
+              "POLICY_EXCLUDED",
+              "EVIDENCE_UNAVAILABLE",
+              "HYPOTHESES_UNRESOLVED",
+              "MODEL_BUDGET_EXHAUSTED"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "UNKNOWN",
+            "description": "The review ended incomplete and no assessment recorded why.",
+            "type": "string"
+          }
+        ]
       },
       "LocalReverification": {
         "description": "One finding a patch review re-verified against the patch. The outcome is\n local: the pull request's finding is unchanged whatever it is.",
@@ -4626,6 +4746,13 @@
             "format": "uuid",
             "type": "string"
           },
+          "incomplete_causes": {
+            "description": "Why an `INCOMPLETE` review ended incomplete, as its incomplete\n assessments recorded it, in name order. `UNKNOWN` alone when none\n recorded a cause. Absent for every other status, and on reads other\n than the reviews list and a single review.",
+            "items": {
+              "$ref": "#/components/schemas/IncompleteCause"
+            },
+            "type": "array"
+          },
           "kind": {
             "description": "`PULL_REQUEST`, `DEPLOYMENT`, `PATCH`, a review of local changes\n sent as a patch, `COMMIT`, a review of pushed commits, `FILES`,\n complete selected files at one pushed commit, `MERGE_GROUP`, the\n commit GitHub's merge queue built for a group of pull requests, or\n `REVISION_SCAN`, a scan of one captured commit.",
             "type": "string"
@@ -4757,6 +4884,17 @@
               "string",
               "null"
             ]
+          },
+          "requested_by": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActorView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Who asked for this review, for the reviews a person asked for: the\n run-now button, a rerun, a pull request `review` command, or local\n changes and pushed commits sent from the CLI or an editor. Absent on\n automatic reviews, and on reviews recorded before requesters were."
           },
           "run_number": {
             "description": "One-based, append-only ordinal within one repository pull request.",
@@ -5850,7 +5988,7 @@
   },
   "info": {
     "title": "Proofline Review API",
-    "version": "5.2.0"
+    "version": "5.3.0"
   },
   "openapi": "3.1.0",
   "paths": {
