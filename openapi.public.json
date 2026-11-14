@@ -4149,7 +4149,7 @@
             ]
           },
           "review_id": {
-            "description": "The first review captured for this gate. Null when its trigger was refused before a review existed.",
+            "description": "The review the gate decides from: the first review captured, or the one retry that replaced a review that could not finish. Null when its trigger was refused before a review existed.",
             "format": "uuid",
             "type": [
               "string",
