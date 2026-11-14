@@ -138,6 +138,37 @@ impl std::fmt::Debug for Reply {
     }
 }
 
+/// A client builder on rustls with the *ring* provider. reqwest's own default
+/// provider, aws-lc-rs, is a C build the cross-compiled release avoids, so the
+/// CLI installs *ring* as the process default before any client is built.
+///
+/// Certificates verify against the operating system's roots. On Linux the
+/// client also trusts Mozilla's roots, so a container without a CA bundle
+/// still reaches Proofline.
+pub(crate) fn client_builder() -> reqwest::ClientBuilder {
+    if rustls::crypto::ring::default_provider()
+        .install_default()
+        .is_err()
+    {
+        // A provider is already installed, which is all the client needs.
+    }
+    with_bundled_roots(reqwest::Client::builder())
+}
+
+#[cfg(all(unix, not(target_vendor = "apple")))]
+fn with_bundled_roots(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    builder.tls_certs_merge(
+        webpki_root_certs::TLS_SERVER_ROOT_CERTS
+            .iter()
+            .filter_map(|root| reqwest::Certificate::from_der(root).ok()),
+    )
+}
+
+#[cfg(not(all(unix, not(target_vendor = "apple"))))]
+const fn with_bundled_roots(builder: reqwest::ClientBuilder) -> reqwest::ClientBuilder {
+    builder
+}
+
 #[derive(Debug, Clone)]
 pub struct Http {
     client: reqwest::Client,
@@ -146,7 +177,7 @@ pub struct Http {
 
 impl Http {
     pub fn new(origin: Origin) -> Result<Self, ApiError> {
-        let client = reqwest::Client::builder()
+        let client = client_builder()
             .user_agent(USER_AGENT)
             .timeout(REQUEST_TIMEOUT)
             .connect_timeout(Duration::from_secs(10))

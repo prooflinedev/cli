@@ -226,7 +226,7 @@ fn spawn_check(mut command: Command) -> anyhow::Result<()> {
 }
 
 fn client(timeout: Duration) -> anyhow::Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
+    Ok(crate::api::client_builder()
         .https_only(true)
         .redirect(reqwest::redirect::Policy::none())
         .timeout(timeout)

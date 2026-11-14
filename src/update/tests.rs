@@ -124,7 +124,7 @@ async fn discovery_rejects_bad_bounded_and_offline_responses() {
         .await
         .unwrap();
     });
-    let http = reqwest::Client::builder()
+    let http = crate::api::client_builder()
         // Successful local requests still need scheduling time on a busy CI worker.
         .timeout(Duration::from_secs(2))
         .build()
@@ -142,7 +142,7 @@ async fn discovery_rejects_bad_bounded_and_offline_responses() {
                 .is_err()
         );
     }
-    let short_deadline = reqwest::Client::builder()
+    let short_deadline = crate::api::client_builder()
         .timeout(Duration::from_millis(50))
         .build()
         .unwrap();
@@ -215,7 +215,7 @@ async fn detached_discovery_is_serialized_and_notices_arrive_on_the_next_invocat
         if mode == "worker" {
             assert!(std::env::var_os("PROOFLINE_TOKEN").is_none());
             assert!(std::env::var_os("AWS_SECRET_ACCESS_KEY").is_none());
-            let http = reqwest::Client::builder()
+            let http = crate::api::client_builder()
                 .timeout(Duration::from_secs(10))
                 .build()
                 .unwrap();
