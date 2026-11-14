@@ -653,6 +653,29 @@
           }
         ]
       },
+      "CodeCeilingStop": {
+        "description": "What a code assessment had read when its head's spending ceiling stopped\n it. A rerun of the same commit runs under the same ceiling.",
+        "properties": {
+          "changed_files": {
+            "description": "The distinct files the reviewed change touched.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unfinished_paths": {
+            "description": "The changed files of each part of the change the ceiling stopped or\n never reached, in review order. The assessment may have read some of\n their changed lines, so this lists files it did not finish. Empty\n when the ceiling stopped it after every part was read.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "changed_files",
+          "unfinished_paths"
+        ],
+        "type": "object"
+      },
       "CommentAddressEvaluationView": {
         "description": "One stored post-merge judgment of a finding comment.",
         "properties": {
@@ -1150,6 +1173,17 @@
           "base_commit_sha": {
             "description": "The base commit the code assessment compared the head with.",
             "type": "string"
+          },
+          "ceiling_stop": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CodeCeilingStop"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How much of the change the code assessment read before its head's\n spending ceiling stopped it. Null for every other ending, and for an\n assessment that recorded no change map."
           },
           "completed_at": {
             "description": "When the code assessment ended. Null while it has not.",
@@ -6006,7 +6040,7 @@
   },
   "info": {
     "title": "Proofline Review API",
-    "version": "5.6.0"
+    "version": "5.7.0"
   },
   "openapi": "3.1.0",
   "paths": {
