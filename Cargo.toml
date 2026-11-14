@@ -1,6 +1,6 @@
 [package]
 name = "proofline-cli"
-version = "0.2.7"
+version = "0.2.8"
 edition = "2024"
 rust-version = "1.95"
 description = "Proofline command-line client for the review API"
@@ -22,7 +22,7 @@ clap = { version = "4", features = ["derive", "env"] }
 flate2 = "1"
 sha2 = "0.10"
 tar = "0.4"
-keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust", "vendored"] }
+keyring-core = "1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "json"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 secrecy = "0.10"
@@ -36,9 +36,18 @@ url = "2"
 uuid = { version = "1", features = ["serde", "v7"] }
 webbrowser = "1"
 
+# Each platform keeps sign-ins in its own credential store.
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-native-keyring-store = { version = "1", default-features = false }
+
 # Linux trusts Mozilla's roots beside the system store, so a host without a CA
-# bundle still connects, as it did when reqwest bundled these roots.
+# bundle still connects, as it did when reqwest bundled these roots. Its
+# Secret Service store links libdbus statically into the musl release build.
 [target.'cfg(all(unix, not(target_vendor = "apple")))'.dependencies]
+dbus-secret-service-keyring-store = { version = "1", features = ["crypto-rust", "vendored"] }
 webpki-root-certs = "1"
 
 [build-dependencies]
