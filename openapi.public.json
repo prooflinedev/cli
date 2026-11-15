@@ -1851,6 +1851,13 @@
             },
             "type": "array"
           },
+          "investigation_findings": {
+            "description": "The supported findings of each environment investigation this review\n published, by assessment in recorded order, including those the\n pull-request Check left off its list. Absent when there are none.",
+            "items": {
+              "$ref": "#/components/schemas/ReviewInvestigationFinding"
+            },
+            "type": "array"
+          },
           "is_deep_review": {
             "description": "Present and true when this run is a Deep Review.",
             "type": "boolean"
@@ -4529,6 +4536,73 @@
         ],
         "type": "object"
       },
+      "ReviewInvestigationCitation": {
+        "description": "One environment evidence record a finding cites, as Proofline verified\n it.",
+        "properties": {
+          "collection_id": {
+            "description": "The evidence collection that holds the record.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "digest": {
+            "description": "The record's stored digest.",
+            "type": "string"
+          },
+          "record_id": {
+            "description": "The record's ID.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "table": {
+            "description": "The table that holds the record.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "collection_id",
+          "table",
+          "record_id",
+          "digest"
+        ],
+        "type": "object"
+      },
+      "ReviewInvestigationFinding": {
+        "description": "One supported finding of an environment investigation.",
+        "properties": {
+          "area": {
+            "description": "What the finding is about: `secrets`, `configuration`, `iam`,\n `network`, `capacity` or `other`.",
+            "type": "string"
+          },
+          "assessment_id": {
+            "description": "The environment assessment whose investigation recorded the finding.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "citations": {
+            "description": "The evidence records the finding cites, each verified, in the order\n the finding cites them.",
+            "items": {
+              "$ref": "#/components/schemas/ReviewInvestigationCitation"
+            },
+            "type": "array"
+          },
+          "detail": {
+            "description": "Model text with protected values withheld. Render it as plain text.",
+            "type": "string"
+          },
+          "title": {
+            "description": "Model text with protected values withheld. Render it as plain text.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "assessment_id",
+          "area",
+          "title",
+          "detail",
+          "citations"
+        ],
+        "type": "object"
+      },
       "ReviewOpenItems": {
         "properties": {
           "accepted_risk_count": {
@@ -6157,7 +6231,7 @@
   },
   "info": {
     "title": "Proofline Review API",
-    "version": "5.10.0"
+    "version": "5.11.0"
   },
   "openapi": "3.1.0",
   "paths": {
