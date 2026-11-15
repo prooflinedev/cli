@@ -22,6 +22,13 @@
             "description": "The login they were known by when they acted. Display metadata.",
             "type": "string"
           },
+          "name": {
+            "description": "Profile name resolved for this organization. Display metadata only.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "profile_url": {
             "description": "Their profile on the deployment's GitHub host.",
             "type": [
@@ -1245,7 +1252,7 @@
             ]
           },
           "reason_codes": {
-            "description": "Public causes of an `INCOMPLETE` code assessment: `OUT_OF_CREDITS`\n when credits refused its model. Absent otherwise; other recorded\n details stay private.",
+            "description": "Public causes of an `INCOMPLETE` code assessment: `OUT_OF_CREDITS`\n when credits refused its model, and `MODEL_ANSWER_WITHHELD` when the\n credential mask withheld its model's answer after the source was read.\n Absent otherwise; other recorded details stay private.",
             "items": {
               "type": "string"
             },
@@ -6150,7 +6157,7 @@
   },
   "info": {
     "title": "Proofline Review API",
-    "version": "5.9.0"
+    "version": "5.10.0"
   },
   "openapi": "3.1.0",
   "paths": {
