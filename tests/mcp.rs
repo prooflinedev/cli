@@ -696,7 +696,12 @@ async fn negotiated_stdio_forwards_exact_messages_headers_and_machine_status_wit
     .await;
     bridge.send(&request(json!(3), "tools/list")).await;
     assert_error(&bridge.response().await, &json!(3), -32000, "lifecycle");
-    assert_failure(&bridge.finish(false).await);
+    let finished = bridge.finish(true).await;
+    assert!(
+        finished.status.success(),
+        "a lifecycle refusal is not fatal"
+    );
+    assert!(finished.remaining_output.is_empty());
     assert_eq!(
         fixture.finish().await.len(),
         2,
@@ -893,11 +898,65 @@ async fn evolving_status_never_survives_a_live_transport_refusal_or_leaks_to_ano
     assert_eq!(bridge.response().await, refused_init);
     bridge.send(&request(json!(2), "tools/list")).await;
     assert_error(&bridge.response().await, &json!(2), -32000, "lifecycle");
-    assert_failure(&bridge.finish(false).await);
+    let finished = bridge.finish(true).await;
+    assert!(finished.status.success());
+    assert!(finished.remaining_output.is_empty());
     assert_eq!(
         fixture.finish().await.len(),
         1,
         "failed initialization cannot install a protocol header or start tools"
+    );
+}
+
+/// Claude Code probes with `server/discover` before `initialize`.
+#[tokio::test]
+async fn pre_initialize_probes_are_answered_without_ending_the_session() {
+    let mut fixture = Fixture::start().await;
+    let mut bridge = Bridge::start(&fixture.origin, ORG);
+    let probe = json!("server-discover-probe-1");
+    bridge
+        .send(&request(probe.clone(), "server/discover"))
+        .await;
+    assert_error(&bridge.response().await, &probe, -32000, "lifecycle");
+    bridge
+        .send(&json!({"jsonrpc":"2.0","method":"notifications/cancelled",
+            "params":{"requestId":"server-discover-probe-1"}}))
+        .await;
+    bridge.send(&request(json!("early-ping"), "ping")).await;
+    assert_eq!(
+        bridge.response().await,
+        json!({"jsonrpc":"2.0","id":"early-ping","result":{}}),
+        "a ping before initialize is answered without a server request"
+    );
+
+    let init = initialize(json!(0));
+    bridge.send(&init).await;
+    let captured = fixture.request().await;
+    assert_request(&captured, &fixture.origin, &init, false);
+    captured.respond(Reply::json(&init_result(json!(0))));
+    assert_eq!(bridge.response().await, init_result(json!(0)));
+    let notification = initialized();
+    bridge.send(&notification).await;
+    let captured = fixture.request().await;
+    assert_request(&captured, &fixture.origin, &notification, true);
+    captured.respond(Reply::notification());
+    exchange_value(
+        &mut bridge,
+        &mut fixture,
+        request(json!(1), "tools/list"),
+        result(json!(1), json!({"tools":[]})),
+    )
+    .await;
+
+    let finished = bridge.finish(true).await;
+    assert!(finished.status.success());
+    assert!(finished.remaining_output.is_empty());
+    assert!(finished.diagnostic.is_empty());
+    assert_eq!(finished.frames.len(), 4);
+    assert_eq!(
+        fixture.finish().await.len(),
+        3,
+        "refused and locally answered messages never reach the server"
     );
 }
 

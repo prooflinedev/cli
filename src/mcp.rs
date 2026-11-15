@@ -192,6 +192,14 @@ impl Session {
         }
     }
 
+    /// Answers a `ping` that arrives before `initialize`. MCP allows `ping` at
+    /// any time, but the server refuses requests without a negotiated version.
+    fn answer(&self, message: &Message) -> Option<Value> {
+        let id = message.id.as_ref()?;
+        (matches!(self, Self::New) && message.method == "ping")
+            .then(|| json!({"jsonrpc": "2.0", "id": id, "result": {}}))
+    }
+
     fn admit(&self, message: &Message) -> Result<(), McpError> {
         let admitted = match self {
             Self::New => message.method == "initialize" && message.id.is_some(),
@@ -289,6 +297,9 @@ async fn relay(
     message: &Message,
     frame: Vec<u8>,
 ) -> Result<Option<Value>, McpError> {
+    if let Some(answer) = session.answer(message) {
+        return Ok(Some(answer));
+    }
     session.admit(message)?;
     let body = http
         .mcp(token, frame, session.protocol(), message.id.is_none())
@@ -337,6 +348,13 @@ pub(crate) async fn run(http: &Http, token: &SecretString) -> Result<(), McpErro
         match relay(http, token, &mut session, &message, frame).await {
             Ok(Some(response)) => write(&mut output, &response).await?,
             Ok(None) => {}
+            // A client may probe before the handshake, as Claude Code does with
+            // `server/discover`. Refuse that message and keep the session.
+            Err(error @ McpError::Lifecycle) => {
+                if let Some(id) = &message.id {
+                    write(&mut output, &error.response(Some(id))).await?;
+                }
+            }
             Err(error) => {
                 if let Some(id) = &message.id {
                     write(&mut output, &error.response(Some(id))).await?;
