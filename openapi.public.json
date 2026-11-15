@@ -2072,6 +2072,17 @@
               "null"
             ]
           },
+          "run_progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunProgress"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where an unfinished review's runs stand: running, queued for a worker,\n waiting for a scheduled step, or due again after an attempt that did\n not finish. Null once the review has ended."
+          },
           "status": {
             "description": "The review's lifecycle status: `PENDING`, `RUNNING`, `COMPLETED`, `INCOMPLETE`, `FAILED`, `SUPERSEDED`, `STOPPED` or `EXCLUDED`.",
             "type": "string"
@@ -5480,6 +5491,70 @@
         ],
         "type": "object"
       },
+      "RunProgress": {
+        "description": "Where an unfinished review's runs stand.",
+        "properties": {
+          "attempts": {
+            "description": "Attempts begun by the run in `state`, counting worker claims.",
+            "format": "int32",
+            "type": "integer"
+          },
+          "due_at": {
+            "description": "When the run in `state` is due: in the past for `QUEUED`, the next\n attempt for `RETRY_SCHEDULED` and the next check for `WAITING`. Null\n for `RUNNING`.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_progress_at": {
+            "description": "When any of the review's runs last recorded a completed step. Null\n before the first.",
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RunProgressState"
+              }
+            ],
+            "description": "The most telling state among the review's unfinished runs: a scheduled\n retry, then a running worker, then a queued run, then a wait."
+          }
+        },
+        "required": [
+          "state",
+          "attempts"
+        ],
+        "type": "object"
+      },
+      "RunProgressState": {
+        "description": "What an unfinished review's runs are doing now.",
+        "oneOf": [
+          {
+            "const": "WAITING",
+            "description": "A run waits for a scheduled step, such as a push's quiet period, a\n resource another run holds, or its assessments, and is checked again\n at `due_at`.",
+            "type": "string"
+          },
+          {
+            "const": "QUEUED",
+            "description": "A run is due and no worker has claimed it yet. It has been due since\n `due_at`.",
+            "type": "string"
+          },
+          {
+            "const": "RUNNING",
+            "description": "A worker is running one of the review's runs.",
+            "type": "string"
+          },
+          {
+            "const": "RETRY_SCHEDULED",
+            "description": "An attempt of a run ended without finishing, and the run starts again\n at `due_at`.",
+            "type": "string"
+          }
+        ]
+      },
       "ScanRequestBody": {
         "additionalProperties": false,
         "description": "One request to scan a ref or an exact commit of the repository.",
@@ -6075,7 +6150,7 @@
   },
   "info": {
     "title": "Proofline Review API",
-    "version": "5.8.0"
+    "version": "5.9.0"
   },
   "openapi": "3.1.0",
   "paths": {
