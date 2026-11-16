@@ -20,6 +20,7 @@ pub mod render;
 mod result;
 mod sarif;
 mod severity;
+mod summary;
 pub mod text;
 pub mod update;
 
@@ -174,6 +175,16 @@ struct CiReviewArgs {
     /// Also write the review as SARIF 2.1.0 to this file.
     #[arg(long, value_name = "FILE")]
     sarif: Option<PathBuf>,
+    /// Also write a Markdown job summary of the review to this file. If passed
+    /// without a path, writes to `$GITHUB_STEP_SUMMARY` when set. Pass `-` for stdout.
+    #[arg(long, num_args = 0..=1, value_name = "FILE")]
+    summary: Option<Option<PathBuf>>,
+    /// Explicit file path to write the Markdown job summary to. Pass `-` for stdout.
+    #[arg(long, value_name = "FILE")]
+    summary_file: Option<PathBuf>,
+    /// Disable writing a job summary, even if GITHUB_STEP_SUMMARY is set.
+    #[arg(long)]
+    no_summary: bool,
     /// Print JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -1151,6 +1162,23 @@ async fn ci_review(
     if let Some(path) = sarif_path {
         write_sarif(api, review_id, &detail, path).await?;
     }
+    let summary_destination = resolve_summary_destination(
+        args.no_summary,
+        args.summary.as_ref(),
+        args.summary_file.as_ref(),
+    )?;
+    if let Some(dest) = &summary_destination {
+        summary::write(&detail, api.review_url(review_id).as_str(), dest)
+            .await
+            .with_context(|| match dest {
+                summary::SummaryDestination::File(path) => {
+                    format!("could not write job summary to {}", path.display())
+                }
+                summary::SummaryDestination::Stdout => {
+                    "could not write job summary to stdout".to_owned()
+                }
+            })?;
+    }
     print_review(
         api,
         review_id,
@@ -1167,6 +1195,46 @@ async fn ci_review(
     );
     say_ci_ending(api, review_id, &detail, state, verdict, args.timeout);
     Ok(verdict)
+}
+
+fn resolve_summary_destination(
+    no_summary: bool,
+    summary: Option<&Option<PathBuf>>,
+    summary_file: Option<&PathBuf>,
+) -> anyhow::Result<Option<summary::SummaryDestination>> {
+    if no_summary {
+        return Ok(None);
+    }
+    if let Some(path) = summary_file {
+        return Ok(Some(destination_from_path(path)));
+    }
+    if let Some(arg) = summary {
+        return match arg {
+            Some(path) => Ok(Some(destination_from_path(path))),
+            None => {
+                let env_path = std::env::var_os("GITHUB_STEP_SUMMARY").ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "--summary was passed without a file, and GITHUB_STEP_SUMMARY is not set in the environment"
+                    )
+                })?;
+                Ok(Some(destination_from_path(std::path::Path::new(&env_path))))
+            }
+        };
+    }
+    if let Some(env_path) = std::env::var_os("GITHUB_STEP_SUMMARY") {
+        if !env_path.is_empty() {
+            return Ok(Some(destination_from_path(std::path::Path::new(&env_path))));
+        }
+    }
+    Ok(None)
+}
+
+fn destination_from_path(path: &std::path::Path) -> summary::SummaryDestination {
+    if path == std::path::Path::new("-") {
+        summary::SummaryDestination::Stdout
+    } else {
+        summary::SummaryDestination::File(path.to_path_buf())
+    }
 }
 
 /// Polls for the newest `PULL_REQUEST` review whose head is `commit` until
@@ -1563,6 +1631,9 @@ mod tests {
             let args = CiReviewArgs {
                 commit: None,
                 sarif: None,
+                summary: None,
+                summary_file: None,
+                no_summary: false,
                 json: false,
                 timeout: 3,
                 fail_on: None,
@@ -1630,6 +1701,9 @@ mod tests {
         let args = CiReviewArgs {
             commit: None,
             sarif: None,
+            summary: None,
+            summary_file: None,
+            no_summary: false,
             json: false,
             timeout: 3,
             fail_on: None,

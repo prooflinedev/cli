@@ -2916,3 +2916,247 @@ async fn config_proposal_targets_must_match_the_selected_organization() {
     assert_eq!(server.requests()[0]["arguments"]["organization_id"], ORG);
     assert_eq!(server.frames.load(Ordering::SeqCst), 3);
 }
+
+#[tokio::test]
+async fn ci_review_summary_writes_markdown_report_or_uses_github_step_summary() {
+    let (origin, _) = ci_console(
+        "PULL_REQUEST",
+        StatusCode::OK,
+        "COMPLETED",
+        Some([1, 1]),
+        None,
+    )
+    .await;
+
+    let directory = tempfile::tempdir().unwrap();
+    let explicit_summary = directory.path().join("summary.md");
+
+    // Case 1: Explicit path via --summary <path>
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_proofline"));
+    command
+        .args(["--base-url", &origin, "--org", ORG, "ci", "review"])
+        .args([
+            "--repo",
+            "acme/app",
+            "--timeout",
+            "0",
+            "--json",
+            "--summary",
+        ])
+        .arg(&explicit_summary)
+        .env("PROOFLINE_TOKEN", TOKEN)
+        .env("COMMIT_SHA", CI_HEAD)
+        .env_remove("GITHUB_SHA")
+        .env_remove("GITHUB_STEP_SUMMARY")
+        .env("PATH", "")
+        .current_dir(directory.path())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(15), command.output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let content = std::fs::read_to_string(&explicit_summary).unwrap();
+    assert!(content.contains("### 🔴 Proofline Review: BLOCKING"));
+    assert!(content.contains("View review in Proofline"));
+    assert!(content.contains("#### Summary Metrics"));
+    assert!(content.contains("| production | COMPLETED | 1 |"));
+    assert!(content.contains("Orders are dropped on retry."));
+    assert!(content.contains("🔴 **SERIOUS**"));
+    assert!(content.contains("🔍 Finding Details & Remediation"));
+
+    // Case 2: Explicit path via --summary-file <path>
+    let summary_file_path = directory.path().join("summary_file.md");
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_proofline"));
+    command
+        .args(["--base-url", &origin, "--org", ORG, "ci", "review"])
+        .args([
+            "--repo",
+            "acme/app",
+            "--timeout",
+            "0",
+            "--json",
+            "--summary-file",
+        ])
+        .arg(&summary_file_path)
+        .env("PROOFLINE_TOKEN", TOKEN)
+        .env("COMMIT_SHA", CI_HEAD)
+        .env_remove("GITHUB_SHA")
+        .env_remove("GITHUB_STEP_SUMMARY")
+        .env("PATH", "")
+        .current_dir(directory.path())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(15), command.output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let sf_content = std::fs::read_to_string(&summary_file_path).unwrap();
+    assert!(sf_content.contains("### 🔴 Proofline Review: BLOCKING"));
+
+    // Case 3: Bare --summary uses GITHUB_STEP_SUMMARY environment variable
+    let gha_summary = directory.path().join("github_step_summary.md");
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_proofline"));
+    command
+        .args(["--base-url", &origin, "--org", ORG, "ci", "review"])
+        .args([
+            "--repo",
+            "acme/app",
+            "--timeout",
+            "0",
+            "--json",
+            "--summary",
+        ])
+        .env("PROOFLINE_TOKEN", TOKEN)
+        .env("COMMIT_SHA", CI_HEAD)
+        .env("GITHUB_STEP_SUMMARY", &gha_summary)
+        .env_remove("GITHUB_SHA")
+        .env("PATH", "")
+        .current_dir(directory.path())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(15), command.output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let gha_content = std::fs::read_to_string(&gha_summary).unwrap();
+    assert!(gha_content.contains("### 🔴 Proofline Review: BLOCKING"));
+
+    // Case 4: Automatic detection of GITHUB_STEP_SUMMARY when no summary flags are passed
+    let auto_summary = directory.path().join("auto_detected_summary.md");
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_proofline"));
+    command
+        .args(["--base-url", &origin, "--org", ORG, "ci", "review"])
+        .args([
+            "--repo",
+            "acme/app",
+            "--timeout",
+            "0",
+            "--json",
+        ])
+        .env("PROOFLINE_TOKEN", TOKEN)
+        .env("COMMIT_SHA", CI_HEAD)
+        .env("GITHUB_STEP_SUMMARY", &auto_summary)
+        .env_remove("GITHUB_SHA")
+        .env("PATH", "")
+        .current_dir(directory.path())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(15), command.output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let auto_content = std::fs::read_to_string(&auto_summary).unwrap();
+    assert!(auto_content.contains("### 🔴 Proofline Review: BLOCKING"));
+
+    // Case 5: --no-summary suppresses automatic GITHUB_STEP_SUMMARY writing
+    let no_summary_file = directory.path().join("no_summary.md");
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_proofline"));
+    command
+        .args(["--base-url", &origin, "--org", ORG, "ci", "review"])
+        .args([
+            "--repo",
+            "acme/app",
+            "--timeout",
+            "0",
+            "--json",
+            "--no-summary",
+        ])
+        .env("PROOFLINE_TOKEN", TOKEN)
+        .env("COMMIT_SHA", CI_HEAD)
+        .env("GITHUB_STEP_SUMMARY", &no_summary_file)
+        .env_remove("GITHUB_SHA")
+        .env("PATH", "")
+        .current_dir(directory.path())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(15), command.output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!no_summary_file.exists());
+
+    // Case 6: Bare --summary without GITHUB_STEP_SUMMARY fails gracefully
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_proofline"));
+    command
+        .args(["--base-url", &origin, "--org", ORG, "ci", "review"])
+        .args([
+            "--repo",
+            "acme/app",
+            "--timeout",
+            "0",
+            "--json",
+            "--summary",
+        ])
+        .env("PROOFLINE_TOKEN", TOKEN)
+        .env("COMMIT_SHA", CI_HEAD)
+        .env_remove("GITHUB_STEP_SUMMARY")
+        .env_remove("GITHUB_SHA")
+        .env("PATH", "")
+        .current_dir(directory.path())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(15), command.output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("GITHUB_STEP_SUMMARY"));
+
+    // Case 7: --summary - writes summary to stdout
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_proofline"));
+    command
+        .args(["--base-url", &origin, "--org", ORG, "ci", "review"])
+        .args([
+            "--repo",
+            "acme/app",
+            "--timeout",
+            "0",
+            "--summary",
+            "-",
+        ])
+        .env("PROOFLINE_TOKEN", TOKEN)
+        .env("COMMIT_SHA", CI_HEAD)
+        .env_remove("GITHUB_STEP_SUMMARY")
+        .env_remove("GITHUB_SHA")
+        .env("PATH", "")
+        .current_dir(directory.path())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(15), command.output())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("### 🔴 Proofline Review: BLOCKING"));
+}
