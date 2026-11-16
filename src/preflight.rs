@@ -246,3 +246,104 @@ fn secret_shape(text: &str) -> Option<&'static str> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::secret_shape;
+
+    #[test]
+    fn credential_families_refuse_minimum_bodies_but_accept_short_or_invalid_ones() {
+        let cases = [
+            (
+                &["AKIA", "ASIA"][..],
+                16,
+                "AZ09",
+                'a',
+                "an AWS access-key ID",
+            ),
+            (
+                &["ghp_", "gho_", "ghu_", "ghr_"][..],
+                36,
+                "Az09",
+                '_',
+                "a GitHub token",
+            ),
+            (&["ghs_"][..], 36, "Az09_.-", '!', "a GitHub token"),
+            (&["github_pat_"][..], 82, "Az09_.-", '!', "a GitHub token"),
+            (
+                &[
+                    "xoxb-", "xoxa-", "xoxp-", "xoxr-", "xoxs-", "xoxe-", "xoxe.", "xapp-",
+                ][..],
+                8,
+                "Az09_.-",
+                '!',
+                "a Slack token",
+            ),
+            (&["AIza"][..], 35, "Az09_.-", '!', "a Google API key"),
+            (
+                &["sk_live_", "rk_live_"][..],
+                24,
+                "Az09",
+                '_',
+                "a Stripe live key",
+            ),
+            (&["sk-"][..], 48, "Az09", '_', "a model-provider key"),
+            (
+                &["sk-proj-", "sk-svcacct-", "sk-admin-", "sk-ant-"][..],
+                40,
+                "Az09_.-",
+                '!',
+                "a model-provider key",
+            ),
+            (
+                &["plp_", "plo_", "pld_"][..],
+                52,
+                "AZ27",
+                '8',
+                "a Proofline token",
+            ),
+        ];
+        for (prefixes, minimum, alphabet, invalid, label) in cases {
+            let body: String = alphabet.chars().cycle().take(minimum).collect();
+            let short: String = alphabet.chars().cycle().take(minimum - 1).collect();
+            for prefix in prefixes {
+                assert_eq!(
+                    secret_shape(&format!("{prefix}{body}")),
+                    Some(label),
+                    "minimum body for {prefix}"
+                );
+                assert_eq!(
+                    secret_shape(&format!("{prefix}{short}")),
+                    None,
+                    "short body for {prefix}"
+                );
+                assert_eq!(
+                    secret_shape(&format!("{prefix}{short}{invalid}")),
+                    None,
+                    "invalid final byte for {prefix}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn private_key_markers_refuse_both_edges_and_suffixes_but_accept_certificates() {
+        for edge in ["BEGIN", "END"] {
+            for kind in ["PRIVATE KEY", "PGP PRIVATE KEY BLOCK"] {
+                assert_eq!(
+                    secret_shape(&format!("-----{edge} {kind}-----")),
+                    Some("a private-key marker")
+                );
+            }
+        }
+        assert_eq!(secret_shape("-----BEGIN CERTIFICATE-----"), None);
+    }
+
+    #[test]
+    fn ordinary_text_has_no_secret_shape() {
+        assert_eq!(
+            secret_shape("ordinary source text without credentials"),
+            None
+        );
+    }
+}
