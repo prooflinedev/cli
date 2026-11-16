@@ -138,23 +138,20 @@ pub(crate) fn code_reaches(code: &CodeAssessment, threshold: Severity) -> bool {
         })
 }
 
-/// CODE has no World receipts or environment checks. Its recorded status and
-/// incompleteness are the only completion evidence for the code lane.
-pub(crate) fn code_gap(code: &CodeAssessment) -> Option<&str> {
-    if let Some(kind) = code
-        .incompleteness_kind
-        .as_deref()
-        .filter(|kind| !kind.is_empty())
-    {
-        return Some(kind);
+/// CODE has no World receipts or environment checks. Its recorded status,
+/// public reason codes and incompleteness are the only completion evidence for
+/// the code lane. Reason codes come first, as for an environment assessment.
+pub(crate) fn code_gap(code: &CodeAssessment) -> Option<Vec<String>> {
+    let mut reasons = code.reason_codes.clone().unwrap_or_default();
+    reasons.extend(
+        code.incompleteness_kind
+            .clone()
+            .filter(|kind| !kind.is_empty()),
+    );
+    if reasons.is_empty() && code.status != CodeAssessmentStatus::Completed {
+        reasons.push("CODE_ASSESSMENT_STATE_UNAVAILABLE".to_owned());
     }
-    match code.status {
-        CodeAssessmentStatus::Completed => None,
-        CodeAssessmentStatus::Pending
-        | CodeAssessmentStatus::Running
-        | CodeAssessmentStatus::Incomplete
-        | CodeAssessmentStatus::Excluded => Some("CODE_ASSESSMENT_STATE_UNAVAILABLE"),
-    }
+    (!reasons.is_empty()).then_some(reasons)
 }
 
 /// Why an assessment's result is incomplete, or `None` when it is complete.
@@ -251,8 +248,8 @@ mod tests {
             }
             if review.assessment_count == 0 && review.assessments.is_empty() {
                 if let Some(code) = code_assessment(&review) {
-                    if let Some(reason) = code_gap(code) {
-                        gaps.push(json!({"assessment_id": code.id, "reason_codes": [reason]}));
+                    if let Some(reasons) = code_gap(code) {
+                        gaps.push(json!({"assessment_id": code.id, "reason_codes": reasons}));
                     }
                 } else {
                     gaps.push(json!({"assessment_id": null, "reason_codes": ["CODE_ASSESSMENT_UNAVAILABLE"]}));

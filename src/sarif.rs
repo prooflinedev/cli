@@ -348,10 +348,7 @@ pub(super) fn review<'a>(
                 &head,
             )?);
         }
-        let reasons: Vec<String> = outcome::code_gap(code)
-            .map(str::to_owned)
-            .into_iter()
-            .collect();
+        let reasons = outcome::code_gap(code).unwrap_or_default();
         for reason in &reasons {
             notifications.push(Notification {
                 level: Level::Error,

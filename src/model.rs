@@ -150,6 +150,8 @@ pub struct CodeAssessment {
     pub head_commit_sha: String,
     pub findings: Vec<Finding>,
     pub incompleteness_kind: Option<String>,
+    /// Public causes of an incomplete result, such as `OUT_OF_CREDITS`.
+    pub reason_codes: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]

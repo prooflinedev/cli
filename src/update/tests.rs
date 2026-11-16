@@ -181,15 +181,15 @@ fn notices_are_suppressed_for_machine_and_hook_commands() {
     for args in [
         vec!["hook", "run", "pre-commit"],
         vec!["hooks", "install"],
-        vec!["hooks", "uninstall"],
         vec!["review", "--json"],
-        vec!["review", "--schema"],
         vec!["findings", "--sarif"],
-        vec!["mcp"],
         vec!["ci", "review"],
-    ] {
+    ]
+    .into_iter()
+    .chain(QUIET_ARGUMENTS.map(|argument| vec!["status", argument]))
+    {
         let args: Vec<_> = args.into_iter().map(std::ffi::OsString::from).collect();
-        assert!(suggestion(&cache, &args, true).is_none());
+        assert!(suggestion(&cache, &args, true).is_none(), "{args:?}");
     }
     assert!(suggestion(&cache, &["status".into()], false).is_none());
     assert!(suggestion(&cache, &["status".into()], true).is_some());

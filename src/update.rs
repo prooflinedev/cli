@@ -105,35 +105,37 @@ pub fn on_invocation() {
     }
 }
 
+/// Arguments whose commands print for a script, Git or a long-running
+/// session, so an update notice there would corrupt what they read.
+const QUIET_ARGUMENTS: [&str; 20] = [
+    "reviews",
+    "routing",
+    "run",
+    "session",
+    "wiki",
+    "ask",
+    "architecture",
+    "plan",
+    "setup",
+    "history",
+    "guidance",
+    "fix-prompt",
+    "export",
+    "--json",
+    "--schema",
+    "--sarif",
+    "mcp",
+    "ci",
+    "hook",
+    "hooks",
+];
+
 fn suggestion(cache: &Cache, args: &[std::ffi::OsString], interactive: bool) -> Option<String> {
-    if !interactive
-        || args.iter().any(|arg| {
-            matches!(
-                arg.to_str(),
-                Some(
-                    "reviews"
-                        | "routing"
-                        | "run"
-                        | "session"
-                        | "wiki"
-                        | "ask"
-                        | "architecture"
-                        | "plan"
-                        | "setup"
-                )
-            ) || arg == "history"
-                || arg == "guidance"
-                || arg == "fix-prompt"
-                || arg == "export"
-                || arg == "--json"
-                || arg == "--schema"
-                || arg == "--sarif"
-                || arg == "mcp"
-                || arg == "ci"
-                || arg == "hook"
-                || arg == "hooks"
-        })
-    {
+    let quiet = args.iter().any(|arg| {
+        arg.to_str()
+            .is_some_and(|arg| QUIET_ARGUMENTS.contains(&arg))
+    });
+    if !interactive || quiet {
         return None;
     }
     cache
