@@ -7305,9 +7305,11 @@
             "style": "form"
           },
           {
+            "description": "`mine` for the caller's own pull requests, or a GitHub user ID. `mine`\n needs a person's sign-in or token.",
             "in": "query",
             "name": "author",
             "schema": {
+              "description": "`mine` for the caller's own pull requests, or a GitHub user ID. `mine`\n needs a person's sign-in or token.",
               "type": [
                 "string",
                 "null"
@@ -7339,9 +7341,11 @@
             "style": "form"
           },
           {
+            "description": "`present` lists reviews with at least one finding; `none` lists reviews\n with no finding.",
             "in": "query",
             "name": "findings",
             "schema": {
+              "description": "`present` lists reviews with at least one finding; `none` lists reviews\n with no finding.",
               "type": [
                 "string",
                 "null"
@@ -7350,9 +7354,11 @@
             "style": "form"
           },
           {
+            "description": "One review kind: `PULL_REQUEST`, `DEPLOYMENT`, `PATCH`, `COMMIT`,\n `FILES`, `MERGE_GROUP` or `REVISION_SCAN`.",
             "in": "query",
             "name": "kind",
             "schema": {
+              "description": "One review kind: `PULL_REQUEST`, `DEPLOYMENT`, `PATCH`, `COMMIT`,\n `FILES`, `MERGE_GROUP` or `REVISION_SCAN`.",
               "type": [
                 "string",
                 "null"
@@ -7409,9 +7415,11 @@
             "style": "form"
           },
           {
+            "description": "One review status: `PENDING`, `RUNNING`, `COMPLETED`, `INCOMPLETE`,\n `FAILED`, `SUPERSEDED`, `STOPPED` or `EXCLUDED`.",
             "in": "query",
             "name": "status",
             "schema": {
+              "description": "One review status: `PENDING`, `RUNNING`, `COMPLETED`, `INCOMPLETE`,\n `FAILED`, `SUPERSEDED`, `STOPPED` or `EXCLUDED`.",
               "type": [
                 "string",
                 "null"
@@ -7569,9 +7577,11 @@
             "style": "form"
           },
           {
+            "description": "`mine` for the caller's own pull requests, or a GitHub user ID. `mine`\n needs a person's sign-in or token.",
             "in": "query",
             "name": "author",
             "schema": {
+              "description": "`mine` for the caller's own pull requests, or a GitHub user ID. `mine`\n needs a person's sign-in or token.",
               "type": [
                 "string",
                 "null"
@@ -7603,9 +7613,11 @@
             "style": "form"
           },
           {
+            "description": "`present` lists reviews with at least one finding; `none` lists reviews\n with no finding.",
             "in": "query",
             "name": "findings",
             "schema": {
+              "description": "`present` lists reviews with at least one finding; `none` lists reviews\n with no finding.",
               "type": [
                 "string",
                 "null"
@@ -7614,9 +7626,11 @@
             "style": "form"
           },
           {
+            "description": "One review kind: `PULL_REQUEST`, `DEPLOYMENT`, `PATCH`, `COMMIT`,\n `FILES`, `MERGE_GROUP` or `REVISION_SCAN`.",
             "in": "query",
             "name": "kind",
             "schema": {
+              "description": "One review kind: `PULL_REQUEST`, `DEPLOYMENT`, `PATCH`, `COMMIT`,\n `FILES`, `MERGE_GROUP` or `REVISION_SCAN`.",
               "type": [
                 "string",
                 "null"
@@ -7673,9 +7687,11 @@
             "style": "form"
           },
           {
+            "description": "One review status: `PENDING`, `RUNNING`, `COMPLETED`, `INCOMPLETE`,\n `FAILED`, `SUPERSEDED`, `STOPPED` or `EXCLUDED`.",
             "in": "query",
             "name": "status",
             "schema": {
+              "description": "One review status: `PENDING`, `RUNNING`, `COMPLETED`, `INCOMPLETE`,\n `FAILED`, `SUPERSEDED`, `STOPPED` or `EXCLUDED`.",
               "type": [
                 "string",
                 "null"

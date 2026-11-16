@@ -1781,6 +1781,50 @@
       ]
     },
     {
+      "name": "code-completed-with-reason",
+      "review": {
+        "id": "00000000-0000-7000-8000-000000000002",
+        "public_key": "review-outcome-example",
+        "kind": "PULL_REQUEST",
+        "status": "COMPLETED",
+        "assessment_count": 0,
+        "environment_display_names": [],
+        "finding_count": 0,
+        "trigger_origin": "MANUAL",
+        "publication": "WITHHELD",
+        "created_at": "2026-01-01T00:00:00Z",
+        "stoppable": false,
+        "related_reviews": [],
+        "subjects": [],
+        "assessments": [],
+        "actions": {
+          "promote_findings": false,
+          "rerun": false,
+          "publish": false,
+          "stop": false,
+          "validate_findings": false
+        },
+        "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "code_assessment": {
+          "id": "00000000-0000-7000-8000-000000000005",
+          "status": "COMPLETED",
+          "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "base_commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "findings": [],
+          "incompleteness_kind": null,
+          "reason_codes": ["OUT_OF_CREDITS"]
+        }
+      },
+      "outcome": "INCOMPLETE",
+      "gaps": [
+        {
+          "assessment_id": "00000000-0000-7000-8000-000000000005",
+          "reason_codes": ["OUT_OF_CREDITS"]
+        }
+      ]
+    },
+    {
       "name": "code-evidence-gap",
       "review": {
         "id": "00000000-0000-7000-8000-000000000002",
