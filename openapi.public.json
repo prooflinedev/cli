@@ -2873,7 +2873,7 @@
             "description": "The dimension that defines this row's group."
           },
           "key": {
-            "description": "The grouping value: a repository or environment ID, a risk domain, a severity or a\n review kind, as `group_by` selects.",
+            "description": "The grouping value: a repository or environment ID, a risk domain, a severity or a\n review kind, as `group_by` selects. Grouped by environment, code-lane findings, which\n belong to no environment, share the key `code_review`.",
             "type": "string"
           },
           "limitations": {
@@ -2884,7 +2884,7 @@
             "type": "array"
           },
           "name": {
-            "description": "The group's display name: the repository's full name (or `Repository` and its ID when\n no name is recorded), the environment's display name, or otherwise `key`.",
+            "description": "The group's display name: the repository's full name (or `Repository` and its ID when\n no name is recorded), the environment's display name (`Code review` for the code-lane\n group), or otherwise `key`.",
             "type": "string"
           },
           "organization_id": {
