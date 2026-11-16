@@ -3042,13 +3042,7 @@ async fn ci_review_summary_writes_markdown_report_or_uses_github_step_summary() 
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_proofline"));
     command
         .args(["--base-url", &origin, "--org", ORG, "ci", "review"])
-        .args([
-            "--repo",
-            "acme/app",
-            "--timeout",
-            "0",
-            "--json",
-        ])
+        .args(["--repo", "acme/app", "--timeout", "0", "--json"])
         .env("PROOFLINE_TOKEN", TOKEN)
         .env("COMMIT_SHA", CI_HEAD)
         .env("GITHUB_STEP_SUMMARY", &auto_summary)
@@ -3132,14 +3126,7 @@ async fn ci_review_summary_writes_markdown_report_or_uses_github_step_summary() 
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_proofline"));
     command
         .args(["--base-url", &origin, "--org", ORG, "ci", "review"])
-        .args([
-            "--repo",
-            "acme/app",
-            "--timeout",
-            "0",
-            "--summary",
-            "-",
-        ])
+        .args(["--repo", "acme/app", "--timeout", "0", "--summary", "-"])
         .env("PROOFLINE_TOKEN", TOKEN)
         .env("COMMIT_SHA", CI_HEAD)
         .env_remove("GITHUB_STEP_SUMMARY")

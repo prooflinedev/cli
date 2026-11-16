@@ -182,7 +182,7 @@ struct CiReviewArgs {
     /// Explicit file path to write the Markdown job summary to. Pass `-` for stdout.
     #[arg(long, value_name = "FILE")]
     summary_file: Option<PathBuf>,
-    /// Disable writing a job summary, even if GITHUB_STEP_SUMMARY is set.
+    /// Disable writing a job summary, even if `GITHUB_STEP_SUMMARY` is set.
     #[arg(long)]
     no_summary: bool,
     /// Print JSON instead of text.
@@ -1209,22 +1209,20 @@ fn resolve_summary_destination(
         return Ok(Some(destination_from_path(path)));
     }
     if let Some(arg) = summary {
-        return match arg {
-            Some(path) => Ok(Some(destination_from_path(path))),
-            None => {
-                let env_path = std::env::var_os("GITHUB_STEP_SUMMARY").ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "--summary was passed without a file, and GITHUB_STEP_SUMMARY is not set in the environment"
-                    )
-                })?;
-                Ok(Some(destination_from_path(std::path::Path::new(&env_path))))
-            }
+        let destination = if let Some(path) = arg {
+            destination_from_path(path)
+        } else {
+            let env_path = std::env::var_os("GITHUB_STEP_SUMMARY").ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--summary was passed without a file, and GITHUB_STEP_SUMMARY is not set in the environment"
+                )
+            })?;
+            destination_from_path(std::path::Path::new(&env_path))
         };
+        return Ok(Some(destination));
     }
-    if let Some(env_path) = std::env::var_os("GITHUB_STEP_SUMMARY") {
-        if !env_path.is_empty() {
-            return Ok(Some(destination_from_path(std::path::Path::new(&env_path))));
-        }
+    if let Some(env_path) = std::env::var_os("GITHUB_STEP_SUMMARY").filter(|p| !p.is_empty()) {
+        return Ok(Some(destination_from_path(std::path::Path::new(&env_path))));
     }
     Ok(None)
 }

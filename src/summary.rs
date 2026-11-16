@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::model::{Finding, ReviewDetail};
 use crate::outcome::{self, Outcome};
@@ -32,10 +32,8 @@ pub(crate) async fn write(
             tokio::io::AsyncWriteExt::flush(&mut stdout).await?;
         }
         SummaryDestination::File(path) => {
-            if let Some(parent) = path.parent() {
-                if !parent.as_os_str().is_empty() {
-                    tokio::fs::create_dir_all(parent).await?;
-                }
+            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                tokio::fs::create_dir_all(parent).await?;
             }
             let mut file = tokio::fs::OpenOptions::new()
                 .create(true)
@@ -104,7 +102,7 @@ pub(crate) fn render(detail: &ReviewDetail, review_url: &str) -> String {
     out
 }
 
-fn collect_open_findings<'a>(detail: &'a ReviewDetail) -> Vec<(&'a str, &'a Finding)> {
+fn collect_open_findings(detail: &ReviewDetail) -> Vec<(&str, &Finding)> {
     let mut findings = Vec::new();
     if let Some(code) = outcome::code_assessment(detail) {
         for item in &code.findings {
@@ -166,10 +164,8 @@ fn files_inspected_count(detail: &ReviewDetail, open_findings: &[(&str, &Finding
         .and_then(|subject| subject.file_scope.as_ref())
         .map(|scope| scope.paths.len());
 
-    if let Some(count) = scope_files {
-        if count > 0 {
-            return count;
-        }
+    if let Some(count) = scope_files.filter(|&c| c > 0) {
+        return count;
     }
 
     let mut cited_files = BTreeSet::new();
@@ -191,8 +187,10 @@ fn render_assessments(out: &mut String, detail: &ReviewDetail) {
     if let Some(code) = outcome::code_assessment(detail) {
         let status = code.status.as_str();
         let open_count = code.findings.iter().filter(|f| !is_resolved(f)).count();
-        let status_desc = outcome::code_gap(code)
-            .map_or_else(|| status.to_owned(), |gap| format!("{status} ({gap})"));
+        let status_desc = outcome::code_gap(code).map_or_else(
+            || status.to_owned(),
+            |gaps| format!("{status} ({})", gaps.join(", ")),
+        );
         let _ = writeln!(
             out,
             "| Code | {} | {} |",
@@ -288,12 +286,18 @@ fn render_findings(out: &mut String, open_findings: &[(&str, &Finding)]) {
         let _ = writeln!(out, "- **Risk Domain:** `{domain}`");
         let _ = writeln!(out, "- **Location:** {loc_str}");
         if !finding.impact.is_empty() {
-            let _ = writeln!(out, "- **Impact:** {}", escape_cell(&one_line(&finding.impact)));
+            let _ = writeln!(
+                out,
+                "- **Impact:** {}",
+                escape_cell(&one_line(&finding.impact))
+            );
         }
-        if let Some(remediation) = &finding.remediation {
-            if !remediation.is_empty() {
-                let _ = writeln!(out, "- **Remediation:** {}", escape_cell(&one_line(remediation)));
-            }
+        if let Some(remediation) = finding.remediation.as_deref().filter(|r| !r.is_empty()) {
+            let _ = writeln!(
+                out,
+                "- **Remediation:** {}",
+                escape_cell(&one_line(remediation))
+            );
         }
         let _ = writeln!(out);
     }
@@ -313,11 +317,43 @@ fn severity_badge(severity_str: &str) -> String {
     }
 }
 
+fn strip_ansi(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                while let Some(&c) = chars.peek() {
+                    chars.next();
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            } else if chars.peek() == Some(&']') {
+                chars.next();
+                while let Some(&c) = chars.peek() {
+                    chars.next();
+                    if c == '\x07' {
+                        break;
+                    }
+                    if c == '\x1b' && chars.peek() == Some(&'\\') {
+                        chars.next();
+                        break;
+                    }
+                }
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 pub(crate) fn escape_cell(value: &str) -> String {
-    terminal_safe(value)
-        .replace('|', "\\|")
-        .replace('\n', " ")
-        .replace('\r', "")
+    let stripped = strip_ansi(value);
+    let normalized = stripped.replace('\r', "").replace('\n', " ");
+    terminal_safe(&normalized).replace('|', "\\|")
 }
 
 #[cfg(test)]
