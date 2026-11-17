@@ -32,6 +32,7 @@ const OPERATIONS: &[(&str, &str, &[&str])] = &[
     ("post", "request_file_review", &["repo_id"]),
     ("post", "request_patch_review", &["repo_id"]),
     ("post", "request_review", &["repo_id", "number"]),
+    ("post", "request_scan", &["repo_id"]),
     ("post", "rerun_review", &["review_id"]),
     ("post", "start_agent_session", &["finding_id"]),
     ("post", "stop_review", &["review_id"]),
