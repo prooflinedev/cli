@@ -1698,6 +1698,7 @@ mod tests {
         let args = CiReviewArgs {
             commit: None,
             sarif: None,
+            annotations: false,
             json: false,
             timeout: 3,
             fail_on: None,
