@@ -4,6 +4,7 @@
 
 mod agent;
 pub mod api;
+mod config;
 mod coverage;
 pub mod credentials;
 pub mod device;
@@ -18,6 +19,7 @@ mod preflight;
 pub mod render;
 mod result;
 mod sarif;
+mod scan;
 mod severity;
 pub mod text;
 mod tls;
@@ -65,12 +67,13 @@ pub struct Cli {
     base_url: String,
 
     /// Organization ID. Required for a token from the environment; a browser sign-in
-    /// already names its organization. MCP uses the token's server-side tenant;
-    /// an environment organization ID is local metadata, not a tenant assertion.
+    /// already names its organization. Native knowledge, fix and config commands
+    /// send this target per MCP call; the server authorizes it. The raw mcp bridge
+    /// preserves the caller's per-call target.
     #[arg(long, global = true, env = "PROOFLINE_ORGANIZATION_ID")]
     org: Option<Uuid>,
 
-    /// PEM file of extra root certificates to trust beside the bundled public
+    /// PEM file of extra root certificates to trust beside the existing
     /// roots, such as the root of a TLS-inspecting corporate proxy.
     #[arg(long, global = true, env = "PROOFLINE_CA_CERT", value_name = "FILE")]
     ca_cert: Option<PathBuf>,
@@ -81,6 +84,9 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Read, propose and apply configuration through the hosted tools.
+    #[command(subcommand)]
+    Config(config::Command),
     /// Read fix context and verify fixes at an explicitly pushed commit.
     #[command(subcommand)]
     Fix(fixes::FixCommand),
@@ -113,6 +119,8 @@ enum Command {
     },
     /// Rerun the original immutable review subject.
     Rerun(tools::RerunArgs),
+    /// Scan the whole repository at one ref or commit, within a credit budget.
+    Scan(scan::ScanArgs),
     /// List the recorded runs of a pull request.
     History(tools::HistoryArgs),
     /// Read the repository review guidance as JSON.
@@ -404,6 +412,7 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
             }
             Ok(Verdict::Done)
         }
+        Command::Config(command) => config::run(origin, token, cli.org, command).await,
         Command::Fix(command) => knowledge::run(origin, token, cli.org, command.request()?).await,
         Command::Wiki(command) => knowledge::run(origin, token, cli.org, command.request()?).await,
         Command::Ask(args) => knowledge::run(origin, token, cli.org, args.request()?).await,
@@ -434,22 +443,19 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
         Command::Routing { review_id } => {
             let api = connect(Http::new(origin)?, token, cli.org).await?;
             tools::json(
-                &api.tool_get(&["reviews", &review_id.to_string(), "routing"])
+                &api.get(api.url_get_review_routing(&review_id.to_string()))
                     .await?,
             )
         }
         Command::Run(args) => {
             let api = connect(Http::new(origin)?, token, cli.org).await?;
-            let name = repository_name(&args.repository).await?;
+            let (full_name, _) = reviewed_repository(&api, &args.repository).await?;
             tools::json(
-                &api.tool_get(&[
-                    "reviews",
-                    "pr",
-                    &name,
+                &api.get(api.url_get_pull_request_review(
+                    route_name(&full_name),
                     &args.pr.to_string(),
-                    "runs",
                     &args.run.to_string(),
-                ])
+                ))
                 .await?,
             )
         }
@@ -489,10 +495,15 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
             let api = connect(Http::new(origin)?, token, cli.org).await?;
             tools::rerun(&api, &args).await
         }
+        Command::Scan(args) => {
+            let request = scan::request(&args)?;
+            let api = connect(Http::new(origin)?, token, cli.org).await?;
+            scan::run(&api, &args, &request).await
+        }
         Command::History(args) => {
             let api = connect(Http::new(origin)?, token, cli.org).await?;
-            let name = repository_name(&args.repository).await?;
-            tools::json(&api.history(&name, args.pr).await?)
+            let (full_name, _) = reviewed_repository(&api, &args.repository).await?;
+            tools::json(&api.history(route_name(&full_name), args.pr).await?)
         }
         Command::Guidance(args) => {
             let api = connect(Http::new(origin)?, token, cli.org).await?;
@@ -680,17 +691,18 @@ async fn repository_name(args: &RepositoryArgs) -> anyhow::Result<String> {
     }
 }
 
-/// The one ID among `candidates` whose name is `name`, ignoring case. A name
-/// shared by two IDs is refused rather than guessed.
+/// The one candidate whose name is `name`, ignoring case, with the name as
+/// the server spells it. A name shared by two IDs is refused rather than
+/// guessed.
 fn unique(
     api: &Api,
     name: &str,
     candidates: impl Iterator<Item = (Uuid, String)>,
     absent: impl FnOnce() -> anyhow::Error,
-) -> anyhow::Result<Uuid> {
+) -> anyhow::Result<(Uuid, String)> {
     let mut found = candidates.filter(|(_, candidate)| candidate.eq_ignore_ascii_case(name));
     match (found.next(), found.next()) {
-        (Some((id, _)), None) => Ok(id),
+        (Some(choice), None) => Ok(choice),
         (None, _) => Err(absent()),
         (Some(_), Some(_)) => bail!(
             "{} lists more than one repository named {name}, so the CLI cannot tell which one to use",
@@ -707,7 +719,7 @@ async fn connected_repository(api: &Api, args: &RepositoryArgs) -> anyhow::Resul
         .repositories
         .into_iter()
         .map(|repository| (repository.id, repository.full_name));
-    let id = unique(api, &name, candidates, || {
+    let (id, _) = unique(api, &name, candidates, || {
         anyhow::anyhow!(
             "{name} is not a repository in organization {} that this token can read; check the repository name and the token's repositories",
             api.organization_id()
@@ -716,9 +728,10 @@ async fn connected_repository(api: &Api, args: &RepositoryArgs) -> anyhow::Resul
     Ok((name, id))
 }
 
-/// A repository with reviews the token can read, for finding one of them. A
-/// repository that has since left the installation keeps its reviews, so this
-/// reads the review collection's repositories, not the connected ones.
+/// A repository with reviews the token can read, for finding one of them, as
+/// its full name and ID. A repository that has since left the installation
+/// keeps its reviews, so this reads the review collection's repositories, not
+/// the connected ones.
 async fn reviewed_repository(api: &Api, args: &RepositoryArgs) -> anyhow::Result<(String, Uuid)> {
     let name = repository_name(args).await?;
     let page = api.reviews(None, None, None).await?;
@@ -727,13 +740,22 @@ async fn reviewed_repository(api: &Api, args: &RepositoryArgs) -> anyhow::Result
         .repositories
         .into_iter()
         .map(|choice| (choice.id, choice.name));
-    let id = unique(api, &name, candidates, || {
+    let (id, full_name) = unique(api, &name, candidates, || {
         anyhow::anyhow!(
             "{name} has no reviews in organization {} that this token can read; check the repository name and the token's repositories",
             api.organization_id()
         )
     })?;
-    Ok((name, id))
+    Ok((full_name, id))
+}
+
+/// The `{repository}` segment of the pull-request review routes: the name
+/// without its owner. Callers pass a full name already matched against the
+/// organization's repositories, so the owner it drops is the organization's.
+fn route_name(full_name: &str) -> &str {
+    full_name
+        .rsplit_once('/')
+        .map_or(full_name, |(_, name)| name)
 }
 
 /// The newest review in `repository` that `matches`, searching with `search`.
@@ -986,7 +1008,9 @@ fn poll_deadline(minutes: u64) -> Result<tokio::time::Instant, PollTimeoutTooLar
 }
 
 /// Reads the review, polling until it finishes or `deadline` passes. Without
-/// a deadline it reads once.
+/// a deadline it reads once. Every read confirms the server's answer is of
+/// the review requested, not a cache or routing mix-up that would otherwise
+/// let a result for a different review decide this one's outcome.
 async fn read_review(
     api: &Api,
     review_id: Uuid,
@@ -996,6 +1020,7 @@ async fn read_review(
     let mut delay = FIRST_POLL_SECONDS;
     loop {
         let (raw, detail) = api.review(review_id).await?;
+        outcome::same_review(&detail, review_id)?;
         if sarif {
             sarif::validate_subject(&detail, review_id)?;
         }
@@ -1112,6 +1137,52 @@ async fn ci_job(
 /// it asks for one.
 const REQUEST_AFTER: Duration = Duration::from_secs(120);
 
+/// Confirms `detail` is actually the pull-request review of `commit` in
+/// `repository_id` before it is allowed to decide a CI verdict or produce a
+/// SARIF artifact. [`read_review`] already confirms `detail` is the review
+/// requested by id; a search match on `commit` against a summary row does
+/// not guarantee the detail fetched moments later, by that id, kept the same
+/// story, so the fields the search relied on are checked again here against
+/// the server's own account of the subject. The repository is compared by
+/// id, not `repository_full_name`: a GitHub rename changes the name but not
+/// the id, and comparing names would then refuse a review that is actually
+/// of the right repository. The id is checked only when the server names
+/// one, since it is absent on an old server or a review that names no
+/// repository.
+fn confirm_ci_subject(
+    detail: &ReviewDetail,
+    commit: &str,
+    repository_id: Uuid,
+) -> anyhow::Result<()> {
+    if detail.kind != "PULL_REQUEST" {
+        bail!(
+            "proofline asked for the pull-request review of {commit}, but the server returned a {} review",
+            text::one_line(&detail.kind)
+        );
+    }
+    if !detail
+        .head_commit_sha
+        .as_deref()
+        .is_some_and(|head| head.eq_ignore_ascii_case(commit))
+    {
+        bail!(
+            "proofline asked for the review of {commit}, but the server returned head commit {}",
+            detail
+                .head_commit_sha
+                .as_deref()
+                .map_or_else(|| "none".to_owned(), text::one_line)
+        );
+    }
+    if let Some(detail_repository) = detail.repository_id
+        && detail_repository != repository_id
+    {
+        bail!(
+            "proofline asked for a review in repository {repository_id}, but the server returned a review in repository {detail_repository}"
+        );
+    }
+    Ok(())
+}
+
 /// Waits for the review the App runs for the pull request whose head is
 /// `commit`, then reports it. With `request`, a job that has found no review
 /// after [`REQUEST_AFTER`] asks once for one and reports the review it gets;
@@ -1121,69 +1192,31 @@ async fn ci_review(
     api: &Api,
     args: &CiReviewArgs,
     commit: &str,
-    mut request: Option<&github_actions::ReviewRequest>,
+    request: Option<&github_actions::ReviewRequest>,
 ) -> anyhow::Result<Verdict> {
     let started = tokio::time::Instant::now();
     let deadline = poll_deadline(args.timeout)?;
     let (name, repository_id) = connected_repository(api, &args.repository).await?;
-    let mut delay = FIRST_POLL_SECONDS;
-    let review_id = loop {
-        let found = latest(api, repository_id, commit, |item| {
-            item.kind == "PULL_REQUEST" && item.head_commit_sha.as_deref() == Some(commit)
-        })
-        .await?;
-        if let Some(id) = found {
-            break id;
-        }
-        let now = tokio::time::Instant::now();
-        if now >= deadline {
-            say(&format!(
-                "No pull-request review of {name} has head commit {commit} after {} minutes. Proofline reviews a commit once it is the head of an open pull request.",
-                args.timeout
-            ));
-            return Ok(Verdict::Unavailable);
-        }
-        let request_at = started + REQUEST_AFTER;
-        if now >= request_at
-            && let Some(asking) = request.take()
-        {
-            match asking.send().await {
-                Ok(id) => {
-                    say(&format!(
-                        "No review of {name} at {commit} appeared, so this job requested one."
-                    ));
-                    break id;
-                }
-                Err(error) => say(&format!(
-                    "proofline: this job could not request a review: {error:#}"
-                )),
-            }
-        }
-        say(&format!(
-            "No review of {name} at {commit} yet; checking again in {delay} seconds."
-        ));
-        let wake = if request.is_some() {
-            deadline.min(request_at)
-        } else {
-            deadline
-        };
-        let pause = Duration::from_secs(delay).min(wake.saturating_duration_since(now));
-        tokio::time::sleep(pause).await;
-        delay = (delay * 2).min(LONGEST_POLL_SECONDS);
+    let Some(review_id) = wait_for_head_review(
+        api,
+        &name,
+        repository_id,
+        commit,
+        args.timeout,
+        started,
+        deadline,
+        request,
+    )
+    .await?
+    else {
+        return Ok(Verdict::Unavailable);
     };
     let sarif_path = args.sarif.as_deref();
     let (raw, detail, state) =
         read_review(api, review_id, Some(deadline), sarif_path.is_some()).await?;
+    confirm_ci_subject(&detail, commit, repository_id)?;
     if let Some(path) = sarif_path {
-        let document = sarif::review(
-            &detail,
-            review_id,
-            api.organization_id(),
-            api.review_url(review_id).as_str(),
-        )?;
-        tokio::fs::write(path, serde_json::to_vec_pretty(&document)?)
-            .await
-            .with_context(|| format!("could not write SARIF to {}", path.display()))?;
+        write_sarif(api, review_id, &detail, path).await?;
     }
     print_review(
         api,
@@ -1199,11 +1232,121 @@ async fn ci_review(
         outcome::code_assessment(&detail),
         args.fail_on,
     );
+    say_ci_ending(api, review_id, &detail, state, verdict, args.timeout);
+    Ok(verdict)
+}
+
+/// Polls for the newest `PULL_REQUEST` review whose head is `commit` until
+/// `deadline`, asking once through `request` from [`REQUEST_AFTER`] past
+/// `started`. `None` means no review appeared, which it has already said.
+async fn wait_for_head_review(
+    api: &Api,
+    name: &str,
+    repository_id: Uuid,
+    commit: &str,
+    timeout_minutes: u64,
+    started: tokio::time::Instant,
+    deadline: tokio::time::Instant,
+    mut request: Option<&github_actions::ReviewRequest>,
+) -> anyhow::Result<Option<Uuid>> {
+    let request_at = started + REQUEST_AFTER;
+    let mut delay = FIRST_POLL_SECONDS;
+    loop {
+        let found = latest(api, repository_id, commit, |item| {
+            item.kind == "PULL_REQUEST" && item.head_commit_sha.as_deref() == Some(commit)
+        })
+        .await?;
+        if found.is_some() {
+            return Ok(found);
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            say(&format!(
+                "No pull-request review of {name} has head commit {commit} after {timeout_minutes} minutes. Proofline reviews a commit once it is the head of an open pull request."
+            ));
+            return Ok(None);
+        }
+        if now >= request_at
+            && let Some(asking) = request.take()
+            && let Some(id) = ask_for_review(asking, name, commit).await
+        {
+            return Ok(Some(id));
+        }
+        say(&format!(
+            "No review of {name} at {commit} yet; checking again in {delay} seconds."
+        ));
+        let pending = request.is_some().then_some(request_at);
+        tokio::time::sleep(next_pause(delay, now, deadline, pending)).await;
+        delay = (delay * 2).min(LONGEST_POLL_SECONDS);
+    }
+}
+
+/// Sends the job's one review request and says what came of it.
+async fn ask_for_review(
+    asking: &github_actions::ReviewRequest,
+    name: &str,
+    commit: &str,
+) -> Option<Uuid> {
+    match asking.send().await {
+        Ok(id) => {
+            say(&format!(
+                "No review of {name} at {commit} appeared, so this job requested one."
+            ));
+            Some(id)
+        }
+        Err(error) => {
+            say(&format!(
+                "proofline: this job could not request a review: {error:#}"
+            ));
+            None
+        }
+    }
+}
+
+/// How long the head-review wait sleeps: `delay` seconds, cut short at
+/// `deadline` and, while a request is still pending, at `request_at`.
+fn next_pause(
+    delay: u64,
+    now: tokio::time::Instant,
+    deadline: tokio::time::Instant,
+    request_at: Option<tokio::time::Instant>,
+) -> Duration {
+    let wake = request_at.map_or(deadline, |at| deadline.min(at));
+    Duration::from_secs(delay).min(wake.saturating_duration_since(now))
+}
+
+/// Writes the review's SARIF document to `path`.
+async fn write_sarif(
+    api: &Api,
+    review_id: Uuid,
+    detail: &ReviewDetail,
+    path: &std::path::Path,
+) -> anyhow::Result<()> {
+    let document = sarif::review(
+        detail,
+        review_id,
+        api.organization_id(),
+        api.review_url(review_id).as_str(),
+    )?;
+    tokio::fs::write(path, serde_json::to_vec_pretty(&document)?)
+        .await
+        .with_context(|| format!("could not write SARIF to {}", path.display()))
+}
+
+/// The line `ci review` ends with: where a running review continues, why a
+/// complete review failed the job, or why the review has no complete result.
+fn say_ci_ending(
+    api: &Api,
+    review_id: Uuid,
+    detail: &ReviewDetail,
+    state: Option<Outcome>,
+    verdict: Verdict,
+    timeout_minutes: u64,
+) {
     match state {
         None => say(&format!(
-            "The review was still {} after {} minutes; it continues at {}",
+            "The review was still {} after {timeout_minutes} minutes; it continues at {}",
             text::one_line(&detail.status),
-            args.timeout,
             api.review_url(review_id)
         )),
         Some(Outcome::Completed) => match verdict {
@@ -1217,7 +1360,6 @@ async fn ci_review(
         },
         Some(ended) => say_not_complete(ended),
     }
-    Ok(verdict)
 }
 
 /// How `ci review` ends for a review read as `state`. Completeness decides
@@ -1304,6 +1446,7 @@ mod tests {
     use axum::extract::{RawQuery, Request};
     use axum::http::{HeaderMap, header};
     use axum::middleware::Next;
+    use axum::response::IntoResponse;
     use axum::routing::{get, post};
     use axum::{Json, Router};
     use serde_json::json;
@@ -1319,9 +1462,24 @@ mod tests {
     /// the test's clock, its bearer and its query.
     type Received = (String, Duration, String, String);
 
+    /// How the stand-in console answers a job's review request.
+    #[derive(Clone, Copy)]
+    enum Grant {
+        /// It starts the review, which is complete when read.
+        Completes,
+        /// It starts the review, which is still running whenever it is read.
+        StaysRunning,
+        /// It refuses the request.
+        Refused,
+    }
+
     /// A runner that issues numbered OIDC tokens and a console on which no
-    /// review of `HEAD` ever appears, except the one a job requests.
-    async fn console(start: tokio::time::Instant) -> (String, Arc<Mutex<Vec<Received>>>) {
+    /// review of `HEAD` ever appears, except the one a job requests, which
+    /// the console answers as `grant` says.
+    async fn console(
+        start: tokio::time::Instant,
+        grant: Grant,
+    ) -> (String, Arc<Mutex<Vec<Received>>>) {
         let issued = Arc::new(Mutex::new(0_u32));
         let app = Router::new()
             .route(
@@ -1351,13 +1509,21 @@ mod tests {
             )
             .route(
                 "/api/v1/ci/github-actions/review",
-                post(|| async {
+                post(move || async move {
+                    if matches!(grant, Grant::Refused) {
+                        return (
+                            axum::http::StatusCode::FORBIDDEN,
+                            Json(json!({ "detail": "automatic reviews are paused" })),
+                        )
+                            .into_response();
+                    }
                     Json(json!({
                         "review_id": REQUESTED,
                         "run_number": 1,
                         "existing": false,
                         "automatic_reviews_paused": false,
                     }))
+                    .into_response()
                 }),
             )
             .route(
@@ -1377,11 +1543,15 @@ mod tests {
             )
             .route(
                 &format!("/api/v1/organizations/{ORG}/reviews/{REQUESTED}"),
-                get(|| async {
+                get(move || async move {
+                    let status = match grant {
+                        Grant::StaysRunning => "RUNNING",
+                        Grant::Completes | Grant::Refused => "COMPLETED",
+                    };
                     Json(json!({
                         "id": REQUESTED,
                         "kind": "PULL_REQUEST",
-                        "status": "COMPLETED",
+                        "status": status,
                         "head_commit_sha": HEAD,
                         "pull_request_number": 12,
                         "run_number": 1,
@@ -1451,7 +1621,7 @@ mod tests {
         ] {
             let case = format!("token {stored_token}, {event}");
             let start = tokio::time::Instant::now();
-            let (origin, received) = console(start).await;
+            let (origin, received) = console(start, Grant::Completes).await;
             let http = Http::new(Origin::parse(&origin).unwrap()).unwrap();
             let issuer = github_actions::Issuer::new(
                 format!("{origin}/github/token").parse().unwrap(),
@@ -1505,6 +1675,95 @@ mod tests {
             }
         }
         ticker.abort();
+    }
+
+    /// Runs a `pull_request` job on its own identity with a three-minute
+    /// timeout against a console that answers its request as `grant` says,
+    /// on a paused clock.
+    async fn pull_request_job(grant: Grant) -> (Verdict, Vec<Received>) {
+        // As in the test above, a 10 ms ticker bounds each jump of the clock.
+        let ticker = tokio::spawn(async {
+            for _ in 0..1_000_000 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        });
+        let start = tokio::time::Instant::now();
+        let (origin, received) = console(start, grant).await;
+        let http = Http::new(Origin::parse(&origin).unwrap()).unwrap();
+        let issuer = github_actions::Issuer::new(
+            format!("{origin}/github/token").parse().unwrap(),
+            SecretString::from("runner-secret"),
+        );
+        let args = CiReviewArgs {
+            commit: None,
+            sarif: None,
+            json: false,
+            timeout: 3,
+            fail_on: None,
+            repository: RepositoryArgs {
+                repo: Some("acme/app".to_owned()),
+                remote: "origin".to_owned(),
+            },
+        };
+        let verdict = ci_job(http, None, Some(issuer), "pull_request", None, &args, HEAD)
+            .await
+            .unwrap();
+        ticker.abort();
+        let received = received.lock().unwrap().clone();
+        (verdict, received)
+    }
+
+    fn review_requests(received: &[Received]) -> usize {
+        received
+            .iter()
+            .filter(|(request, ..)| request == "POST /api/v1/ci/github-actions/review")
+            .count()
+    }
+
+    /// A refusal is reported and the job keeps waiting without asking again,
+    /// so it ends at its deadline with no review, which is never a pass.
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_request_is_asked_once_and_the_wait_runs_to_the_deadline() {
+        let (verdict, received) = pull_request_job(Grant::Refused).await;
+        assert_eq!(verdict, Verdict::Unavailable);
+        assert_eq!(review_requests(&received), 1, "{received:?}");
+        let last = received.iter().map(|(_, at, ..)| *at).max().unwrap();
+        assert!(last >= Duration::from_secs(180), "{last:?}");
+    }
+
+    /// The requested review is read until the deadline; a review that is
+    /// still running then has no result, which is never a pass.
+    #[tokio::test(start_paused = true)]
+    async fn a_review_still_running_at_the_deadline_is_unavailable() {
+        let (verdict, received) = pull_request_job(Grant::StaysRunning).await;
+        assert_eq!(verdict, Verdict::Unavailable);
+        assert_eq!(review_requests(&received), 1, "{received:?}");
+        let read = format!("GET /api/v1/organizations/{ORG}/reviews/{REQUESTED}");
+        let last_read = received
+            .iter()
+            .filter(|(request, ..)| *request == read)
+            .map(|(_, at, ..)| *at)
+            .max()
+            .unwrap();
+        assert!(last_read >= Duration::from_secs(180), "{last_read:?}");
+    }
+
+    #[test]
+    fn the_wait_wakes_for_a_pending_request_and_never_sleeps_past_the_deadline() {
+        let now = tokio::time::Instant::now();
+        let at = |seconds| now + Duration::from_secs(seconds);
+        let seconds = Duration::from_secs;
+        // The delay, when the deadline and the request time are both later.
+        assert_eq!(next_pause(20, now, at(100), Some(at(50))), seconds(20));
+        // The request time, when it is sooner than the delay.
+        assert_eq!(next_pause(20, now, at(100), Some(at(5))), seconds(5));
+        // The deadline, when it is sooner than the delay and the request time.
+        assert_eq!(next_pause(20, now, at(3), Some(at(5))), seconds(3));
+        // With no request pending, only the deadline cuts the delay short.
+        assert_eq!(next_pause(20, now, at(100), None), seconds(20));
+        assert_eq!(next_pause(20, now, at(10), None), seconds(10));
+        // A deadline already passed allows no sleep.
+        assert_eq!(next_pause(20, at(10), at(3), None), Duration::ZERO);
     }
 
     #[test]

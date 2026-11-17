@@ -1,9 +1,9 @@
 //! Extra root certificates the CLI trusts beside its bundled public roots.
 //!
 //! A TLS-inspecting proxy re-signs every connection with a private root that
-//! the bundled roots do not contain. `--ca-cert` (or `PROOFLINE_CA_CERT`) names
+//! the system roots do not contain. `--ca-cert` (or `PROOFLINE_CA_CERT`) names
 //! a PEM file whose certificates are added to, never substituted for, the
-//! bundled roots; certificate and hostname verification stay on.
+//! existing roots; certificate and hostname verification stay on.
 
 use std::path::Path;
 use std::sync::OnceLock;
@@ -51,12 +51,7 @@ pub fn trust(path: &Path) -> Result<(), CaCertError> {
 
 /// Adds the trusted extra roots, if any, to `builder`.
 pub fn apply(builder: ClientBuilder) -> ClientBuilder {
-    EXTRA_ROOTS
-        .get()
-        .into_iter()
-        .flatten()
-        .cloned()
-        .fold(builder, ClientBuilder::add_root_certificate)
+    builder.tls_certs_merge(EXTRA_ROOTS.get().into_iter().flatten().cloned())
 }
 
 #[cfg(test)]
@@ -72,10 +67,7 @@ mod tests {
 
     #[test]
     fn a_built_client_accepts_the_root() {
-        let builder = read(FIXTURE.as_ref()).unwrap().into_iter().fold(
-            reqwest::Client::builder(),
-            reqwest::ClientBuilder::add_root_certificate,
-        );
+        let builder = crate::api::client_builder().tls_certs_merge(read(FIXTURE.as_ref()).unwrap());
         assert!(builder.build().is_ok());
     }
 

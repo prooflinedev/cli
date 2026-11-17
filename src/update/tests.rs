@@ -124,8 +124,9 @@ async fn discovery_rejects_bad_bounded_and_offline_responses() {
         .await
         .unwrap();
     });
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_millis(50))
+    let http = crate::api::client_builder()
+        // Successful local requests still need scheduling time on a busy CI worker.
+        .timeout(Duration::from_secs(2))
         .build()
         .unwrap();
     assert_eq!(
@@ -134,13 +135,25 @@ async fn discovery_rejects_bad_bounded_and_offline_responses() {
             .unwrap(),
         "10.2.0"
     );
-    for path in ["invalid", "large", "slow", "missing"] {
+    for path in ["invalid", "large", "missing"] {
         assert!(
             latest_from(&http, &format!("{address}/{path}"))
                 .await
                 .is_err()
         );
     }
+    let short_deadline = crate::api::client_builder()
+        .timeout(Duration::from_millis(50))
+        .build()
+        .unwrap();
+    let timeout = latest_from(&short_deadline, &format!("{address}/slow"))
+        .await
+        .unwrap_err();
+    assert!(
+        timeout
+            .downcast_ref::<reqwest::Error>()
+            .is_some_and(reqwest::Error::is_timeout)
+    );
     // Production clients refuse HTTP before a release request can leave the process.
     assert!(
         latest_from(
@@ -168,15 +181,15 @@ fn notices_are_suppressed_for_machine_and_hook_commands() {
     for args in [
         vec!["hook", "run", "pre-commit"],
         vec!["hooks", "install"],
-        vec!["hooks", "uninstall"],
         vec!["review", "--json"],
-        vec!["review", "--schema"],
         vec!["findings", "--sarif"],
-        vec!["mcp"],
         vec!["ci", "review"],
-    ] {
+    ]
+    .into_iter()
+    .chain(QUIET_ARGUMENTS.map(|argument| vec!["status", argument]))
+    {
         let args: Vec<_> = args.into_iter().map(std::ffi::OsString::from).collect();
-        assert!(suggestion(&cache, &args, true).is_none());
+        assert!(suggestion(&cache, &args, true).is_none(), "{args:?}");
     }
     assert!(suggestion(&cache, &["status".into()], false).is_none());
     assert!(suggestion(&cache, &["status".into()], true).is_some());
@@ -202,7 +215,7 @@ async fn detached_discovery_is_serialized_and_notices_arrive_on_the_next_invocat
         if mode == "worker" {
             assert!(std::env::var_os("PROOFLINE_TOKEN").is_none());
             assert!(std::env::var_os("AWS_SECRET_ACCESS_KEY").is_none());
-            let http = reqwest::Client::builder()
+            let http = crate::api::client_builder()
                 .timeout(Duration::from_secs(10))
                 .build()
                 .unwrap();
@@ -314,4 +327,48 @@ async fn detached_discovery_is_serialized_and_notices_arrive_on_the_next_invocat
     assert_eq!(received.load(Ordering::SeqCst), 1);
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
+}
+
+/// `current_exe` is not canonical on every platform (macOS reports the path
+/// the binary was started through), so an installer directory reached through
+/// a symbolic link is still the installer directory.
+#[cfg(unix)]
+#[test]
+fn installer_directory_reached_through_a_symlink() {
+    let root = tempfile::tempdir().unwrap();
+    let real = root.path().join("real-bin");
+    fs::create_dir_all(&real).unwrap();
+    fs::write(real.join("proofline"), b"binary").unwrap();
+    let linked = root.path().join("linked-bin");
+    std::os::unix::fs::symlink(&real, &linked).unwrap();
+
+    let expected = fs::canonicalize(real.join("proofline")).unwrap();
+    assert_eq!(
+        install_path(&linked.join("proofline"), &linked).unwrap(),
+        expected
+    );
+    assert_eq!(install_path(&expected, &linked).unwrap(), expected);
+}
+
+/// A package manager's symbolic link in the installer directory is reported
+/// as such, whichever path `current_exe` gives for it: the link on macOS, its
+/// target on Linux.
+#[cfg(unix)]
+#[test]
+fn installed_symlink_is_reported_as_a_symlink() {
+    let root = tempfile::tempdir().unwrap();
+    let store = root.path().join("store");
+    fs::create_dir_all(&store).unwrap();
+    fs::write(store.join("proofline"), b"binary").unwrap();
+    let bin = root.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink(store.join("proofline"), bin.join("proofline")).unwrap();
+
+    for executable in [
+        bin.join("proofline"),
+        fs::canonicalize(store.join("proofline")).unwrap(),
+    ] {
+        let error = install_path(&executable, &bin).unwrap_err().to_string();
+        assert!(error.contains("symbolic link"), "{executable:?}: {error}");
+    }
 }

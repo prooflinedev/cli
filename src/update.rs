@@ -105,35 +105,37 @@ pub fn on_invocation() {
     }
 }
 
+/// Arguments whose commands print for a script, Git or a long-running
+/// session, so an update notice there would corrupt what they read.
+const QUIET_ARGUMENTS: [&str; 20] = [
+    "reviews",
+    "routing",
+    "run",
+    "session",
+    "wiki",
+    "ask",
+    "architecture",
+    "plan",
+    "setup",
+    "history",
+    "guidance",
+    "fix-prompt",
+    "export",
+    "--json",
+    "--schema",
+    "--sarif",
+    "mcp",
+    "ci",
+    "hook",
+    "hooks",
+];
+
 fn suggestion(cache: &Cache, args: &[std::ffi::OsString], interactive: bool) -> Option<String> {
-    if !interactive
-        || args.iter().any(|arg| {
-            matches!(
-                arg.to_str(),
-                Some(
-                    "reviews"
-                        | "routing"
-                        | "run"
-                        | "session"
-                        | "wiki"
-                        | "ask"
-                        | "architecture"
-                        | "plan"
-                        | "setup"
-                )
-            ) || arg == "history"
-                || arg == "guidance"
-                || arg == "fix-prompt"
-                || arg == "export"
-                || arg == "--json"
-                || arg == "--schema"
-                || arg == "--sarif"
-                || arg == "mcp"
-                || arg == "ci"
-                || arg == "hook"
-                || arg == "hooks"
-        })
-    {
+    let quiet = args.iter().any(|arg| {
+        arg.to_str()
+            .is_some_and(|arg| QUIET_ARGUMENTS.contains(&arg))
+    });
+    if !interactive || quiet {
         return None;
     }
     cache
@@ -226,7 +228,7 @@ fn spawn_check(mut command: Command) -> anyhow::Result<()> {
 }
 
 fn client(timeout: Duration) -> anyhow::Result<reqwest::Client> {
-    Ok(crate::tls::apply(reqwest::Client::builder())
+    Ok(crate::api::client_builder()
         .https_only(true)
         .redirect(reqwest::redirect::Policy::none())
         .timeout(timeout)
@@ -298,14 +300,18 @@ async fn refresh(client: &reqwest::Client, address: &str, path: PathBuf) -> anyh
 
 fn install_path(executable: &Path, directory: &Path) -> anyhow::Result<PathBuf> {
     let expected = fs::canonicalize(directory)?.join("proofline");
-    if executable != expected {
+    // Checked first: on Linux `current_exe` already names the link's target,
+    // so the comparison below would hide why the update is refused.
+    if fs::symlink_metadata(&expected).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        bail!("the installed binary is a symbolic link; update it through its package manager");
+    }
+    // `current_exe` is not canonical on every platform (macOS reports the path
+    // the binary was started through), while `expected` is.
+    if fs::canonicalize(executable).ok().as_deref() != Some(expected.as_path()) {
         bail!(
             "this binary is outside the installer directory {}; update it through its package manager or rebuild it from source",
             directory.display()
         );
-    }
-    if fs::symlink_metadata(&expected)?.file_type().is_symlink() {
-        bail!("the installed binary is a symbolic link; update it through its package manager");
     }
     Ok(expected)
 }
