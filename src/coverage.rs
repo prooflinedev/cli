@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::api::Api;
 use crate::model::{CoverageUploadRequest, UploadedReport};
 
-const MAX_BODY_BYTES: usize = 64 << 20;
+const MAX_BODY_BYTES: usize = 30 << 20;
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
@@ -67,7 +67,7 @@ pub(crate) async fn request(args: &UploadArgs) -> anyhow::Result<CoverageUploadR
             .await
             .with_context(|| format!("could not read coverage report {}", path.display()))?;
         if bytes.len() > remaining {
-            bail!("the coverage upload body is larger than 64 MiB");
+            bail!("the coverage upload body is larger than 30 MiB");
         }
         remaining -= bytes.len();
         reports.push(UploadedReport {
@@ -81,7 +81,7 @@ pub(crate) async fn request(args: &UploadArgs) -> anyhow::Result<CoverageUploadR
         reports,
     };
     if serde_json::to_vec(&request)?.len() > MAX_BODY_BYTES {
-        bail!("the coverage upload body is larger than 64 MiB after JSON encoding");
+        bail!("the coverage upload body is larger than 30 MiB after JSON encoding");
     }
     Ok(request)
 }

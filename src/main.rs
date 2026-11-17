@@ -7,7 +7,10 @@ use proofline_cli::{Cli, Verdict, run};
 use secrecy::SecretString;
 
 fn main() -> ExitCode {
-    use_user_session_bus();
+    if let Err(error) = use_user_session_bus() {
+        eprintln!("proofline: could not connect to the user session bus: {error}");
+        return ExitCode::FAILURE;
+    }
     proofline_cli::update::on_invocation();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -58,24 +61,24 @@ fn main() -> ExitCode {
     }
 }
 
-/// Points the keychain at the user's session bus when the environment names
-/// none, as when a coding agent starts `proofline mcp` with a reduced
-/// environment. The keychain library reads the bus address only from the
-/// environment.
+/// The keychain library reads its bus address from the environment. Restart
+/// with the discovered address before initialization, keeping environment
+/// mutation out of this process. The explicit address ends discovery on restart.
 #[cfg(target_os = "linux")]
-#[expect(
-    unsafe_code,
-    reason = "the keychain library takes its bus address only from the environment"
-)]
-fn use_user_session_bus() {
+fn use_user_session_bus() -> std::io::Result<()> {
+    use std::os::unix::process::CommandExt as _;
+
     if let Some(address) = proofline_cli::credentials::default_session_bus() {
-        // SAFETY: `main` calls this before it starts any thread, so nothing
-        // reads or writes the environment concurrently.
-        unsafe {
-            std::env::set_var("DBUS_SESSION_BUS_ADDRESS", address);
-        }
+        let executable = std::env::current_exe()?;
+        return Err(std::process::Command::new(executable)
+            .args(std::env::args_os().skip(1))
+            .env("DBUS_SESSION_BUS_ADDRESS", address)
+            .exec());
     }
+    Ok(())
 }
 
 #[cfg(not(target_os = "linux"))]
-fn use_user_session_bus() {}
+fn use_user_session_bus() -> std::io::Result<()> {
+    Ok(())
+}

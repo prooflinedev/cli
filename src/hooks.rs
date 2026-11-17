@@ -16,7 +16,9 @@ use uuid::Uuid;
 
 use crate::api::{Api, Http};
 use crate::git::{self, LocalChanges, LocalSelection};
-use crate::model::{Finding, PatchReviewRequest, ReviewDetail, TriggerSource};
+use crate::model::{
+    Assessment, CodeAssessment, Finding, PatchReviewRequest, ReviewDetail, TriggerSource,
+};
 use crate::origin::Origin;
 use crate::outcome::{self, Outcome};
 use crate::render::location;
@@ -529,11 +531,103 @@ fn print_findings(findings: &[Finding]) {
     }
 }
 
-/// Prints each report and applies the exit policy: `block` refuses a finding
-/// at or above `failOn`, and `onIncomplete=block` refuses anything short of
-/// a complete review. As in `ci review`, a CODE finding counts only in a
-/// complete review and while it is not `RESOLVED`. No answer from a model
-/// sets the exit code.
+/// The `Code-only:` line. "no findings" appears only in a complete review.
+fn code_line(code: &CodeAssessment, complete: bool) -> String {
+    match outcome::code_gap(code) {
+        Some(reasons) => format!(
+            "  Code-only: {} (incomplete: {})",
+            code.status.as_str(),
+            one_line(&reasons.join(", "))
+        ),
+        None if code.findings.is_empty() && !complete => "  Code-only: COMPLETED".to_owned(),
+        None if code.findings.is_empty() => "  Code-only: COMPLETED, no findings".to_owned(),
+        None => format!("  Code-only: COMPLETED, {} findings", code.findings.len()),
+    }
+}
+
+/// One environment assessment's line. One finished environment says nothing
+/// about a review that is still running, failed or lacks an assessment, so
+/// "no findings" appears only in a complete review.
+fn assessment_line(assessment: &Assessment, complete: bool) -> String {
+    let name = one_line(&assessment.environment_display_name);
+    match outcome::gap(assessment) {
+        Some(reasons) => format!(
+            "  {name}: {} (incomplete: {})",
+            one_line(&assessment.status),
+            one_line(&reasons.join(", "))
+        ),
+        None if assessment.findings.is_empty() && !complete => format!("  {name}: COMPLETED"),
+        None if assessment.findings.is_empty() => format!("  {name}: COMPLETED, no findings"),
+        None => format!(
+            "  {name}: COMPLETED, {} findings",
+            assessment.findings.len()
+        ),
+    }
+}
+
+/// Whether the review has a finding at or above `fail_on`. As in `ci review`,
+/// a CODE finding counts only in a complete review and while it is not
+/// `RESOLVED`; an environment finding counts in any review.
+fn reaches_fail_on(detail: &ReviewDetail, complete: bool, fail_on: Severity) -> bool {
+    let code = outcome::code_assessment(detail)
+        .is_some_and(|code| complete && outcome::code_reaches(code, fail_on));
+    code || detail
+        .assessments
+        .iter()
+        .flat_map(|assessment| &assessment.findings)
+        .any(|finding| fail_on.reached_by(&finding.severity))
+}
+
+/// Prints a read review: its status, its CODE result and each environment,
+/// each followed by its findings.
+fn print_read(
+    label: &str,
+    review_id: Uuid,
+    url: &Url,
+    detail: &ReviewDetail,
+    state: Option<Outcome>,
+    complete: bool,
+) {
+    match state {
+        None => say(&format!(
+            "Review of {label} still running: {url}. Read it later with `proofline findings --review {review_id}`."
+        )),
+        Some(state) => say(&format!(
+            "Proofline reviewed {label}: {} {url}",
+            state.as_str()
+        )),
+    }
+    if let Some(code) = outcome::code_assessment(detail) {
+        say(&code_line(code, complete));
+        print_findings(&code.findings);
+    } else if outcome::code_unavailable(detail) {
+        say("  Code-only: incomplete (CODE_ASSESSMENT_UNAVAILABLE)");
+    }
+    for assessment in &detail.assessments {
+        say(&assessment_line(assessment, complete));
+        print_findings(&assessment.findings);
+    }
+}
+
+/// Why the hook refuses: `block` refuses a finding at or above `failOn`, and
+/// `onIncomplete=block` refuses anything short of a complete review.
+fn blocking_reasons(settings: &Settings, failing: bool, gap: bool) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if settings.mode == Mode::Block && failing {
+        reasons.push(format!(
+            "a finding at or above {}",
+            settings.fail_on.as_str()
+        ));
+    }
+    if settings.on_incomplete == Mode::Block && gap {
+        reasons.push("no complete review".to_owned());
+    }
+    reasons
+}
+
+/// Prints each report and applies the exit policy of [`blocking_reasons`].
+/// A skipped branch, an unreviewed subject and a review short of complete are
+/// each a gap. No answer from a model sets the exit code.
 fn conclude(
     hook: Hook,
     settings: &Settings,
@@ -561,62 +655,8 @@ fn conclude(
             } => {
                 let complete = *state == Some(Outcome::Completed);
                 gap |= !complete;
-                match state {
-                    None => say(&format!(
-                        "Review of {label} still running: {url}. Read it later with `proofline findings --review {review_id}`."
-                    )),
-                    Some(state) => say(&format!(
-                        "Proofline reviewed {label}: {} {url}",
-                        state.as_str()
-                    )),
-                }
-                if let Some(code) = outcome::code_assessment(detail) {
-                    say(&match outcome::code_gap(code) {
-                        Some(reason) => format!(
-                            "  Code-only: {} (incomplete: {})",
-                            code.status.as_str(),
-                            one_line(reason)
-                        ),
-                        None if code.findings.is_empty() && !complete => {
-                            "  Code-only: COMPLETED".to_owned()
-                        }
-                        None if code.findings.is_empty() => {
-                            "  Code-only: COMPLETED, no findings".to_owned()
-                        }
-                        None => format!("  Code-only: COMPLETED, {} findings", code.findings.len()),
-                    });
-                    print_findings(&code.findings);
-                    failing |= complete && outcome::code_reaches(code, settings.fail_on);
-                } else if outcome::code_unavailable(detail) {
-                    say("  Code-only: incomplete (CODE_ASSESSMENT_UNAVAILABLE)");
-                }
-                for assessment in &detail.assessments {
-                    let name = one_line(&assessment.environment_display_name);
-                    say(&match outcome::gap(assessment) {
-                        Some(reasons) => format!(
-                            "  {name}: {} (incomplete: {})",
-                            one_line(&assessment.status),
-                            one_line(&reasons.join(", "))
-                        ),
-                        // One finished environment says nothing about a review
-                        // that is still running, failed or lacks an assessment.
-                        None if assessment.findings.is_empty() && !complete => {
-                            format!("  {name}: COMPLETED")
-                        }
-                        None if assessment.findings.is_empty() => {
-                            format!("  {name}: COMPLETED, no findings")
-                        }
-                        None => format!(
-                            "  {name}: COMPLETED, {} findings",
-                            assessment.findings.len()
-                        ),
-                    });
-                    print_findings(&assessment.findings);
-                    failing |= assessment
-                        .findings
-                        .iter()
-                        .any(|finding| settings.fail_on.reached_by(&finding.severity));
-                }
+                print_read(label, *review_id, url, detail, *state, complete);
+                failing |= reaches_fail_on(detail, complete, settings.fail_on);
             }
         }
     }
@@ -625,16 +665,7 @@ fn conclude(
             "Proofline reviews at most {MAX_PUSH_REFS} branches per push, so {skipped} more were not reviewed."
         ));
     }
-    let mut reasons = Vec::new();
-    if settings.mode == Mode::Block && failing {
-        reasons.push(format!(
-            "a finding at or above {}",
-            settings.fail_on.as_str()
-        ));
-    }
-    if settings.on_incomplete == Mode::Block && gap {
-        reasons.push("no complete review".to_owned());
-    }
+    let reasons = blocking_reasons(settings, failing, gap);
     if !reasons.is_empty() {
         say(&format!(
             "Proofline blocked this {action}: {}. Bypass it once with `git {action} --no-verify`.",
@@ -650,7 +681,237 @@ fn conclude(
 
 #[cfg(test)]
 mod tests {
+    use serde_json::{Value, json};
+
     use super::*;
+
+    fn finding(severity: &str, lifecycle_state: &str) -> Value {
+        json!({
+            "id": Uuid::nil(),
+            "finding_fingerprint": null,
+            "severity": severity,
+            "risk_domain": "network",
+            "claim": "The port is open.",
+            "impact": "Anyone can connect.",
+            "lifecycle_state": lifecycle_state,
+            "remediation": null,
+            "evidence_refs": [],
+        })
+    }
+
+    fn code(status: &str, incompleteness_kind: Option<&str>, findings: &[Value]) -> Value {
+        json!({
+            "id": Uuid::nil(),
+            "status": status,
+            "base_commit_sha": "a".repeat(40),
+            "head_commit_sha": "b".repeat(40),
+            "findings": findings,
+            "incompleteness_kind": incompleteness_kind,
+        })
+    }
+
+    /// An environment assessment; `reason_codes` empty is a complete one.
+    fn environment(status: &str, reason_codes: &[&str], findings: &[Value]) -> Value {
+        json!({
+            "id": Uuid::nil(),
+            "environment_display_name": "production",
+            "status": status,
+            "findings": findings,
+            "checks": {"receipt_recorded": true, "status": "READY", "families": []},
+            "incompleteness_kind": null,
+            "reason_codes": reason_codes,
+            "release_evidence_gap": null,
+        })
+    }
+
+    fn review(code: Option<Value>, environments: &[Value]) -> ReviewDetail {
+        serde_json::from_value(json!({
+            "id": Uuid::nil(),
+            "kind": "PATCH",
+            "status": "COMPLETED",
+            "assessment_count": environments.len(),
+            "assessments": environments,
+            "code_assessment": code,
+            "base_commit_sha": null,
+            "head_commit_sha": null,
+            "open_items": null,
+            "pull_request_number": null,
+            "repository_full_name": null,
+            "run_number": null,
+        }))
+        .unwrap()
+    }
+
+    fn settings(mode: Mode, fail_on: Severity, on_incomplete: Mode) -> Settings {
+        Settings {
+            mode,
+            fail_on,
+            on_incomplete,
+            timeout: Duration::from_secs(60),
+        }
+    }
+
+    #[test]
+    fn an_incomplete_code_assessment_prints_its_status_and_reason() {
+        let running: CodeAssessment = serde_json::from_value(code("RUNNING", None, &[])).unwrap();
+        assert_eq!(
+            code_line(&running, false),
+            "  Code-only: RUNNING (incomplete: CODE_ASSESSMENT_STATE_UNAVAILABLE)"
+        );
+        let partial: CodeAssessment = serde_json::from_value(code(
+            "COMPLETED",
+            Some("TIME_BUDGET_EXHAUSTED"),
+            &[finding("SERIOUS", "OPEN")],
+        ))
+        .unwrap();
+        assert_eq!(
+            code_line(&partial, true),
+            "  Code-only: COMPLETED (incomplete: TIME_BUDGET_EXHAUSTED)"
+        );
+    }
+
+    #[test]
+    fn a_code_assessment_says_no_findings_only_in_a_complete_review() {
+        let clean: CodeAssessment = serde_json::from_value(code("COMPLETED", None, &[])).unwrap();
+        assert_eq!(
+            code_line(&clean, true),
+            "  Code-only: COMPLETED, no findings"
+        );
+        assert_eq!(code_line(&clean, false), "  Code-only: COMPLETED");
+        let found: CodeAssessment = serde_json::from_value(code(
+            "COMPLETED",
+            None,
+            &[finding("WARNING", "OPEN"), finding("SERIOUS", "OPEN")],
+        ))
+        .unwrap();
+        assert_eq!(
+            code_line(&found, true),
+            "  Code-only: COMPLETED, 2 findings"
+        );
+        assert_eq!(
+            code_line(&found, false),
+            "  Code-only: COMPLETED, 2 findings"
+        );
+    }
+
+    #[test]
+    fn an_incomplete_environment_prints_its_status_and_reasons() {
+        let partial: Assessment = serde_json::from_value(environment(
+            "INCOMPLETE",
+            &["SNAPSHOT_STALE", "LOGS_UNREADABLE"],
+            &[],
+        ))
+        .unwrap();
+        assert_eq!(
+            assessment_line(&partial, true),
+            "  production: INCOMPLETE (incomplete: SNAPSHOT_STALE, LOGS_UNREADABLE)"
+        );
+    }
+
+    #[test]
+    fn an_environment_says_no_findings_only_in_a_complete_review() {
+        let clean: Assessment = serde_json::from_value(environment("COMPLETED", &[], &[])).unwrap();
+        assert_eq!(
+            assessment_line(&clean, true),
+            "  production: COMPLETED, no findings"
+        );
+        assert_eq!(assessment_line(&clean, false), "  production: COMPLETED");
+        let found: Assessment =
+            serde_json::from_value(environment("COMPLETED", &[], &[finding("WARNING", "OPEN")]))
+                .unwrap();
+        assert_eq!(
+            assessment_line(&found, false),
+            "  production: COMPLETED, 1 findings"
+        );
+    }
+
+    #[test]
+    fn a_code_finding_reaches_fail_on_only_in_a_complete_review_and_while_open() {
+        let open = review(
+            Some(code("COMPLETED", None, &[finding("SERIOUS", "OPEN")])),
+            &[],
+        );
+        assert!(reaches_fail_on(&open, true, Severity::Serious));
+        assert!(!reaches_fail_on(&open, false, Severity::Serious));
+        let warning = review(
+            Some(code("COMPLETED", None, &[finding("WARNING", "OPEN")])),
+            &[],
+        );
+        assert!(!reaches_fail_on(&warning, true, Severity::Serious));
+        let resolved = review(
+            Some(code("COMPLETED", None, &[finding("SERIOUS", "RESOLVED")])),
+            &[],
+        );
+        assert!(!reaches_fail_on(&resolved, true, Severity::Warning));
+        let partial = review(
+            Some(code(
+                "COMPLETED",
+                Some("TIME_BUDGET_EXHAUSTED"),
+                &[finding("SERIOUS", "OPEN")],
+            )),
+            &[],
+        );
+        assert!(!reaches_fail_on(&partial, true, Severity::Warning));
+    }
+
+    #[test]
+    fn an_environment_finding_reaches_fail_on_in_any_review() {
+        let detail = review(
+            None,
+            &[environment(
+                "INCOMPLETE",
+                &["SNAPSHOT_STALE"],
+                &[finding("SERIOUS", "OPEN")],
+            )],
+        );
+        assert!(reaches_fail_on(&detail, false, Severity::Serious));
+        assert!(reaches_fail_on(&detail, true, Severity::Serious));
+        let warning = review(
+            None,
+            &[environment("COMPLETED", &[], &[finding("WARNING", "OPEN")])],
+        );
+        assert!(!reaches_fail_on(&warning, true, Severity::Serious));
+    }
+
+    #[test]
+    fn warn_mode_never_blocks_a_finding() {
+        let warn = settings(Mode::Warn, Severity::Warning, Mode::Warn);
+        assert!(blocking_reasons(&warn, true, false).is_empty());
+    }
+
+    #[test]
+    fn block_mode_blocks_a_finding_at_or_above_fail_on() {
+        let block = settings(Mode::Block, Severity::Serious, Mode::Warn);
+        assert_eq!(
+            blocking_reasons(&block, true, true),
+            ["a finding at or above SERIOUS"]
+        );
+        assert!(blocking_reasons(&block, false, true).is_empty());
+    }
+
+    #[test]
+    fn on_incomplete_block_blocks_a_gap() {
+        let block = settings(Mode::Warn, Severity::Serious, Mode::Block);
+        assert_eq!(blocking_reasons(&block, true, true), ["no complete review"]);
+        assert!(blocking_reasons(&block, true, false).is_empty());
+    }
+
+    #[test]
+    fn both_block_reasons_join_with_and() {
+        let block = settings(Mode::Block, Severity::Warning, Mode::Block);
+        assert_eq!(
+            blocking_reasons(&block, true, true).join(" and "),
+            "a finding at or above WARNING and no complete review"
+        );
+    }
+
+    #[test]
+    fn skipped_branches_leave_a_push_without_a_complete_review() {
+        let block = settings(Mode::Warn, Severity::Serious, Mode::Block);
+        assert_eq!(conclude(Hook::PrePush, &block, &[], 1), Verdict::Blocked);
+        let warn = settings(Mode::Warn, Severity::Serious, Mode::Warn);
+        assert_eq!(conclude(Hook::PrePush, &warn, &[], 1), Verdict::Done);
+    }
 
     #[test]
     fn a_push_reviews_created_and_updated_branches_only() {

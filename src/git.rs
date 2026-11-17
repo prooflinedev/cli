@@ -264,21 +264,7 @@ pub async fn local_changes(
     let scratch = tempfile::tempdir()
         .map_err(|error| GitError::Unavailable(format!("no temporary directory: {error}")))?;
     let index = scratch.path().join("index");
-    let current = line_in(
-        root,
-        &["rev-parse", "--path-format=absolute", "--git-path", "index"],
-    )
-    .await?;
-    match tokio::fs::copy(&current, &index).await {
-        Ok(_) => {}
-        // A repository with nothing staged yet has no index.
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(GitError::Unavailable(format!(
-                "could not copy the index: {error}"
-            )));
-        }
-    }
+    copy_index(root, &index).await?;
     let add = match selection {
         LocalSelection::Tracked => Some("--update"),
         LocalSelection::Staged => None,
@@ -293,45 +279,74 @@ pub async fn local_changes(
         .await?;
     }
     if let Some(path) = path {
-        if path.contains('\0') || path.split('/').any(|part| matches!(part, "" | "." | "..")) {
-            return Err(GitError::InvalidLocalPath(path.to_owned()));
-        }
-        let indexed = git_in(
-            root,
-            Some(&index),
-            &["--literal-pathspecs", "ls-files", "-z", "--", path],
-        )
-        .await?;
-        let base_paths = git_in(
-            root,
-            None,
-            &[
-                "--literal-pathspecs",
-                "ls-tree",
-                "-r",
-                "--name-only",
-                "-z",
-                &base_commit_sha,
-                "--",
-                path,
-            ],
-        )
-        .await?;
-        let exact = |entries: &[u8]| {
-            entries
-                .split(|byte| *byte == 0)
-                .any(|entry| entry == path.as_bytes())
-        };
-        let prefix = format!("{path}/");
-        let descendants = indexed
-            .split(|byte| *byte == 0)
-            .chain(base_paths.split(|byte| *byte == 0))
-            .any(|entry| entry.starts_with(prefix.as_bytes()));
-        if descendants || (!exact(&indexed) && !exact(&base_paths)) {
-            return Err(GitError::InvalidLocalPath(path.to_owned()));
-        }
+        check_one_path(root, &index, &base_commit_sha, path).await?;
     }
     diff(root, Some(&index), base_commit_sha, None, path).await
+}
+
+/// Copies the repository's index to `index`. A repository with nothing
+/// staged yet has no index, which leaves `index` absent too.
+async fn copy_index(root: &Path, index: &Path) -> Result<(), GitError> {
+    let current = line_in(
+        root,
+        &["rev-parse", "--path-format=absolute", "--git-path", "index"],
+    )
+    .await?;
+    match tokio::fs::copy(&current, index).await {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(GitError::Unavailable(format!(
+            "could not copy the index: {error}"
+        ))),
+    }
+}
+
+/// Refuses a `--path` that is not one literal file: a malformed segment, a
+/// directory in the scratch `index` or the base, or a path in neither.
+async fn check_one_path(
+    root: &Path,
+    index: &Path,
+    base_commit_sha: &str,
+    path: &str,
+) -> Result<(), GitError> {
+    if path.contains('\0') || path.split('/').any(|part| matches!(part, "" | "." | "..")) {
+        return Err(GitError::InvalidLocalPath(path.to_owned()));
+    }
+    let indexed = git_in(
+        root,
+        Some(index),
+        &["--literal-pathspecs", "ls-files", "-z", "--", path],
+    )
+    .await?;
+    let base_paths = git_in(
+        root,
+        None,
+        &[
+            "--literal-pathspecs",
+            "ls-tree",
+            "-r",
+            "--name-only",
+            "-z",
+            base_commit_sha,
+            "--",
+            path,
+        ],
+    )
+    .await?;
+    let exact = |entries: &[u8]| {
+        entries
+            .split(|byte| *byte == 0)
+            .any(|entry| entry == path.as_bytes())
+    };
+    let prefix = format!("{path}/");
+    let descendants = indexed
+        .split(|byte| *byte == 0)
+        .chain(base_paths.split(|byte| *byte == 0))
+        .any(|entry| entry.starts_with(prefix.as_bytes()));
+    if descendants || (!exact(&indexed) && !exact(&base_paths)) {
+        return Err(GitError::InvalidLocalPath(path.to_owned()));
+    }
+    Ok(())
 }
 
 /// The commits a push sends: `head` against `base`, under the same fixed
