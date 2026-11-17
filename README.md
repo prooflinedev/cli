@@ -41,6 +41,8 @@ The CLI prints the request ID before it sends anything and never repeats the req
 
 ## Fix verification and agent sessions
 
+`review` and `findings` print each finding’s ID in text output for use with `fix context`, `fix-prompt`, and `review --verify`.
+
 ```sh
 proofline fix list --repo owner/repository --pr 42
 proofline fix context FINDING_ID
