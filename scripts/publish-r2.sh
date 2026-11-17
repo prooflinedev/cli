@@ -5,7 +5,10 @@ set -euo pipefail
 
 version=${1:-}
 dist=${2:-}
-refuse() { printf 'cli publish: %s\n' "$*" >&2; exit 1; }
+refuse() {
+  printf 'cli publish: %s\n' "$*" >&2
+  exit 1
+}
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || refuse 'expected an x.y.z version'
 [ -d "$dist" ] || refuse 'the release directory is missing'
 : "${CLOUDFLARE_ACCOUNT_ID:?the Cloudflare account is required}"
@@ -26,7 +29,7 @@ for target in $targets; do
   archive="proofline-$target.tar.gz"
   [ -f "$dist/$archive" ] || refuse "missing $archive"
   digest=$(sha256sum "$dist/$archive" | cut -d ' ' -f 1)
-  printf '%s  %s\n' "$digest" "$archive" >> "$temporary/SHA256SUMS"
+  printf '%s  %s\n' "$digest" "$archive" >>"$temporary/SHA256SUMS"
 done
 cmp -s "$temporary/SHA256SUMS" "$dist/SHA256SUMS" || refuse 'SHA256SUMS does not match the five release archives'
 
@@ -77,13 +80,15 @@ case "$status" in
 esac
 
 [[ "${GITHUB_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || refuse 'missing release commit'
-printf '{"version":"%s","commit":"%s"}\n' "$version" "$GITHUB_SHA" > "$temporary/reservation.json"
+printf '{"version":"%s","commit":"%s"}\n' "$version" "$GITHUB_SHA" >"$temporary/reservation.json"
 status=$(read_key "$version/RELEASE.json")
 case "$status" in
   200) cmp -s "$temporary/reservation.json" "$temporary/remote" || refuse 'version reserved for a different commit' ;;
   404)
     status=$(read_key "$version/SHA256SUMS")
-    [ "$status" = 404 ] && [ "$latest" != "$version" ] || refuse 'version is already published or unavailable'
+    if [ "$status" != 404 ] || [ "$latest" = "$version" ]; then
+      refuse 'version is already published or unavailable'
+    fi
     put "$version/RELEASE.json" "$temporary/reservation.json" application/json 'public, max-age=31536000, immutable' 'If-None-Match: *'
     ;;
   *) refuse "could not read version reservation ($status)" ;;
@@ -98,7 +103,7 @@ if [ -f "$dist/install.sh" ]; then
   immutable "$version/install.sh" "$dist/install.sh" 'text/plain; charset=utf-8'
 fi
 if [ "$latest" != "$version" ]; then
-  printf '%s\n' "$version" > "$temporary/latest"
+  printf '%s\n' "$version" >"$temporary/latest"
   put latest "$temporary/latest" 'text/plain; charset=utf-8' 'public, max-age=60' "$condition"
 fi
 printf 'cli publish: verified CLI %s\n' "$version"
