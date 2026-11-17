@@ -328,3 +328,47 @@ async fn detached_discovery_is_serialized_and_notices_arrive_on_the_next_invocat
     server.abort();
     assert!(server.await.unwrap_err().is_cancelled());
 }
+
+/// `current_exe` is not canonical on every platform (macOS reports the path
+/// the binary was started through), so an installer directory reached through
+/// a symbolic link is still the installer directory.
+#[cfg(unix)]
+#[test]
+fn installer_directory_reached_through_a_symlink() {
+    let root = tempfile::tempdir().unwrap();
+    let real = root.path().join("real-bin");
+    fs::create_dir_all(&real).unwrap();
+    fs::write(real.join("proofline"), b"binary").unwrap();
+    let linked = root.path().join("linked-bin");
+    std::os::unix::fs::symlink(&real, &linked).unwrap();
+
+    let expected = fs::canonicalize(real.join("proofline")).unwrap();
+    assert_eq!(
+        install_path(&linked.join("proofline"), &linked).unwrap(),
+        expected
+    );
+    assert_eq!(install_path(&expected, &linked).unwrap(), expected);
+}
+
+/// A package manager's symbolic link in the installer directory is reported
+/// as such, whichever path `current_exe` gives for it: the link on macOS, its
+/// target on Linux.
+#[cfg(unix)]
+#[test]
+fn installed_symlink_is_reported_as_a_symlink() {
+    let root = tempfile::tempdir().unwrap();
+    let store = root.path().join("store");
+    fs::create_dir_all(&store).unwrap();
+    fs::write(store.join("proofline"), b"binary").unwrap();
+    let bin = root.path().join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink(store.join("proofline"), bin.join("proofline")).unwrap();
+
+    for executable in [
+        bin.join("proofline"),
+        fs::canonicalize(store.join("proofline")).unwrap(),
+    ] {
+        let error = install_path(&executable, &bin).unwrap_err().to_string();
+        assert!(error.contains("symbolic link"), "{executable:?}: {error}");
+    }
+}
