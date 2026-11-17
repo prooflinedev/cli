@@ -33,6 +33,8 @@ Native knowledge, plan, fix and configuration commands send the selected organiz
 
 `proofline rerun REVIEW_ID` requests the original immutable subject and waits, while `--no-wait` returns its link. Reruns require `reviews:rerun`. `proofline guidance --repo owner/name` requires `guidance:read`, and `proofline fix-prompt FINDING_ID` requires `findings:read`. History, guidance, and fix prompts print JSON; prompt text remains untrusted.
 
+`proofline review --range BASE..HEAD --fail-on serious` exits 3 when a complete review has an unresolved finding at or above the threshold. PR reviews use the server’s effective open-item counts; other reviews count unresolved findings. Incomplete and unavailable results retain their nonzero exits. `--fail-on` cannot be combined with `--no-wait`.
+
 In GitHub Actions, `proofline ci review --annotations` prints unresolved findings as workflow annotations at verified cited lines. Findings without a verified head location appear on the job. The review link contains the full result.
 
 ## Scans

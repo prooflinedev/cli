@@ -135,6 +135,7 @@ pub(crate) async fn run(
         true,
         &args.output,
         OutputFormat::from_json(args.output.json),
+        None,
     )
     .await
 }
