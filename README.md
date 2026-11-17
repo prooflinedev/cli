@@ -8,6 +8,8 @@ This repository is the published distribution of the Proofline CLI. `openapi.pub
 
 On Linux and macOS, install the CLI with `curl -fsSL https://proofline.sh/cli | sh`, then run `proofline login`. Run `proofline setup` to open the browser organization selector. Pass `--organization NAME` to open that GitHub organization's installation page, or `--print` to only print its address. Cloud trust and connection changes still require a signed-in administrator browser.
 
+`proofline completions SHELL` prints a completion script for `zsh`, `bash`, `fish`, `powershell`, or `elvish` without signing in or making a network call. For example, add `source <(proofline completions zsh)` to `~/.zshrc`.
+
 ### Windows installation
 
 Official releases include `proofline-x86_64-pc-windows-msvc.tar.gz` with `proofline.exe`. Download the archive and `SHA256SUMS` from the same GitHub release, and compare its SHA-256 hash using `Get-FileHash -Algorithm SHA256`. Extract the archive with `tar -xzf` and put `proofline.exe` in a directory on `PATH`. Run `proofline login` to store credentials in Windows Credential Manager. To update, close running Proofline processes and replace the executable from a verified release. The Unix shell installer and self-update command do not install Windows binaries.
