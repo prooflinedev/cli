@@ -338,7 +338,7 @@ mod tests {
 
     fn finding(severity: &str, lifecycle_state: &str) -> crate::model::Finding {
         crate::model::Finding {
-            id: uuid::Uuid::nil(),
+            id: Uuid::nil(),
             finding_fingerprint: None,
             severity: severity.to_owned(),
             risk_domain: "resource_capacity".to_owned(),
