@@ -22,6 +22,7 @@ mod sarif;
 mod scan;
 mod severity;
 pub mod text;
+mod tls;
 pub mod update;
 
 use std::io::Write as _;
@@ -71,6 +72,11 @@ pub struct Cli {
     /// preserves the caller's per-call target.
     #[arg(long, global = true, env = "PROOFLINE_ORGANIZATION_ID")]
     org: Option<Uuid>,
+
+    /// PEM file of extra root certificates to trust beside the existing
+    /// roots, such as the root of a TLS-inspecting corporate proxy.
+    #[arg(long, global = true, env = "PROOFLINE_CA_CERT", value_name = "FILE")]
+    ca_cert: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Command,
@@ -366,6 +372,9 @@ pub enum Verdict {
 
 /// Runs one command. `token` is `PROOFLINE_TOKEN`, read by the caller.
 pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdict> {
+    if let Some(path) = &cli.ca_cert {
+        tls::trust(path)?;
+    }
     if let Command::Review(args) = &cli.command
         && args.schema
     {

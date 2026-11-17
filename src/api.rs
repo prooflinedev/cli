@@ -152,7 +152,7 @@ pub(crate) fn client_builder() -> reqwest::ClientBuilder {
     {
         // A provider is already installed, which is all the client needs.
     }
-    with_bundled_roots(reqwest::Client::builder())
+    crate::tls::apply(with_bundled_roots(reqwest::Client::builder()))
 }
 
 #[cfg(all(unix, not(target_vendor = "apple")))]
