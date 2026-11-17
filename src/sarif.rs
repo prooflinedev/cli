@@ -32,10 +32,10 @@ const DOMAINS: [&str; 18] = [
     "observability",
     "source_coverage",
 ];
-// code-categories-v2, the three deterministic CODE diff rule categories, and
+// Baseline and quality code categories, the three deterministic CODE diff rules, and
 // committed_secret, which the reviewer no longer produces but recorded
 // findings keep.
-const CODE_DOMAINS: [&str; 11] = [
+const CODE_DOMAINS: [&str; 19] = [
     "logic",
     "edge_case",
     "error_handling",
@@ -43,6 +43,14 @@ const CODE_DOMAINS: [&str; 11] = [
     "concurrency",
     "resource_lifecycle",
     "credential_exposure",
+    "authorization",
+    "injection",
+    "test_quality",
+    "api_contract",
+    "prompt_instruction",
+    "doc_drift",
+    "ci_workflow",
+    "maintainability",
     "test_marker",
     "removed_assertion",
     "debug_residue",
@@ -295,10 +303,14 @@ enum AssessmentSource<'a> {
 }
 
 pub(super) fn validate_subject(detail: &ReviewDetail, requested: Uuid) -> Result<(), SarifError> {
-    if detail.id != requested {
+    if let Err(outcome::WrongReview {
+        requested,
+        returned,
+    }) = outcome::same_review(detail, requested)
+    {
         return Err(SarifError::WrongReview {
             requested,
-            returned: detail.id,
+            returned,
         });
     }
     if detail.kind != "PULL_REQUEST" {
@@ -340,10 +352,7 @@ pub(super) fn review<'a>(
                 &head,
             )?);
         }
-        let reasons: Vec<String> = outcome::code_gap(code)
-            .map(str::to_owned)
-            .into_iter()
-            .collect();
+        let reasons = outcome::code_gap(code).unwrap_or_default();
         for reason in &reasons {
             notifications.push(Notification {
                 level: Level::Error,

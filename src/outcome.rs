@@ -2,10 +2,36 @@
 //! rules match `waitForReview` in the TypeScript SDK: unknown is never
 //! complete, and an assessment with a gap is never reported as clean.
 
+use uuid::Uuid;
+
 use crate::model::{
     Assessment, CodeAssessment, CodeAssessmentRead, CodeAssessmentStatus, Finding, ReviewDetail,
 };
 use crate::severity::Severity;
+
+/// A review-reading endpoint is keyed by review id, so its response should
+/// always echo the id requested. A cache or routing bug that serves another
+/// review's body under that id would otherwise read as a clean result for
+/// the wrong subject.
+#[derive(Debug, thiserror::Error)]
+#[error("requested review {requested}, but the server returned review {returned}")]
+pub(crate) struct WrongReview {
+    pub(crate) requested: Uuid,
+    pub(crate) returned: Uuid,
+}
+
+/// Confirms `detail` is the review `requested`, not merely a review that
+/// happened to come back from that endpoint.
+pub(crate) fn same_review(detail: &ReviewDetail, requested: Uuid) -> Result<(), WrongReview> {
+    if detail.id == requested {
+        Ok(())
+    } else {
+        Err(WrongReview {
+            requested,
+            returned: detail.id,
+        })
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -28,7 +54,16 @@ impl Outcome {
 
 const COMPLETE_CHECKS: [&str; 3] = ["READY", "BLOCKED", "NOT_APPLICABLE"];
 const COMPLETE_LIFECYCLES: [&str; 4] = ["GATING", "SHADOW", "QUARANTINED", "RETIRED"];
-const KNOWN_ASSESSMENTS: [&str; 5] = ["PENDING", "RUNNING", "COMPLETED", "INCOMPLETE", "FAILED"];
+const KNOWN_ASSESSMENTS: [&str; 8] = [
+    "PENDING",
+    "RUNNING",
+    "COMPLETED",
+    "INCOMPLETE",
+    "FAILED",
+    "STOPPED",
+    "SUPERSEDED",
+    "EXCLUDED",
+];
 // The server's classification policy owns this marker. The API publishes it in
 // place of every CODE finding's risk domain, claim and impact once the review's
 // protected evidence is missing or has expired.
@@ -39,7 +74,7 @@ pub fn terminal(review: &ReviewDetail) -> Option<Outcome> {
     match review.status.as_str() {
         "PENDING" | "RUNNING" => None,
         "FAILED" => Some(Outcome::Failed),
-        "STOPPED" => Some(Outcome::Stopped),
+        "STOPPED" | "SUPERSEDED" => Some(Outcome::Stopped),
         "COMPLETED"
             if usize::try_from(review.assessment_count).ok() == Some(review.assessments.len()) =>
         {
@@ -60,6 +95,29 @@ pub fn terminal(review: &ReviewDetail) -> Option<Outcome> {
         }
         _ => Some(Outcome::Incomplete),
     }
+}
+
+/// A review-level gap, apart from the CODE and environment assessment gaps.
+pub(crate) fn review_gap(review: &ReviewDetail) -> Option<&'static str> {
+    if usize::try_from(review.assessment_count).ok() != Some(review.assessments.len()) {
+        return Some("ASSESSMENT_HISTORY_UNAVAILABLE");
+    }
+    if ![
+        "PENDING",
+        "RUNNING",
+        "COMPLETED",
+        "FAILED",
+        "STOPPED",
+        "SUPERSEDED",
+    ]
+    .contains(&review.status.as_str())
+        && review.assessments.iter().all(|item| gap(item).is_none())
+        && (!review.assessments.is_empty()
+            || code_assessment(review).is_some_and(|code| code_gap(code).is_none()))
+    {
+        return Some("REVIEW_STATE_UNAVAILABLE");
+    }
+    None
 }
 
 /// The CODE record, only when it is of this review's subject and its findings
@@ -112,23 +170,20 @@ pub(crate) fn resolved(finding: &Finding) -> bool {
     finding.lifecycle_state == "RESOLVED"
 }
 
-/// CODE has no World receipts or environment checks. Its recorded status and
-/// incompleteness are the only completion evidence for the code lane.
-pub(crate) fn code_gap(code: &CodeAssessment) -> Option<&str> {
-    if let Some(kind) = code
-        .incompleteness_kind
-        .as_deref()
-        .filter(|kind| !kind.is_empty())
-    {
-        return Some(kind);
+/// CODE has no World receipts or environment checks. Its recorded status,
+/// public reason codes and incompleteness are the only completion evidence for
+/// the code lane. Reason codes come first, as for an environment assessment.
+pub(crate) fn code_gap(code: &CodeAssessment) -> Option<Vec<String>> {
+    let mut reasons = code.reason_codes.clone().unwrap_or_default();
+    reasons.extend(
+        code.incompleteness_kind
+            .clone()
+            .filter(|kind| !kind.is_empty()),
+    );
+    if reasons.is_empty() && code.status != CodeAssessmentStatus::Completed {
+        reasons.push("CODE_ASSESSMENT_STATE_UNAVAILABLE".to_owned());
     }
-    match code.status {
-        CodeAssessmentStatus::Completed => None,
-        CodeAssessmentStatus::Pending
-        | CodeAssessmentStatus::Running
-        | CodeAssessmentStatus::Incomplete
-        | CodeAssessmentStatus::Excluded => Some("CODE_ASSESSMENT_STATE_UNAVAILABLE"),
-    }
+    (!reasons.is_empty()).then_some(reasons)
 }
 
 /// Why an assessment's result is incomplete, or `None` when it is complete.
@@ -178,9 +233,70 @@ mod tests {
     use super::*;
     use crate::model::Checks;
 
+    #[test]
+    fn shared_outcome_contract() {
+        use serde_json::{Value, json};
+
+        let fixture: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/review-outcomes.json")).unwrap();
+        let mut schema: Value = serde_json::from_str(include_str!(concat!(
+            env!("OUT_DIR"),
+            "/openapi.public.json"
+        )))
+        .unwrap();
+        schema["$ref"] = json!("#/components/schemas/CustomerReviewDetail");
+        // Fixtures use only declared properties: removing an optional field
+        // from the public contract must fail here too.
+        for definition in schema["components"]["schemas"]
+            .as_object_mut()
+            .unwrap()
+            .values_mut()
+        {
+            if definition["type"] == "object" && definition.get("additionalProperties").is_none() {
+                definition["additionalProperties"] = json!(false);
+            }
+        }
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        for case in fixture["cases"].as_array().unwrap() {
+            let document = &case["review"];
+            assert!(
+                validator.is_valid(document),
+                "{}: {:?}",
+                case["name"],
+                validator.validate(document)
+            );
+            let review: ReviewDetail = serde_json::from_value(document.clone()).unwrap();
+            assert_eq!(
+                json!(terminal(&review).map(Outcome::as_str)),
+                case["outcome"],
+                "{}",
+                case["name"]
+            );
+            let mut gaps = Vec::new();
+            for assessment in &review.assessments {
+                if let Some(reasons) = gap(assessment) {
+                    gaps.push(json!({"assessment_id": assessment.id, "reason_codes": reasons}));
+                }
+            }
+            if review.assessment_count == 0 && review.assessments.is_empty() {
+                if let Some(code) = code_assessment(&review) {
+                    if let Some(reasons) = code_gap(code) {
+                        gaps.push(json!({"assessment_id": code.id, "reason_codes": reasons}));
+                    }
+                } else {
+                    gaps.push(json!({"assessment_id": null, "reason_codes": ["CODE_ASSESSMENT_UNAVAILABLE"]}));
+                }
+            }
+            if let Some(reason) = review_gap(&review) {
+                gaps.push(json!({"assessment_id": null, "reason_codes": [reason]}));
+            }
+            assert_eq!(json!(gaps), case["gaps"], "{}", case["name"]);
+        }
+    }
+
     fn assessment(status: &str) -> Assessment {
         Assessment {
-            id: uuid::Uuid::nil(),
+            id: Uuid::nil(),
             environment_display_name: "production".to_owned(),
             status: status.to_owned(),
             findings: Vec::new(),
@@ -197,7 +313,7 @@ mod tests {
 
     fn review(status: &str, assessments: Vec<Assessment>, count: i64) -> ReviewDetail {
         ReviewDetail {
-            id: uuid::Uuid::nil(),
+            id: Uuid::nil(),
             kind: "PULL_REQUEST".to_owned(),
             status: status.to_owned(),
             assessment_count: count,
@@ -208,6 +324,7 @@ mod tests {
             head_commit_sha: None,
             open_items: None,
             pull_request_number: Some(7),
+            repository_id: None,
             repository_full_name: Some("acme/web".to_owned()),
             run_number: Some(1),
             local_reverifications: Vec::new(),
