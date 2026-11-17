@@ -5,7 +5,7 @@ use std::cmp::Reverse;
 
 use url::Url;
 
-use crate::model::{Assessment, CodeAssessment, Finding, ReviewDetail};
+use crate::model::{Assessment, CodeAssessment, Finding, LocalReverification, ReviewDetail};
 use crate::outcome::{self, Outcome};
 use crate::severity::Severity;
 use crate::text::{one_line, terminal_safe};
@@ -75,11 +75,11 @@ fn code_assessment(out: &mut Vec<String>, code: &CodeAssessment) {
     let mut findings: Vec<&Finding> = code.findings.iter().collect();
     findings.sort_by_key(|item| Reverse(Severity::parse(&item.severity)));
     match outcome::code_gap(code) {
-        Some(reason) => {
+        Some(reasons) => {
             out.push(format!(
                 "Code-only: {} (incomplete: {})",
                 code.status.as_str(),
-                one_line(reason)
+                one_line(&reasons.join(", "))
             ));
             if !findings.is_empty() {
                 out.push("  findings so far, not a complete result:".to_owned());
@@ -93,9 +93,8 @@ fn code_assessment(out: &mut Vec<String>, code: &CodeAssessment) {
     }
 }
 
-/// The review, with separate CODE and environment assessment blocks.
-pub fn review(review: &ReviewDetail, state: Option<Outcome>, url: &Url) -> String {
-    let mut out = Vec::new();
+/// `{subject}{run}{commits}: {status}`.
+fn headline(review: &ReviewDetail, state: Option<Outcome>) -> String {
     let subject = match (&review.repository_full_name, review.pull_request_number) {
         (Some(repository), Some(number)) => format!("{} #{number}", one_line(repository)),
         (Some(repository), None) => one_line(repository),
@@ -105,51 +104,80 @@ pub fn review(review: &ReviewDetail, state: Option<Outcome>, url: &Url) -> Strin
         .run_number
         .map(|run| format!(" run {run}"))
         .unwrap_or_default();
-    let short = |sha: &str| one_line(sha.get(..12).unwrap_or(sha));
-    // A patch review's head is a revision ID, not a commit, so it names its base.
-    let head = if review.kind == "PATCH" {
-        review
-            .base_commit_sha
-            .as_deref()
-            .map(|sha| format!(" local changes on {}", short(sha)))
-            .unwrap_or_default()
-    } else if let ("COMMIT", Some(base), Some(head)) = (
-        review.kind.as_str(),
-        review.base_commit_sha.as_deref(),
-        review.head_commit_sha.as_deref(),
-    ) {
-        // A commit review is of a range, so it names both ends.
-        format!(" {}..{}", short(base), short(head))
-    } else {
-        review
-            .head_commit_sha
-            .as_deref()
-            .map(|sha| format!(" at {}", short(sha)))
-            .unwrap_or_default()
-    };
     let status = state.map_or_else(
         || terminal_safe(&review.status),
         |state| state.as_str().to_owned(),
     );
-    out.push(format!("{subject}{run}{head}: {status}"));
-    out.push(url.to_string());
-    if review.kind == "FILES"
-        && let Some(scope) = review
-            .subjects
+    format!("{subject}{run}{}: {status}", commits(review))
+}
+
+/// The reviewed commits. A patch review's head is a revision ID, not a
+/// commit, so it names its base; a commit review is of a range, so it names
+/// both ends.
+fn commits(review: &ReviewDetail) -> String {
+    let short = |sha: &str| one_line(sha.get(..12).unwrap_or(sha));
+    match (
+        review.kind.as_str(),
+        review.base_commit_sha.as_deref(),
+        review.head_commit_sha.as_deref(),
+    ) {
+        ("PATCH", base, _) => base
+            .map(|sha| format!(" local changes on {}", short(sha)))
+            .unwrap_or_default(),
+        ("COMMIT", Some(base), Some(head)) => format!(" {}..{}", short(base), short(head)),
+        (_, _, head) => head
+            .map(|sha| format!(" at {}", short(sha)))
+            .unwrap_or_default(),
+    }
+}
+
+/// The paths a FILES review selected at its primary revision.
+fn selected_files(review: &ReviewDetail) -> Option<String> {
+    if review.kind != "FILES" {
+        return None;
+    }
+    let scope = review
+        .subjects
+        .iter()
+        .find(|subject| subject.role == "PRIMARY" && subject.kind == "GIT_REVISION")
+        .and_then(|subject| subject.file_scope.as_ref())?;
+    Some(format!(
+        "Selected files: {}",
+        scope
+            .paths
             .iter()
-            .find(|subject| subject.role == "PRIMARY" && subject.kind == "GIT_REVISION")
-            .and_then(|subject| subject.file_scope.as_ref())
-    {
+            .map(|path| one_line(path))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+
+fn reverifications(out: &mut Vec<String>, items: &[LocalReverification]) {
+    if items.is_empty() {
+        return;
+    }
+    out.push(String::new());
+    out.push(
+        "Re-verified against the local changes (the pull request's findings are unchanged):"
+            .to_owned(),
+    );
+    for item in items {
         out.push(format!(
-            "Selected files: {}",
-            scope
-                .paths
-                .iter()
-                .map(|path| one_line(path))
-                .collect::<Vec<_>>()
-                .join(", ")
+            "  {}  {}  (request {} of 3)",
+            item.finding_id,
+            one_line(&item.outcome),
+            item.iteration
         ));
     }
+}
+
+/// The review, with separate CODE and environment assessment blocks.
+pub fn review(review: &ReviewDetail, state: Option<Outcome>, url: &Url) -> String {
+    let mut out = vec![headline(review, state), url.to_string()];
+    if let Some(reason) = outcome::review_gap(review) {
+        out.push(format!("Review incomplete: {reason}"));
+    }
+    out.extend(selected_files(review));
     if let Some(code) = outcome::code_assessment(review) {
         out.push(String::new());
         code_assessment(&mut out, code);
@@ -163,21 +191,7 @@ pub fn review(review: &ReviewDetail, state: Option<Outcome>, url: &Url) -> Strin
         out.push(String::new());
         assessment(&mut out, item);
     }
-    if !review.local_reverifications.is_empty() {
-        out.push(String::new());
-        out.push(
-            "Re-verified against the local changes (the pull request's findings are unchanged):"
-                .to_owned(),
-        );
-        for item in &review.local_reverifications {
-            out.push(format!(
-                "  {}  {}  (request {} of 3)",
-                item.finding_id,
-                one_line(&item.outcome),
-                item.iteration
-            ));
-        }
-    }
+    reverifications(&mut out, &review.local_reverifications);
     out.push(String::new());
     out.join("\n")
 }
@@ -185,7 +199,7 @@ pub fn review(review: &ReviewDetail, state: Option<Outcome>, url: &Url) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Checks, EvidenceRef};
+    use crate::model::{Checks, EvidenceRef, FileScope, ReviewSubject};
 
     fn sample(status: &str, findings: Vec<Finding>) -> ReviewDetail {
         ReviewDetail {
@@ -289,5 +303,124 @@ mod tests {
         let text = review(&detail, None, &url());
         assert!(!text.contains('\u{1b}'));
         assert!(text.contains("x\u{FFFD}[2J y"));
+    }
+
+    fn first_line(detail: &ReviewDetail, state: Option<Outcome>) -> String {
+        review(detail, state, &url())
+            .lines()
+            .next()
+            .unwrap()
+            .to_owned()
+    }
+
+    #[test]
+    fn the_headline_names_the_pull_request_the_repository_or_the_kind() {
+        let mut detail = sample("COMPLETED", Vec::new());
+        assert_eq!(
+            first_line(&detail, None),
+            "acme/web #42 run 2 at 0123456789ab: COMPLETED"
+        );
+        detail.pull_request_number = None;
+        detail.run_number = None;
+        assert_eq!(
+            first_line(&detail, Some(Outcome::Incomplete)),
+            "acme/web at 0123456789ab: INCOMPLETE"
+        );
+        detail.repository_full_name = None;
+        assert_eq!(
+            first_line(&detail, None),
+            "PULL_REQUEST at 0123456789ab: COMPLETED"
+        );
+    }
+
+    #[test]
+    fn a_patch_review_names_its_base_a_commit_review_its_range_and_others_their_head() {
+        let mut detail = sample("COMPLETED", Vec::new());
+        detail.repository_full_name = None;
+        detail.run_number = None;
+        detail.kind = "PATCH".to_owned();
+        assert_eq!(first_line(&detail, None), "PATCH: COMPLETED");
+        detail.base_commit_sha = Some("fedcba9876543210fedcba9876543210fedcba98".to_owned());
+        assert_eq!(
+            first_line(&detail, None),
+            "PATCH local changes on fedcba987654: COMPLETED"
+        );
+        detail.kind = "COMMIT".to_owned();
+        assert_eq!(
+            first_line(&detail, None),
+            "COMMIT fedcba987654..0123456789ab: COMPLETED"
+        );
+        detail.base_commit_sha = None;
+        assert_eq!(
+            first_line(&detail, None),
+            "COMMIT at 0123456789ab: COMPLETED"
+        );
+    }
+
+    #[test]
+    fn a_review_level_gap_prints_beside_the_headline() {
+        let mut detail = sample("COMPLETED", Vec::new());
+        detail.assessment_count = 2;
+        let text = review(&detail, outcome::terminal(&detail), &url());
+        assert_eq!(
+            text.lines().nth(2),
+            Some("Review incomplete: ASSESSMENT_HISTORY_UNAVAILABLE"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_files_review_lists_its_selected_paths() {
+        let mut detail = sample("COMPLETED", Vec::new());
+        detail.subjects = vec![ReviewSubject {
+            kind: "GIT_REVISION".to_owned(),
+            role: "PRIMARY".to_owned(),
+            file_scope: Some(FileScope {
+                paths: vec!["src/orders.rs".to_owned(), "src/lib.rs".to_owned()],
+                paths_digest: "digest".to_owned(),
+            }),
+        }];
+        assert!(!review(&detail, None, &url()).contains("Selected files"));
+        detail.kind = "FILES".to_owned();
+        let text = review(&detail, None, &url());
+        assert_eq!(
+            text.lines().nth(2),
+            Some("Selected files: src/orders.rs, src/lib.rs"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_review_with_no_recorded_environment_says_so() {
+        let mut detail = sample("COMPLETED", Vec::new());
+        detail.assessments.clear();
+        let text = review(&detail, outcome::terminal(&detail), &url());
+        assert!(
+            text.contains("\nno environment assessment has been recorded yet\n"),
+            "{text}"
+        );
+        assert!(!text.contains("no findings"), "{text}");
+    }
+
+    #[test]
+    fn local_reverifications_print_after_the_assessments() {
+        let mut detail = sample("COMPLETED", Vec::new());
+        assert!(!review(&detail, None, &url()).contains("Re-verified"));
+        detail.local_reverifications = vec![LocalReverification {
+            finding_id: uuid::Uuid::nil(),
+            iteration: 2,
+            outcome: "STILL_PRESENT".to_owned(),
+            checks: serde_json::Value::Null,
+        }];
+        let text = review(&detail, None, &url());
+        let environment = text.find("production: COMPLETED").unwrap();
+        let block = text.find("Re-verified against the local changes").unwrap();
+        assert!(environment < block, "{text}");
+        assert!(
+            text.contains(
+                "  00000000-0000-0000-0000-000000000000  STILL_PRESENT  (request 2 of 3)"
+            ),
+            "{text}"
+        );
     }
 }

@@ -150,6 +150,8 @@ pub struct CodeAssessment {
     pub head_commit_sha: String,
     pub findings: Vec<Finding>,
     pub incompleteness_kind: Option<String>,
+    /// Public causes of an incomplete result, such as `OUT_OF_CREDITS`.
+    pub reason_codes: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -250,6 +252,29 @@ pub struct RunNowResponse {
     pub automatic_reviews_paused: bool,
 }
 
+/// A whole-repository scan of one ref or exact commit. Sending the same
+/// `request_id` again returns the first resolution instead of scanning again.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScanRequest {
+    pub request_id: Uuid,
+    pub budget_credits: i64,
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub git_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_sha: Option<String>,
+}
+
+/// What a scan request resolved to. `outcome` is `CREATED`, `EXISTING` or
+/// `REPOSITORY_UNAVAILABLE`; only the first two name a review.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ScanResponse {
+    pub resolution_id: Uuid,
+    pub outcome: String,
+    #[serde(default)]
+    pub review_id: Option<Uuid>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct StopResponse {
     pub review_id: Uuid,
@@ -263,7 +288,6 @@ pub enum RunNowMode {
     #[default]
     ExistingOrNew,
     Full,
-    Extended,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -271,9 +295,6 @@ pub enum RunNowMode {
 pub struct RunNowRequest {
     #[serde(default)]
     pub mode: RunNowMode,
-    /// Optional investigation focus preserved by the review request.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub focus_text: Option<String>,
 }
 
 /// Local changes to review: a `git diff` against a commit GitHub has.

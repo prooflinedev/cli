@@ -17,7 +17,10 @@ pub(crate) enum SchemaError {
 /// Uses the schema of the exact public route the CLI polls. Definitions keep
 /// their required fields and extension policy; only local references change.
 pub(crate) fn schema() -> Result<Value, SchemaError> {
-    let public: Value = serde_json::from_str(include_str!("../openapi.public.json"))?;
+    let public: Value = serde_json::from_str(include_str!(concat!(
+        env!("OUT_DIR"),
+        "/openapi.public.json"
+    )))?;
     let mut definitions = Map::new();
     let mut pending = vec!["CustomerReviewDetail".to_owned()];
     while let Some(name) = pending.pop() {

@@ -7,6 +7,10 @@ use proofline_cli::{Cli, Verdict, run};
 use secrecy::SecretString;
 
 fn main() -> ExitCode {
+    if let Err(error) = use_user_session_bus() {
+        eprintln!("proofline: could not connect to the user session bus: {error}");
+        return ExitCode::FAILURE;
+    }
     proofline_cli::update::on_invocation();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -55,4 +59,26 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The keychain library reads its bus address from the environment. Restart
+/// with the discovered address before initialization, keeping environment
+/// mutation out of this process. The explicit address ends discovery on restart.
+#[cfg(target_os = "linux")]
+fn use_user_session_bus() -> std::io::Result<()> {
+    use std::os::unix::process::CommandExt as _;
+
+    if let Some(address) = proofline_cli::credentials::default_session_bus() {
+        let executable = std::env::current_exe()?;
+        return Err(std::process::Command::new(executable)
+            .args(std::env::args_os().skip(1))
+            .env("DBUS_SESSION_BUS_ADDRESS", address)
+            .exec());
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn use_user_session_bus() -> std::io::Result<()> {
+    Ok(())
 }
