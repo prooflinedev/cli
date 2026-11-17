@@ -51,10 +51,7 @@ mod tests {
 
     #[test]
     fn bidirectional_override_is_replaced() {
-        assert_eq!(
-            terminal_safe("file\u{202E}gpj.exe"),
-            "file\u{FFFD}gpj.exe"
-        );
+        assert_eq!(terminal_safe("file\u{202E}gpj.exe"), "file\u{FFFD}gpj.exe");
     }
 
     #[test]
@@ -67,17 +64,11 @@ mod tests {
 
     #[test]
     fn bidirectional_controls_are_removed_from_single_line_output() {
-        assert_eq!(
-            one_line("report\u{202E}txt"),
-            "report\u{FFFD}txt"
-        );
+        assert_eq!(one_line("report\u{202E}txt"), "report\u{FFFD}txt");
     }
 
     #[test]
     fn ordinary_unicode_is_preserved() {
-        assert_eq!(
-            terminal_safe("Café — résumé"),
-            "Café — résumé"
-        );
+        assert_eq!(terminal_safe("Café — résumé"), "Café — résumé");
     }
 }
