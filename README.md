@@ -8,6 +8,8 @@ This repository is the published distribution of the Proofline CLI. `openapi.pub
 
 On Linux and macOS, install the CLI with `curl -fsSL https://proofline.sh/cli | sh`, then run `proofline login`. Run `proofline setup` to open the browser organization selector. Pass `--organization NAME` to open that GitHub organization's installation page, or `--print` to only print its address. Cloud trust and connection changes still require a signed-in administrator browser.
 
+`proofline completions SHELL` prints a completion script for `zsh`, `bash`, `fish`, `powershell`, or `elvish` without signing in or making a network call. For example, add `source <(proofline completions zsh)` to `~/.zshrc`.
+
 ### Windows installation
 
 Official releases include `proofline-x86_64-pc-windows-msvc.tar.gz` with `proofline.exe`. Download the archive and `SHA256SUMS` from the same GitHub release, and compare its SHA-256 hash using `Get-FileHash -Algorithm SHA256`. Extract the archive with `tar -xzf` and put `proofline.exe` in a directory on `PATH`. Run `proofline login` to store credentials in Windows Credential Manager. To update, close running Proofline processes and replace the executable from a verified release. The Unix shell installer and self-update command do not install Windows binaries.
@@ -33,6 +35,8 @@ Native knowledge, plan, fix and configuration commands send the selected organiz
 
 `proofline review --range BASE..HEAD --fail-on serious` exits 3 when a complete review has an unresolved finding at or above the threshold. PR reviews use the server’s effective open-item counts; other reviews count unresolved findings. Incomplete and unavailable results retain their nonzero exits. `--fail-on` cannot be combined with `--no-wait`.
 
+In GitHub Actions, `proofline ci review --annotations` prints unresolved findings as workflow annotations at verified cited lines. Findings without a verified head location appear on the job. The review link contains the full result.
+
 ## Scans
 
 `proofline scan --ref main --budget 200` scans the whole repository at one commit, not a pull request's change. GitHub resolves the ref once, when the request arrives, and the scan records that commit; `--commit SHA` names an exact full SHA instead, and you give one of the two. The command waits for the scan review and prints it like `proofline review`, while `--no-wait` prints its link and `--json` prints JSON.
@@ -42,6 +46,8 @@ Native knowledge, plan, fix and configuration commands send the selected organiz
 The CLI prints the request ID before it sends anything and never repeats the request. When the outcome is unknown (the connection failed, the server failed, or its answer was unreadable) the command exits 4; repeat it with `--request-id ID` to read the first resolution instead of paying for a second scan. If GitHub cannot resolve the ref, nothing starts and nothing is spent, but repeating that ID returns the same answer, so omit `--request-id` to ask again; with `--json` the resolution is still printed. Other exit codes match `proofline review`: 0 for a complete result, 2 for an incomplete or unfinished one and 1 for a refusal or error.
 
 ## Fix verification and agent sessions
+
+`review` and `findings` print each finding’s ID in text output for use with `fix context`, `fix-prompt`, and `review --verify`.
 
 ```sh
 proofline fix list --repo owner/repository --pr 42

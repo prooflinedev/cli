@@ -3,6 +3,7 @@
 //! through the public review API. It shares no code with the server crate.
 
 mod agent;
+mod annotations;
 pub mod api;
 mod config;
 mod coverage;
@@ -22,6 +23,7 @@ mod sarif;
 mod scan;
 mod severity;
 pub mod text;
+mod tls;
 pub mod update;
 
 use std::io::Write as _;
@@ -71,6 +73,11 @@ pub struct Cli {
     /// preserves the caller's per-call target.
     #[arg(long, global = true, env = "PROOFLINE_ORGANIZATION_ID")]
     org: Option<Uuid>,
+
+    /// PEM file of extra root certificates to trust beside the existing
+    /// roots, such as the root of a TLS-inspecting corporate proxy.
+    #[arg(long, global = true, env = "PROOFLINE_CA_CERT", value_name = "FILE")]
+    ca_cert: Option<PathBuf>,
 
     #[command(subcommand)]
     command: Command,
@@ -123,6 +130,17 @@ enum Command {
     FixPrompt { finding_id: Uuid },
     /// Export one page of analytics as CSV or NDJSON.
     Export(tools::ExportArgs),
+    /// Print a shell completion script to standard output.
+    ///
+    /// For example, add `source <(proofline completions zsh)` to `~/.zshrc`,
+    /// `proofline completions bash > ~/.local/share/bash-completion/completions/proofline`,
+    /// `proofline completions fish > ~/.config/fish/completions/proofline.fish`, or
+    /// `proofline completions powershell | Out-String | Invoke-Expression` to a
+    /// PowerShell profile.
+    Completions {
+        /// The shell to complete for.
+        shell: clap_complete::Shell,
+    },
     /// Install the newest official release over this installer-managed binary.
     Update,
     #[command(name = "__update-check", hide = true)]
@@ -177,6 +195,11 @@ struct CiReviewArgs {
     /// Also write the review as SARIF 2.1.0 to this file.
     #[arg(long, value_name = "FILE")]
     sarif: Option<PathBuf>,
+    /// Also print each finding that is not resolved as a GitHub Actions
+    /// annotation on stderr, so it shows on the pull request's diff. Unlike
+    /// uploading `--sarif` to code scanning, this works on every GitHub plan.
+    #[arg(long)]
+    annotations: bool,
     /// Print JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -370,6 +393,9 @@ pub enum Verdict {
 
 /// Runs one command. `token` is `PROOFLINE_TOKEN`, read by the caller.
 pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdict> {
+    if let Some(path) = &cli.ca_cert {
+        tls::trust(path)?;
+    }
     if let Command::Review(args) = &cli.command
         && args.schema
     {
@@ -379,6 +405,10 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
         return Ok(Verdict::Done);
     }
     match &cli.command {
+        Command::Completions { shell } => {
+            completions(*shell, &mut std::io::stdout().lock())?;
+            return Ok(Verdict::Done);
+        }
         Command::Update => return update::install().await.map(|()| Verdict::Done),
         Command::UpdateCheck => {
             update::check().await;
@@ -388,6 +418,10 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
     }
     let origin = Origin::parse(&cli.base_url)?;
     match cli.command {
+        Command::Completions { shell } => {
+            completions(shell, &mut std::io::stdout().lock())?;
+            Ok(Verdict::Done)
+        }
         Command::Update => update::install().await.map(|()| Verdict::Done),
         Command::UpdateCheck => {
             update::check().await;
@@ -558,6 +592,26 @@ async fn connect(
 ) -> anyhow::Result<Api> {
     let credential = credentials::load(http.origin(), token, org).await?;
     Ok(Api::new(http, credential.token, credential.organization_id))
+}
+
+/// Writes the completion script for `shell`. It needs no origin, token or
+/// network, so it works before `proofline login`.
+fn completions(shell: clap_complete::Shell, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
+    const NAME: &str = "proofline";
+    let full = <Cli as clap::CommandFactory>::command();
+    // The static generators offer hidden subcommands too, so leave them out.
+    let mut command = full.get_arguments().cloned().fold(
+        clap::Command::new(NAME).version(env!("CARGO_PKG_VERSION")),
+        clap::Command::arg,
+    );
+    command = full
+        .get_subcommands()
+        .filter(|subcommand| !subcommand.is_hide_set())
+        .cloned()
+        .fold(command, clap::Command::subcommand);
+    clap_complete::generate(shell, &mut command, NAME, out);
+    out.flush()?;
+    Ok(())
 }
 
 fn say(line: &str) {
@@ -1227,6 +1281,9 @@ async fn ci_review(
     if let Some(path) = sarif_path {
         write_sarif(api, review_id, &detail, path).await?;
     }
+    if args.annotations {
+        annotations::write(&detail, &mut std::io::stderr().lock())?;
+    }
     print_review(
         api,
         review_id,
@@ -1661,6 +1718,7 @@ mod tests {
             let args = CiReviewArgs {
                 commit: None,
                 sarif: None,
+                annotations: false,
                 json: false,
                 timeout: 3,
                 fail_on: None,
@@ -1728,6 +1786,7 @@ mod tests {
         let args = CiReviewArgs {
             commit: None,
             sarif: None,
+            annotations: false,
             json: false,
             timeout: 3,
             fail_on: None,

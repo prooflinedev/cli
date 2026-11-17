@@ -588,6 +588,12 @@ fn finding_result<'a>(
     })
 }
 
+/// The file and lines `reference` places a finding on, under the same rules
+/// as a SARIF location.
+pub(super) fn location<'a>(reference: &'a EvidenceRef, head: &str) -> Option<(&'a str, u32, u32)> {
+    code_location(reference, head).ok()
+}
+
 fn code_location<'a>(
     reference: &'a EvidenceRef,
     head: &str,
