@@ -14,7 +14,7 @@ use crate::model::{
     CommitReviewRequest, CommitReviewResponse, CoverageUploadRequest, CoverageUploadResponse,
     FileReviewRequest, FileReviewResponse, PatchReviewRequest, PatchReviewResponse,
     RepositoryNames, ReviewDetail, ReviewPage, RunNowMode, RunNowRequest, RunNowResponse,
-    StopResponse,
+    ScanRequest, ScanResponse, StopResponse,
 };
 use crate::origin::Origin;
 use crate::text::terminal_safe;
@@ -641,6 +641,26 @@ impl Api {
     ) -> Result<CommitReviewResponse, ApiError> {
         let repository = repository_id.to_string();
         let url = self.url_request_commit_review(&repository);
+        let (reply, _) = self
+            .http
+            .send(self.request(Method::POST, url).json(request))
+            .await?;
+        if reply.status.is_success() {
+            return self.decode(&reply.body);
+        }
+        Err(self.http.problem(&reply))
+    }
+
+    /// Requests a scan of one ref or commit. One attempt: the client never
+    /// repeats a POST, and the caller's `request_id` makes a deliberate retry
+    /// return the first resolution instead of scanning again.
+    pub async fn request_scan(
+        &self,
+        repository_id: Uuid,
+        request: &ScanRequest,
+    ) -> Result<ScanResponse, ApiError> {
+        let repository = repository_id.to_string();
+        let url = self.url_request_scan(&repository);
         let (reply, _) = self
             .http
             .send(self.request(Method::POST, url).json(request))

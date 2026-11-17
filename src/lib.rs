@@ -19,6 +19,7 @@ mod preflight;
 pub mod render;
 mod result;
 mod sarif;
+mod scan;
 mod severity;
 pub mod text;
 pub mod update;
@@ -112,6 +113,8 @@ enum Command {
     },
     /// Rerun the original immutable review subject.
     Rerun(tools::RerunArgs),
+    /// Scan the whole repository at one ref or commit, within a credit budget.
+    Scan(scan::ScanArgs),
     /// List the recorded runs of a pull request.
     History(tools::HistoryArgs),
     /// Read the repository review guidance as JSON.
@@ -482,6 +485,11 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
         Command::Rerun(args) => {
             let api = connect(Http::new(origin)?, token, cli.org).await?;
             tools::rerun(&api, &args).await
+        }
+        Command::Scan(args) => {
+            let request = scan::request(&args)?;
+            let api = connect(Http::new(origin)?, token, cli.org).await?;
+            scan::run(&api, &args, &request).await
         }
         Command::History(args) => {
             let api = connect(Http::new(origin)?, token, cli.org).await?;
