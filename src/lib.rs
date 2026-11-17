@@ -3,6 +3,7 @@
 //! through the public review API. It shares no code with the server crate.
 
 mod agent;
+mod annotations;
 pub mod api;
 mod config;
 mod coverage;
@@ -194,6 +195,11 @@ struct CiReviewArgs {
     /// Also write the review as SARIF 2.1.0 to this file.
     #[arg(long, value_name = "FILE")]
     sarif: Option<PathBuf>,
+    /// Also print each finding that is not resolved as a GitHub Actions
+    /// annotation on stderr, so it shows on the pull request's diff. Unlike
+    /// uploading `--sarif` to code scanning, this works on every GitHub plan.
+    #[arg(long)]
+    annotations: bool,
     /// Print JSON instead of text.
     #[arg(long)]
     json: bool,
@@ -1257,6 +1263,9 @@ async fn ci_review(
     if let Some(path) = sarif_path {
         write_sarif(api, review_id, &detail, path).await?;
     }
+    if args.annotations {
+        annotations::write(&detail, &mut std::io::stderr().lock())?;
+    }
     print_review(
         api,
         review_id,
@@ -1669,6 +1678,7 @@ mod tests {
             let args = CiReviewArgs {
                 commit: None,
                 sarif: None,
+                annotations: false,
                 json: false,
                 timeout: 3,
                 fail_on: None,
@@ -1736,6 +1746,7 @@ mod tests {
         let args = CiReviewArgs {
             commit: None,
             sarif: None,
+            annotations: false,
             json: false,
             timeout: 3,
             fail_on: None,

@@ -33,6 +33,8 @@ Native knowledge, plan, fix and configuration commands send the selected organiz
 
 `proofline rerun REVIEW_ID` requests the original immutable subject and waits, while `--no-wait` returns its link. Reruns require `reviews:rerun`. `proofline guidance --repo owner/name` requires `guidance:read`, and `proofline fix-prompt FINDING_ID` requires `findings:read`. History, guidance, and fix prompts print JSON; prompt text remains untrusted.
 
+In GitHub Actions, `proofline ci review --annotations` prints unresolved findings as workflow annotations at verified cited lines. Findings without a verified head location appear on the job. The review link contains the full result.
+
 ## Scans
 
 `proofline scan --ref main --budget 200` scans the whole repository at one commit, not a pull request's change. GitHub resolves the ref once, when the request arrives, and the scan records that commit; `--commit SHA` names an exact full SHA instead, and you give one of the two. The command waits for the scan review and prints it like `proofline review`, while `--no-wait` prints its link and `--json` prints JSON.
