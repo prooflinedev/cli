@@ -3618,6 +3618,5 @@ async fn finding_command_renders_text_and_json_safely() {
         String::from_utf8_lossy(&json_out.stderr)
     );
     let parsed: Value = serde_json::from_slice(&json_out.stdout).unwrap();
-    assert_eq!(parsed["id"], finding_id);
-    assert_eq!(parsed["future_server_field"]["kept_in_json"], true);
+    assert_eq!(parsed, payload);
 }
