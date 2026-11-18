@@ -282,7 +282,7 @@ async fn a_token_without_the_scan_scope_is_told_which_login_to_run() {
     let (origin, _) = serve(refused(StatusCode::FORBIDDEN, "missing scope")).await;
     let output = cli(&origin, &["--ref", "main", "--budget", "5"]).await;
     assert_eq!(output.status.code(), Some(1));
-    assert!(stderr(&output).contains("--scope scans:request"));
+    assert!(stderr(&output).contains("proofline login --add-scope scans:request"));
 }
 
 #[tokio::test]

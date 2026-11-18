@@ -86,7 +86,7 @@ pub(crate) async fn run(
         Ok(response) => response,
         Err(error) if error.status() == Some(403) => {
             return Err(anyhow::Error::new(error).context(
-                "this sign-in cannot request scans; run `proofline login --scope reviews:read --scope findings:read --scope reviews:request --scope scans:request`, and have the token's repositories include this one",
+                "this sign-in cannot request scans; run `proofline login --add-scope scans:request`, and have the token's repositories include this one",
             ));
         }
         // The scan may have started, so the caller gets the one retry that

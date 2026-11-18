@@ -147,6 +147,17 @@ pub async fn probe(origin: &Origin) -> Result<(), CredentialError> {
     }
 }
 
+/// The scopes of the sign-in stored for `origin`, even when it has expired.
+/// An unreadable entry counts as none, as it does for [`probe`], because the
+/// next sign-in replaces it.
+pub async fn stored_scope(origin: &Origin) -> Result<Option<String>, CredentialError> {
+    match read(origin).await {
+        Ok(stored) => Ok(stored.and_then(|stored| stored.scope)),
+        Err(CredentialError::Corrupt) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 pub async fn store(origin: &Origin, credential: &Credential) -> Result<(), CredentialError> {
     let stored = Stored {
         token: credential.token.expose_secret().to_owned(),
