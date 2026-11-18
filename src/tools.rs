@@ -48,6 +48,15 @@ impl Dataset {
     }
 }
 
+/// Version 2 of the finding datasets adds code-lane rows. Version 1 stays
+/// accepted from servers that have not moved to version 2.
+const fn versions(dataset: Dataset) -> &'static [&'static str] {
+    match dataset {
+        Dataset::Findings | Dataset::FindingValidations => &["1", "2"],
+        Dataset::Reviews | Dataset::FindingOutcomes | Dataset::Spend => &["1"],
+    }
+}
+
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum Format {
     Csv,
@@ -134,11 +143,11 @@ pub(crate) async fn export(api: &Api, args: &ExportArgs) -> anyhow::Result<Verdi
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default();
     if content_type.split(';').next().map(str::trim) != Some(accept)
-        || reply
+        || !reply
             .headers
             .get("x-proofline-export-version")
             .and_then(|v| v.to_str().ok())
-            != Some("1")
+            .is_some_and(|version| versions(args.dataset).contains(&version))
     {
         bail!("the server returned an unsupported export format or version");
     }

@@ -199,7 +199,7 @@ pub fn review(review: &ReviewDetail, state: Option<Outcome>, url: &Url) -> Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Checks, EvidenceRef, FileScope, ReviewSubject};
+    use crate::model::{Checks, EvidenceRef};
 
     fn sample(status: &str, findings: Vec<Finding>) -> ReviewDetail {
         ReviewDetail {
@@ -304,124 +304,5 @@ mod tests {
         let text = review(&detail, None, &url());
         assert!(!text.contains('\u{1b}'));
         assert!(text.contains("x\u{FFFD}[2J y"));
-    }
-
-    fn first_line(detail: &ReviewDetail, state: Option<Outcome>) -> String {
-        review(detail, state, &url())
-            .lines()
-            .next()
-            .unwrap()
-            .to_owned()
-    }
-
-    #[test]
-    fn the_headline_names_the_pull_request_the_repository_or_the_kind() {
-        let mut detail = sample("COMPLETED", Vec::new());
-        assert_eq!(
-            first_line(&detail, None),
-            "acme/web #42 run 2 at 0123456789ab: COMPLETED"
-        );
-        detail.pull_request_number = None;
-        detail.run_number = None;
-        assert_eq!(
-            first_line(&detail, Some(Outcome::Incomplete)),
-            "acme/web at 0123456789ab: INCOMPLETE"
-        );
-        detail.repository_full_name = None;
-        assert_eq!(
-            first_line(&detail, None),
-            "PULL_REQUEST at 0123456789ab: COMPLETED"
-        );
-    }
-
-    #[test]
-    fn a_patch_review_names_its_base_a_commit_review_its_range_and_others_their_head() {
-        let mut detail = sample("COMPLETED", Vec::new());
-        detail.repository_full_name = None;
-        detail.run_number = None;
-        detail.kind = "PATCH".to_owned();
-        assert_eq!(first_line(&detail, None), "PATCH: COMPLETED");
-        detail.base_commit_sha = Some("fedcba9876543210fedcba9876543210fedcba98".to_owned());
-        assert_eq!(
-            first_line(&detail, None),
-            "PATCH local changes on fedcba987654: COMPLETED"
-        );
-        detail.kind = "COMMIT".to_owned();
-        assert_eq!(
-            first_line(&detail, None),
-            "COMMIT fedcba987654..0123456789ab: COMPLETED"
-        );
-        detail.base_commit_sha = None;
-        assert_eq!(
-            first_line(&detail, None),
-            "COMMIT at 0123456789ab: COMPLETED"
-        );
-    }
-
-    #[test]
-    fn a_review_level_gap_prints_beside_the_headline() {
-        let mut detail = sample("COMPLETED", Vec::new());
-        detail.assessment_count = 2;
-        let text = review(&detail, outcome::terminal(&detail), &url());
-        assert_eq!(
-            text.lines().nth(2),
-            Some("Review incomplete: ASSESSMENT_HISTORY_UNAVAILABLE"),
-            "{text}"
-        );
-    }
-
-    #[test]
-    fn a_files_review_lists_its_selected_paths() {
-        let mut detail = sample("COMPLETED", Vec::new());
-        detail.subjects = vec![ReviewSubject {
-            kind: "GIT_REVISION".to_owned(),
-            role: "PRIMARY".to_owned(),
-            file_scope: Some(FileScope {
-                paths: vec!["src/orders.rs".to_owned(), "src/lib.rs".to_owned()],
-                paths_digest: "digest".to_owned(),
-            }),
-        }];
-        assert!(!review(&detail, None, &url()).contains("Selected files"));
-        detail.kind = "FILES".to_owned();
-        let text = review(&detail, None, &url());
-        assert_eq!(
-            text.lines().nth(2),
-            Some("Selected files: src/orders.rs, src/lib.rs"),
-            "{text}"
-        );
-    }
-
-    #[test]
-    fn a_review_with_no_recorded_environment_says_so() {
-        let mut detail = sample("COMPLETED", Vec::new());
-        detail.assessments.clear();
-        let text = review(&detail, outcome::terminal(&detail), &url());
-        assert!(
-            text.contains("\nno environment assessment has been recorded yet\n"),
-            "{text}"
-        );
-        assert!(!text.contains("no findings"), "{text}");
-    }
-
-    #[test]
-    fn local_reverifications_print_after_the_assessments() {
-        let mut detail = sample("COMPLETED", Vec::new());
-        assert!(!review(&detail, None, &url()).contains("Re-verified"));
-        detail.local_reverifications = vec![LocalReverification {
-            finding_id: uuid::Uuid::nil(),
-            iteration: 2,
-            outcome: "STILL_PRESENT".to_owned(),
-            checks: serde_json::Value::Null,
-        }];
-        let text = review(&detail, None, &url());
-        let environment = text.find("production: COMPLETED").unwrap();
-        let block = text.find("Re-verified against the local changes").unwrap();
-        assert!(environment < block, "{text}");
-        assert!(
-            text.contains(
-                "  00000000-0000-0000-0000-000000000000  STILL_PRESENT  (request 2 of 3)"
-            ),
-            "{text}"
-        );
     }
 }

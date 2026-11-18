@@ -2412,6 +2412,21 @@
         ],
         "type": "object"
       },
+      "ExportFindingLane": {
+        "description": "The review lane whose assessment recorded a finding.",
+        "oneOf": [
+          {
+            "const": "ENVIRONMENT",
+            "description": "An environment assessment, which covers one environment.",
+            "type": "string"
+          },
+          {
+            "const": "CODE",
+            "description": "The code assessment of the review's repository, which covers no environment.",
+            "type": "string"
+          }
+        ]
+      },
       "ExportFindingLifecycle": {
         "enum": [
           "NEW",
@@ -3268,16 +3283,19 @@
             "type": "string"
           },
           "dataset_version": {
-            "description": "The row contract version, always `1`.",
+            "description": "The row contract version, always `2`.",
             "format": "uint16",
             "maximum": 65535,
             "minimum": 0,
             "type": "integer"
           },
           "environment_id": {
-            "description": "The environment of the assessment that recorded the finding.",
+            "description": "The environment of the assessment that recorded the finding, null for a code-lane\n finding.",
             "format": "uuid",
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expires_at": {
             "description": "When the decision expires, null when it records no expiry.",
@@ -3291,6 +3309,14 @@
             "description": "The finding occurrence the validation applies to.",
             "format": "uuid",
             "type": "string"
+          },
+          "lane": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ExportFindingLane"
+              }
+            ],
+            "description": "The lane of the assessment that recorded the finding."
           },
           "organization_id": {
             "description": "The organization that owns the finding.",
@@ -3338,7 +3364,7 @@
           "validation_id",
           "finding_id",
           "review_id",
-          "environment_id",
+          "lane",
           "validation",
           "source",
           "created_at"
@@ -3349,7 +3375,7 @@
         "description": "One immutable finding occurrence. Reference payloads and evidence values stay private.",
         "properties": {
           "assessment_id": {
-            "description": "The environment assessment that recorded the finding.",
+            "description": "The environment or code assessment that recorded the finding; `lane` says which.",
             "format": "uuid",
             "type": "string"
           },
@@ -3363,16 +3389,19 @@
             "type": "string"
           },
           "dataset_version": {
-            "description": "The row contract version, always `1`.",
+            "description": "The row contract version, always `2`.",
             "format": "uint16",
             "maximum": 65535,
             "minimum": 0,
             "type": "integer"
           },
           "environment_id": {
-            "description": "The environment the assessment covers.",
+            "description": "The environment the assessment covers, null for a code-lane finding.",
             "format": "uuid",
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "evidence_refs": {
             "description": "The finding's evidence references in recorded order, each reduced to a kind and an\n opaque ID; an empty list means the finding records none.",
@@ -3389,6 +3418,14 @@
           "impact": {
             "description": "The finding's stated impact, with supported credential shapes masked.",
             "type": "string"
+          },
+          "lane": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ExportFindingLane"
+              }
+            ],
+            "description": "The lane of the assessment that recorded the finding."
           },
           "lifecycle_state": {
             "allOf": [
@@ -3450,7 +3487,7 @@
           "finding_id",
           "review_id",
           "assessment_id",
-          "environment_id",
+          "lane",
           "risk_domain",
           "severity",
           "lifecycle_state",
@@ -6231,7 +6268,7 @@
   },
   "info": {
     "title": "Proofline Review API",
-    "version": "5.11.0"
+    "version": "6.0.0"
   },
   "openapi": "3.1.0",
   "paths": {

@@ -43,7 +43,7 @@ const OPERATIONS: &[(&str, &str, &[&str])] = &[
 // crate's distribution carries it at the crate root. The checkout's comes
 // first, so a stale copy at the crate root is never built there. Sources and
 // tests read the copy written to OUT_DIR.
-const CONTRACTS: [&str; 2] = ["../clients/sdk/openapi.public.json", "openapi.public.json"];
+const CONTRACTS: [&str; 2] = ["../sdk/openapi.public.json", "openapi.public.json"];
 
 fn main() -> Result<(), Box<dyn Error>> {
     let contract = CONTRACTS

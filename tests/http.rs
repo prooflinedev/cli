@@ -2494,6 +2494,17 @@ async fn native_tools_keep_tenant_paths_and_reruns_make_one_attempt() {
                 )
                     .into_response();
             }
+            if path.contains("/exports/") {
+                return (
+                    [
+                        ("content-type", "application/x-ndjson"),
+                        ("x-proofline-export-version", "2"),
+                        ("x-proofline-export-settled-until", "2026-10-25T00:00:00Z"),
+                    ],
+                    "{\"dataset_version\":2}\n",
+                )
+                    .into_response();
+            }
             if path.ends_with("repository-names") {
                 return Json(
                     json!({"repositories": [{"id": REPOSITORY, "full_name":"owner/repo"}]}),
@@ -2547,6 +2558,31 @@ async fn native_tools_keep_tenant_paths_and_reruns_make_one_attempt() {
     );
     assert_eq!(output.stdout, b"dataset_version,claim\r\n1,\"a,b\"\r\n");
     assert!(String::from_utf8_lossy(&output.stderr).contains("next-cursor: opaque-next"));
+    // Version 2 of the finding datasets is accepted; other datasets stay at 1.
+    for (dataset, accepted) in [
+        ("findings", true),
+        ("finding_validations", true),
+        ("spend", false),
+    ] {
+        let output = cli(
+            &origin,
+            &[
+                "export",
+                dataset,
+                "--from",
+                "2026-10-01T00:00:00Z",
+                "--to",
+                "2026-10-25T00:00:00Z",
+                "--format",
+                "ndjson",
+            ],
+        )
+        .await;
+        assert_eq!(output.status.success(), accepted, "{dataset}");
+        if accepted {
+            assert_eq!(output.stdout, b"{\"dataset_version\":2}\n", "{dataset}");
+        }
+    }
     server.abort();
 }
 
