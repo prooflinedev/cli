@@ -3729,6 +3729,12 @@
                 "format": "date-time",
                 "type": "string"
               },
+              "open_finding_threads": {
+                "description": "The unresolved threads in `unresolved_count` that belong to a\n finding `open_findings` already counts. Absent when none does.",
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
               "status": {
                 "const": "KNOWN",
                 "type": "string"
