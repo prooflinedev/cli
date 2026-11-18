@@ -2280,6 +2280,13 @@
           "severity": {
             "description": "Severity used by the series count; the linked occurrence may be less severe.",
             "type": "string"
+          },
+          "title": {
+            "description": "The linked occurrence's title, which heads the series' GitHub thread.\n Absent when the occurrence has none or its review withheld a value\n from it, so no text that review kept off GitHub is shown here.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
