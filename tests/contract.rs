@@ -4,11 +4,11 @@ use std::process::Command;
 
 use proofline_cli::model::{
     Assessment, Check, Checks, CodeAssessment, CommitReviewRequest, CommitReviewResponse,
-    CoverageUploadRequest, CoverageUploadResponse, EvidenceRef, FileReviewRequest,
-    FileReviewResponse, FileScope, FilterChoice, Finding, OpenItems, PatchReviewRequest,
-    PatchReviewResponse, RepositoryName, RepositoryNames, ReviewDetail, ReviewFilters, ReviewPage,
-    ReviewSubject, ReviewSummary, RunNowMode, RunNowRequest, RunNowResponse, StopResponse,
-    UploadedReport,
+    CoverageUploadRequest, CoverageUploadResponse, CustomerEvidenceRef, CustomerFinding,
+    EvidenceRef, FileReviewRequest, FileReviewResponse, FileScope, FilterChoice, Finding,
+    OpenItems, PatchReviewRequest, PatchReviewResponse, RepositoryName, RepositoryNames,
+    ReviewDetail, ReviewFilters, ReviewPage, ReviewSubject, ReviewSummary, RunNowMode,
+    RunNowRequest, RunNowResponse, StopResponse, UploadedReport,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -161,7 +161,9 @@ fn types_match_the_public_contract() {
     holds::<Checks>("CustomerChecks");
     holds::<Check>("CustomerCheck");
     holds::<Finding>("CustomerFinding");
+    holds::<CustomerFinding>("CustomerFinding");
     holds::<EvidenceRef>("CustomerEvidenceRef");
+    holds::<CustomerEvidenceRef>("CustomerEvidenceRef");
     holds::<RunNowRequest>("RunNowRequest");
     holds::<RunNowResponse>("RunNowResponse");
     holds::<PatchReviewRequest>("PatchReviewRequest");
@@ -231,6 +233,10 @@ fn operations_the_cli_calls_exist() {
     for (method, path) in [
         ("get", "/api/v1/organizations/{org_id}/reviews"),
         ("get", "/api/v1/organizations/{org_id}/reviews/{review_id}"),
+        (
+            "get",
+            "/api/v1/organizations/{org_id}/findings/{finding_id}",
+        ),
         ("get", "/api/v1/organizations/{org_id}/repository-names"),
         (
             "post",
