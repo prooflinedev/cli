@@ -15,7 +15,7 @@
 set -eu
 
 PROOFLINE_CLI=https://proofline.sh/cli
-PROOFLINE_INSTALLER_VERSION=0.3.4
+PROOFLINE_INSTALLER_VERSION=0.3.5
 PROOFLINE_SETUP_MIN_VERSION=0.1.8
 
 say() {
@@ -78,11 +78,17 @@ main() {
     1:--setup) setup=true ;;
     1:--help)
       say "usage: curl -fsSL https://proofline.sh/cli | sh -s -- [--setup]"
-      say "--setup registers MCP in Claude Code, Cursor and Codex, then opens GitHub setup and CLI sign-in"
+      say "--setup registers MCP in Claude Code, Cursor and Codex, then opens GitHub setup and CLI sign-in; it needs git"
       return
       ;;
     *) refuse "unknown arguments; use --setup for coding-agent installation or --help for usage" ;;
   esac
+
+  # Agent registration runs git to keep agent configuration out of Git working
+  # trees. Check before downloading, so a machine without it gets nothing.
+  if [ "$setup" = true ] && ! command -v git >/dev/null 2>&1; then
+    refuse "coding-agent setup needs git, which is not on PATH; nothing was installed; install Git and rerun this command, or omit --setup to install only the CLI"
+  fi
 
   need curl
   need tar
@@ -140,7 +146,7 @@ main() {
   if [ "$setup" = true ]; then
     for client in claude-code cursor codex; do
       "$directory/proofline" agent install "$client" --yes ||
-        refuse "could not configure $client; earlier steps remain installed; fix the reported configuration and rerun this command"
+        refuse "could not configure $client; earlier steps remain installed; fix the reported problem and rerun this command"
     done
     say "opening Proofline setup; sign in with GitHub and install the GitHub App for your team"
     "$directory/proofline" setup ||

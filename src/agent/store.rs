@@ -297,7 +297,13 @@ impl Layout {
             .env_remove("GIT_CONFIG_PARAMETERS")
             .env_remove("GIT_CONFIG_COUNT")
             .output()
-            .map_err(|_| InstallError::GitProbe(self.target.clone()))?;
+            .map_err(|error| {
+                if error.kind() == io::ErrorKind::NotFound {
+                    InstallError::GitMissing(self.target.clone())
+                } else {
+                    InstallError::GitProbe(self.target.clone())
+                }
+            })?;
         if probe.status.success() {
             if probe.stdout == b"true\n" {
                 return Err(InstallError::Repository(self.target.clone()));

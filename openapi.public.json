@@ -168,10 +168,40 @@
         ],
         "type": "object"
       },
+      "AgentSessionConnection": {
+        "description": "A vendor connection a session on the previewed target may use.",
+        "properties": {
+          "id": {
+            "description": "The connection's ID, which a start names as `connection_id`.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "vendor": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AgentVendor"
+              }
+            ],
+            "description": "The coding-agent vendor."
+          }
+        },
+        "required": [
+          "id",
+          "vendor"
+        ],
+        "type": "object"
+      },
       "AgentSessionPrompt": {
         "oneOf": [
           {
             "properties": {
+              "connections": {
+                "description": "The organization's active vendor connections that allowlist the\n target repository; absent when none does. A start names one of\n them as `connection_id`.",
+                "items": {
+                  "$ref": "#/components/schemas/AgentSessionConnection"
+                },
+                "type": "array"
+              },
               "prompt_digest": {
                 "description": "SHA-256 of `untrusted_text`. A start names it, so the session\n sends what the person confirmed.",
                 "type": "string"
@@ -1976,6 +2006,13 @@
               "null"
             ]
           },
+          "pull_request_draft": {
+            "description": "Whether the pull request is a draft, as provider state last reported\n it. Display state only: an open draft keeps `pull_request_state` `OPEN`.\n Absent when `pull_request_state` is.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "pull_request_number": {
             "description": "The pull request number. Absent for a deployment or patch review.",
             "format": "int64",
@@ -2004,6 +2041,17 @@
               "string",
               "null"
             ]
+          },
+          "questions_unavailable_reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QuestionsUnavailableReason"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why Proofline answers no question about this run: `FORK_PULL_REQUEST`\n when the pull request is recorded as coming from a fork, whose\n conversations the fork policy excludes whatever the run. Absent\n otherwise, which does not mean a question will be answered: each one\n is still checked for access and retained evidence."
           },
           "refresh": {
             "anyOf": [
@@ -4278,6 +4326,12 @@
         ],
         "type": "object"
       },
+      "QuestionsUnavailableReason": {
+        "enum": [
+          "FORK_PULL_REQUEST"
+        ],
+        "type": "string"
+      },
       "RefreshView": {
         "description": "A recorded refresh decision, as the console shows it.",
         "properties": {
@@ -5042,6 +5096,13 @@
             "description": "The author's profile on the deployment's GitHub host. Absent when no author login is known.",
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "pull_request_draft": {
+            "description": "Whether the pull request is a draft, as provider state last reported\n it. Display state only: an open draft keeps `pull_request_state` `OPEN`.\n Absent when `pull_request_state` is.",
+            "type": [
+              "boolean",
               "null"
             ]
           },
@@ -6281,7 +6342,7 @@
   },
   "info": {
     "title": "Proofline Review API",
-    "version": "6.2.0"
+    "version": "6.3.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -6564,7 +6625,7 @@
     },
     "/api/v1/organizations/{org_id}/findings/{finding_id}/agent-session-prompt": {
       "get": {
-        "description": "Returns the exact prompt and target a coding-agent session on this pull request finding would send, with every protected value withheld, and the prompt digest a start names. Requires access to every repository in the review.",
+        "description": "Returns the exact prompt and target a coding-agent session on this pull request finding would send, with every protected value withheld, the prompt digest a start names, and the ID and vendor of each active connection that allowlists the target repository. Requires access to every repository in the review.",
         "operationId": "get_agent_session_prompt",
         "parameters": [
           {

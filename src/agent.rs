@@ -111,6 +111,10 @@ enum InstallError {
         "could not determine whether {0:?} is inside a Git working tree; no configuration was written"
     )]
     GitProbe(PathBuf),
+    #[error(
+        "git is not installed or not on PATH, and Proofline needs it to check that {0:?} is outside a Git working tree; install Git and run this command again. No configuration was written"
+    )]
+    GitMissing(PathBuf),
     #[error("refusing a symlink or non-directory configuration path: {0:?}")]
     Directory(PathBuf),
     #[error("refusing a symlink or non-regular configuration file: {0:?}")]

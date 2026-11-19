@@ -122,3 +122,34 @@ fn unattended_confirmation_keeps_refusals_and_manual_preview() {
     assert!(!path.exists());
     assert!(!custom.exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn without_git_registration_names_the_recovery_and_a_repository_still_refuses() {
+    let root = TempDir::new().unwrap();
+    let no_git = root.path().join("no-git");
+    let home = root.path().join("home");
+    fs::create_dir_all(&no_git).unwrap();
+    fs::create_dir_all(&home).unwrap();
+    let binary = Path::new(env!("CARGO_BIN_EXE_proofline"));
+    let run = |args: &[&str]| {
+        command(binary, &home)
+            .env("PATH", &no_git)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let missing = run(&["agent", "install", "codex", "--yes"]);
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("install Git"));
+    assert_eq!(fs::read_dir(&home).unwrap().count(), 0);
+    let preview = run(&["agent", "install", "codex", "--print"]);
+    assert!(preview.status.success());
+    assert!(toml::from_str::<toml::Value>(std::str::from_utf8(&preview.stdout).unwrap()).is_ok());
+    fs::create_dir_all(home.join(".git")).unwrap();
+    let repository = run(&["agent", "install", "codex", "--yes"]);
+    assert!(!repository.status.success());
+    let refused = String::from_utf8_lossy(&repository.stderr);
+    assert!(refused.contains("Git working tree") && !refused.contains("install Git"));
+    assert_eq!(fs::read_dir(&home).unwrap().count(), 1);
+}
