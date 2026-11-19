@@ -8,6 +8,8 @@ This repository is the published distribution of the Proofline CLI. `openapi.pub
 
 On Linux and macOS, install the CLI with `curl -fsSL https://proofline.sh/cli | sh`, then run `proofline login`. Run `proofline setup` to open the browser organization selector. Pass `--organization NAME` to open that GitHub organization's installation page, or `--print` to only print its address. Cloud trust and connection changes still require a signed-in administrator browser.
 
+`proofline status` reports the active origin, organization ID, token source, and server verification status. Pass `--json` to output structured status metadata for automation and scripts.
+
 `proofline completions SHELL` prints a completion script for `zsh`, `bash`, `fish`, `powershell`, or `elvish` without signing in or making a network call. For example, add `source <(proofline completions zsh)` to `~/.zshrc`.
 
 ### Windows installation
