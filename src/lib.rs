@@ -160,6 +160,8 @@ enum Command {
     Stop(StopArgs),
     /// Show the findings of the latest review of a commit or pull request.
     Findings(FindingsArgs),
+    /// Read one finding with its evidence references, validation state, and causal graph.
+    Finding(FindingArgs),
     /// Forward a coding agent's stdio messages to this console's MCP server.
     Mcp,
     /// Commands for a CI job.
@@ -214,6 +216,15 @@ struct CiReviewArgs {
     fail_on: Option<Severity>,
     #[command(flatten)]
     repository: RepositoryArgs,
+}
+
+#[derive(Debug, Args)]
+struct FindingArgs {
+    /// Finding UUID.
+    finding_id: Uuid,
+    /// Print JSON instead of text.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -553,6 +564,19 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
             }
             let api = connect(Http::new(origin)?, token, cli.org).await?;
             findings(&api, &args).await
+        }
+        Command::Finding(args) => {
+            let api = connect(Http::new(origin)?, token, cli.org).await?;
+            let (raw, typed) = api.finding(args.finding_id).await?;
+            if args.json {
+                return tools::json(&raw);
+            }
+            write!(
+                std::io::stdout().lock(),
+                "{}",
+                render::finding_detail(&typed)
+            )?;
+            Ok(Verdict::Done)
         }
         Command::Mcp => {
             let http = Http::new(origin)?;

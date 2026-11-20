@@ -12,9 +12,9 @@ use uuid::Uuid;
 
 use crate::model::{
     CommitReviewRequest, CommitReviewResponse, CoverageUploadRequest, CoverageUploadResponse,
-    FileReviewRequest, FileReviewResponse, PatchReviewRequest, PatchReviewResponse,
-    RepositoryNames, ReviewDetail, ReviewPage, RunNowMode, RunNowRequest, RunNowResponse,
-    ScanRequest, ScanResponse, StopResponse,
+    CustomerFinding, FileReviewRequest, FileReviewResponse, PatchReviewRequest,
+    PatchReviewResponse, RepositoryNames, ReviewDetail, ReviewPage, RunNowMode, RunNowRequest,
+    RunNowResponse, ScanRequest, ScanResponse, StopResponse,
 };
 use crate::origin::Origin;
 use crate::text::terminal_safe;
@@ -497,6 +497,18 @@ impl Api {
     ) -> Result<(serde_json::Value, ReviewDetail), ApiError> {
         let id = review_id.to_string();
         let raw = self.get(self.url_get_review(&id)).await?;
+        let typed = serde_json::from_value(raw.clone())
+            .map_err(|error| self.http.protocol(error.to_string()))?;
+        Ok((raw, typed))
+    }
+
+    /// Fetches one finding as the raw document and its typed reading.
+    pub async fn finding(
+        &self,
+        finding_id: Uuid,
+    ) -> Result<(serde_json::Value, CustomerFinding), ApiError> {
+        let id = finding_id.to_string();
+        let raw = self.get(self.url_get_finding(&id)).await?;
         let typed = serde_json::from_value(raw.clone())
             .map_err(|error| self.http.protocol(error.to_string()))?;
         Ok((raw, typed))

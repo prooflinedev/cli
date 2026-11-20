@@ -5,7 +5,10 @@ use std::cmp::Reverse;
 
 use url::Url;
 
-use crate::model::{Assessment, CodeAssessment, Finding, LocalReverification, ReviewDetail};
+use crate::model::{
+    Assessment, CodeAssessment, CustomerEvidenceRef, CustomerFinding, Finding, LocalReverification,
+    ReviewDetail,
+};
 use crate::outcome::{self, Outcome};
 use crate::severity::Severity;
 use crate::text::{one_line, terminal_safe};
@@ -196,6 +199,132 @@ pub fn review(review: &ReviewDetail, state: Option<Outcome>, url: &Url) -> Strin
     out.join("\n")
 }
 
+fn format_evidence_ref(evidence: &CustomerEvidenceRef) -> String {
+    let place = evidence
+        .repository_path
+        .as_deref()
+        .map(one_line)
+        .map(|path| match (evidence.start_line, evidence.end_line) {
+            (Some(start), Some(end)) if end > start => format!("{path}:{start}-{end}"),
+            (Some(start), _) => format!("{path}:{start}"),
+            (None, _) => path,
+        });
+    let mut parts = vec![format!(
+        "[{}] {} ({})",
+        one_line(&evidence.kind),
+        one_line(&evidence.label),
+        one_line(&evidence.provenance_status)
+    )];
+    if let Some(place) = place {
+        parts.push(format!("at {place}"));
+    }
+    if let Some(url) = &evidence.url {
+        parts.push(one_line(url));
+    }
+    parts.join("  ")
+}
+
+/// Renders one `CustomerFinding` for terminal output, keeping all model- or
+/// repository-derived strings terminal-safe.
+pub fn finding_detail(finding: &CustomerFinding) -> String {
+    let mut out = vec![
+        format!(
+            "{:<8} {}  [{}]",
+            one_line(&finding.severity),
+            one_line(&finding.risk_domain),
+            one_line(&finding.lifecycle_state),
+        ),
+        format!("id: {}", finding.id),
+    ];
+    if let Some(class) = &finding.evidence_class {
+        out.push(format!("evidence_class: {}", one_line(class)));
+    }
+    if let Some(validation) = &finding.latest_validation {
+        let actor = validation
+            .actor_name
+            .as_deref()
+            .or(validation.actor_login.as_deref())
+            .map_or_else(|| "automatic".to_owned(), one_line);
+        out.push(format!(
+            "validation: {} ({}, {}, {})",
+            one_line(&validation.validation),
+            one_line(&validation.source),
+            actor,
+            one_line(&validation.recorded_at),
+        ));
+    } else if let Some(validation) = &finding.validation {
+        out.push(format!("validation: {}", one_line(validation)));
+    }
+    out.push(format!("claim: {}", one_line(&finding.claim)));
+    out.push(format!("impact: {}", one_line(&finding.impact)));
+    if let Some(remediation) = &finding.remediation {
+        out.push(format!("fix: {}", one_line(remediation)));
+    }
+    if let Some(url) = &finding.github_comment_url {
+        out.push(format!("github_comment: {}", one_line(url)));
+    }
+    if !finding.evidence_refs.is_empty() {
+        out.push("evidence:".to_owned());
+        for evidence in &finding.evidence_refs {
+            out.push(format!("  {}", format_evidence_ref(evidence)));
+        }
+    }
+    if let Some(support) = &finding.supporting_evidence {
+        if let Some(explanation) = &support.explanation {
+            out.push(format!(
+                "support: {}",
+                one_line(&explanation.untrusted_text)
+            ));
+        }
+        for evidence in &support.evidence_refs {
+            out.push(format!("  support_ref: {}", format_evidence_ref(evidence)));
+        }
+    }
+    if let Some(graph) = &finding.causal_graph {
+        out.push(format!(
+            "causal_graph: {} nodes, {} edges",
+            graph.nodes.len(),
+            graph.edges.len()
+        ));
+        for node in &graph.nodes {
+            let role = if node.role.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", one_line(&node.role))
+            };
+            out.push(format!(
+                "  node {}{}: {}",
+                one_line(&node.id),
+                role,
+                one_line(&node.label)
+            ));
+        }
+        for edge in &graph.edges {
+            let relation = edge
+                .label
+                .as_deref()
+                .map(|label| format!(" ({})", one_line(label)))
+                .unwrap_or_default();
+            out.push(format!(
+                "  edge {} -> {}{}",
+                one_line(&edge.from),
+                one_line(&edge.to),
+                relation
+            ));
+        }
+    }
+    if !finding.rule_refs.is_empty() {
+        let keys: Vec<String> = finding
+            .rule_refs
+            .iter()
+            .map(|rule| one_line(&rule.key))
+            .collect();
+        out.push(format!("rules: {}", keys.join(", ")));
+    }
+    out.push(String::new());
+    out.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -304,5 +433,104 @@ mod tests {
         let text = review(&detail, None, &url());
         assert!(!text.contains('\u{1b}'));
         assert!(text.contains("x\u{FFFD}[2J y"));
+    }
+
+    #[test]
+    fn finding_detail_renders_evidence_validation_and_causal_graph() {
+        use crate::model::{
+            CustomerEvidenceRef, CustomerFinding, CustomerFindingValidation, FindingCausalEdgeView,
+            FindingCausalGraphView, FindingCausalNodeView, FindingRuleRefView, FindingSupport,
+            UntrustedText,
+        };
+
+        let item = CustomerFinding {
+            id: uuid::Uuid::nil(),
+            finding_fingerprint: None,
+            severity: "SERIOUS".to_owned(),
+            risk_domain: "data_integrity".to_owned(),
+            claim: "x\u{1b}[2J\norder lost".to_owned(),
+            impact: "orders are dropped".to_owned(),
+            symbols: vec!["save_order".to_owned()],
+            lifecycle_state: "NEW".to_owned(),
+            remediation: Some("wrap in transaction".to_owned()),
+            evidence_class: Some("WORLD_EVIDENCED".to_owned()),
+            evidence_refs: vec![CustomerEvidenceRef {
+                kind: "CODE".to_owned(),
+                label: "handler".to_owned(),
+                provenance_status: "VERIFIED".to_owned(),
+                repository_path: Some("src/orders.rs".to_owned()),
+                start_line: Some(10),
+                end_line: Some(14),
+                file_sha256: None,
+                commit_sha: None,
+                companion_repository: None,
+                url: None,
+                workflow_run_id: None,
+                workflow_attempt: None,
+                legacy_text: None,
+            }],
+            causal_graph: Some(FindingCausalGraphView {
+                nodes: vec![
+                    FindingCausalNodeView {
+                        id: "n1".to_owned(),
+                        label: "save_order".to_owned(),
+                        role: "change".to_owned(),
+                    },
+                    FindingCausalNodeView {
+                        id: "n2".to_owned(),
+                        label: "orders_db".to_owned(),
+                        role: "failure".to_owned(),
+                    },
+                ],
+                edges: vec![FindingCausalEdgeView {
+                    from: "n1".to_owned(),
+                    to: "n2".to_owned(),
+                    label: Some("writes without tx".to_owned()),
+                }],
+            }),
+            supporting_evidence: Some(FindingSupport {
+                explanation: Some(UntrustedText {
+                    untrusted_text: "verified against schema".to_owned(),
+                }),
+                evidence_refs: Vec::new(),
+            }),
+            latest_validation: Some(CustomerFindingValidation {
+                validation: "CONFIRMED".to_owned(),
+                source: "GITHUB_COMMENT".to_owned(),
+                recorded_at: "2026-11-18T00:00:00Z".to_owned(),
+                actor_github_user_id: Some(42),
+                actor_login: Some("octocat".to_owned()),
+                actor_name: Some("Octo Cat".to_owned()),
+                covering_author_kind: None,
+                covering_author_login: None,
+                covering_comment_created_at: None,
+                github_comment_url: None,
+            }),
+            validation: Some("CONFIRMED".to_owned()),
+            github_comment_url: Some(
+                "https://github.com/owner/repo/pull/1#discussion_r1".to_owned(),
+            ),
+            rule_refs: vec![FindingRuleRefView {
+                key: "tx-safety".to_owned(),
+                revisions: Vec::new(),
+            }],
+            comment_reactions: Vec::new(),
+            local_findings: Vec::new(),
+            placement: None,
+            comment_evaluation: None,
+            thread_observation: None,
+        };
+        let text = finding_detail(&item);
+        assert!(!text.contains('\u{1b}'), "{text}");
+        assert!(text.contains("SERIOUS  data_integrity  [NEW]"), "{text}");
+        assert!(text.contains("evidence_class: WORLD_EVIDENCED"), "{text}");
+        assert!(
+            text.contains("validation: CONFIRMED (GITHUB_COMMENT, Octo Cat, 2026-11-18T00:00:00Z)"),
+            "{text}"
+        );
+        assert!(text.contains("at src/orders.rs:10-14"), "{text}");
+        assert!(text.contains("causal_graph: 2 nodes, 1 edges"), "{text}");
+        assert!(text.contains("edge n1 -> n2 (writes without tx)"), "{text}");
+        assert!(text.contains("rules: tx-safety"), "{text}");
     }
 }

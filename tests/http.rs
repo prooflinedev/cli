@@ -3506,3 +3506,117 @@ async fn config_proposal_targets_must_match_the_selected_organization() {
     assert_eq!(server.requests()[0]["arguments"]["organization_id"], ORG);
     assert_eq!(server.frames.load(Ordering::SeqCst), 3);
 }
+
+#[tokio::test]
+async fn finding_command_renders_text_and_json_safely() {
+    let finding_id = "00000000-0000-0000-0000-000000000099";
+    let expected_path = format!("/api/v1/organizations/{ORG}/findings/{finding_id}");
+    let payload = json!({
+        "id": finding_id,
+        "finding_fingerprint": null,
+        "severity": "SERIOUS",
+        "risk_domain": "data_integrity",
+        "claim": "dropped write\u{001b}[2J",
+        "impact": "orders can be lost",
+        "symbols": ["save_order"],
+        "lifecycle_state": "NEW",
+        "remediation": "wrap in a transaction",
+        "evidence_class": "WORLD_EVIDENCED",
+        "evidence_refs": [{
+            "kind": "CODE",
+            "label": "handler",
+            "provenance_status": "VERIFIED",
+            "repository_path": "src/orders.rs",
+            "start_line": 10,
+            "end_line": 14,
+            "file_sha256": null,
+            "commit_sha": null,
+            "companion_repository": null,
+            "url": null,
+            "workflow_run_id": null,
+            "workflow_attempt": null,
+            "legacy_text": null
+        }],
+        "causal_graph": {
+            "nodes": [{"id": "n1", "label": "save_order", "role": "change"}],
+            "edges": [{"from": "n1", "to": "n2", "label": "writes"}]
+        },
+        "supporting_evidence": {
+            "explanation": {"untrusted_text": "confirmed by trace"},
+            "evidence_refs": []
+        },
+        "latest_validation": {
+            "validation": "CONFIRMED",
+            "source": "GITHUB_COMMENT",
+            "recorded_at": "2026-11-18T00:00:00Z",
+            "actor_github_user_id": 42,
+            "actor_login": "octocat",
+            "actor_name": "Octo Cat",
+            "covering_author_kind": null,
+            "covering_author_login": null,
+            "covering_comment_created_at": null,
+            "github_comment_url": null
+        },
+        "validation": "CONFIRMED",
+        "github_comment_url": "https://github.com/owner/repo/pull/1#discussion_r1",
+        "rule_refs": [{"key": "tx-safety", "revisions": []}],
+        "comment_reactions": [],
+        "local_findings": [],
+        "placement": null,
+        "comment_evaluation": null,
+        "thread_observation": null,
+        "future_server_field": {"kept_in_json": true}
+    });
+    let body = payload.clone();
+    let app = Router::new().route(
+        &expected_path,
+        get(move |headers: HeaderMap| {
+            let body = body.clone();
+            async move {
+                assert_eq!(
+                    headers
+                        .get("authorization")
+                        .and_then(|value| value.to_str().ok()),
+                    Some(format!("Bearer {TOKEN}").as_str())
+                );
+                Json(body)
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let _server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let text_out = cli(&origin, &["finding", finding_id]).await;
+    assert!(
+        text_out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&text_out.stderr)
+    );
+    assert!(!text_out.stdout.contains(&27));
+    let stdout = String::from_utf8_lossy(&text_out.stdout);
+    assert!(
+        stdout.contains("SERIOUS  data_integrity  [NEW]"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("evidence_class: WORLD_EVIDENCED"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("at src/orders.rs:10-14"), "{stdout}");
+    assert!(
+        stdout.contains("causal_graph: 1 nodes, 1 edges"),
+        "{stdout}"
+    );
+
+    let json_out = cli(&origin, &["finding", finding_id, "--json"]).await;
+    assert!(
+        json_out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&json_out.stderr)
+    );
+    let parsed: Value = serde_json::from_slice(&json_out.stdout).unwrap();
+    assert_eq!(parsed, payload);
+}

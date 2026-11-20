@@ -248,6 +248,103 @@ pub struct EvidenceRef {
     pub companion_repository: Option<String>,
 }
 
+/// Full finding detail returned by `GET /findings/{finding_id}`.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CustomerFinding {
+    pub id: Uuid,
+    pub finding_fingerprint: Option<String>,
+    pub severity: String,
+    pub risk_domain: String,
+    pub claim: String,
+    pub impact: String,
+    pub symbols: Vec<String>,
+    pub lifecycle_state: String,
+    pub remediation: Option<String>,
+    pub evidence_class: Option<String>,
+    pub evidence_refs: Vec<CustomerEvidenceRef>,
+    pub causal_graph: Option<FindingCausalGraphView>,
+    pub supporting_evidence: Option<FindingSupport>,
+    pub latest_validation: Option<CustomerFindingValidation>,
+    pub validation: Option<String>,
+    pub github_comment_url: Option<String>,
+    pub rule_refs: Vec<FindingRuleRefView>,
+    pub comment_reactions: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_findings: Vec<serde_json::Value>,
+    pub placement: Option<serde_json::Value>,
+    pub comment_evaluation: Option<serde_json::Value>,
+    pub thread_observation: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CustomerEvidenceRef {
+    pub kind: String,
+    pub label: String,
+    pub provenance_status: String,
+    pub repository_path: Option<String>,
+    pub start_line: Option<u32>,
+    pub end_line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_sha256: Option<String>,
+    pub commit_sha: Option<String>,
+    pub companion_repository: Option<String>,
+    pub url: Option<String>,
+    pub workflow_run_id: Option<i64>,
+    pub workflow_attempt: Option<i64>,
+    pub legacy_text: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CustomerFindingValidation {
+    pub validation: String,
+    pub source: String,
+    pub recorded_at: String,
+    pub actor_github_user_id: Option<i64>,
+    pub actor_login: Option<String>,
+    pub actor_name: Option<String>,
+    pub covering_author_kind: Option<String>,
+    pub covering_author_login: Option<String>,
+    pub covering_comment_created_at: Option<String>,
+    pub github_comment_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FindingCausalGraphView {
+    pub nodes: Vec<FindingCausalNodeView>,
+    pub edges: Vec<FindingCausalEdgeView>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FindingCausalNodeView {
+    pub id: String,
+    pub label: String,
+    pub role: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FindingCausalEdgeView {
+    pub from: String,
+    pub to: String,
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FindingRuleRefView {
+    pub key: String,
+    pub revisions: Vec<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FindingSupport {
+    pub explanation: Option<UntrustedText>,
+    pub evidence_refs: Vec<CustomerEvidenceRef>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct UntrustedText {
+    pub untrusted_text: String,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RunNowResponse {
     pub review_id: Uuid,
