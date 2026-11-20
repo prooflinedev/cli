@@ -1903,6 +1903,17 @@
             "description": "`PULL_REQUEST`, `DEPLOYMENT`, `PATCH`, a review of local changes\n sent as a patch, `COMMIT`, a review of pushed commits, `FILES`,\n complete selected files at one pushed commit, `MERGE_GROUP`, the\n commit GitHub's merge queue built for a group of pull requests, or\n `REVISION_SCAN`, a scan of one captured commit.",
             "type": "string"
           },
+          "linked_issues": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LinkedIssueCapture"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What this review's linked-issue receipt recorded, read from the\n receipt and never from current settings, so a later allowlist change\n does not alter it. Null when the review kept no receipt: a kind that\n reads no linked issues, a run that has not prepared its context yet,\n a run that predates receipts, or a receipt that does not decode. Null\n never means that no issue was captured."
+          },
           "local_reverifications": {
             "description": "For a patch review requested with `verify_finding_ids`, each finding\n it re-verifies against the patch and the outcome. The outcome is\n local: the pull request's finding is unchanged whatever it is. Absent\n otherwise.",
             "items": {
@@ -2360,6 +2371,10 @@
             "description": "The environment's display name.",
             "type": "string"
           },
+          "environment_external_key": {
+            "description": "The environment's key, which names its console pages.",
+            "type": "string"
+          },
           "reason": {
             "anyOf": [
               {
@@ -2382,6 +2397,7 @@
         },
         "required": [
           "environment_display_name",
+          "environment_external_key",
           "state"
         ],
         "type": "object"
@@ -2391,6 +2407,16 @@
           {
             "const": "NOT_COVERED",
             "description": "`NOT_CHECKED`: Proofline does not check this environment for pull\n requests, so the review assessed its code only.",
+            "type": "string"
+          },
+          {
+            "const": "NO_CLOUD_ACCOUNT",
+            "description": "`NOT_CHECKED`: no AWS account, Google Cloud project or Azure\n subscription is connected to the environment, so the review assessed\n its code only. The environment's Setup page connects one.",
+            "type": "string"
+          },
+          {
+            "const": "READS_REFUSED",
+            "description": "`NOT_CHECKED`: the environment's assessment is incomplete because the\n inventory it pinned lacks reads a connected account's role refused.\n The environment's Setup page names them.",
             "type": "string"
           },
           {
@@ -3587,6 +3613,49 @@
           {
             "const": "UNKNOWN",
             "description": "The review ended incomplete and no assessment recorded why.",
+            "type": "string"
+          }
+        ]
+      },
+      "LinkedIssueCapture": {
+        "description": "The count and outcome of a review's linked-issue receipt. Issue numbers,\n titles and the receipt's gaps stay in the receipt.",
+        "properties": {
+          "captured_count": {
+            "description": "How many issues the review captured as context.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/LinkedIssueOutcome"
+          }
+        },
+        "required": [
+          "outcome",
+          "captured_count"
+        ],
+        "type": "object"
+      },
+      "LinkedIssueOutcome": {
+        "description": "What the review's linked-issue preparation found.",
+        "oneOf": [
+          {
+            "const": "NOT_CONFIGURED",
+            "description": "No issue source was connected for the review.",
+            "type": "string"
+          },
+          {
+            "const": "NO_REFERENCES",
+            "description": "The pull request referenced no issue.",
+            "type": "string"
+          },
+          {
+            "const": "PREPARED",
+            "description": "The pull request referenced issues and the source was read.",
+            "type": "string"
+          },
+          {
+            "const": "SOURCE_UNAVAILABLE",
+            "description": "The source could not be read, or the review's evaluation withheld\n linked issues.",
             "type": "string"
           }
         ]
@@ -6356,7 +6425,7 @@
   },
   "info": {
     "title": "Proofline Review API",
-    "version": "6.4.0"
+    "version": "7.0.0"
   },
   "openapi": "3.1.0",
   "paths": {
