@@ -1,5 +1,6 @@
 //! Official release installation and best-effort discovery between invocations.
 
+use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{IsTerminal as _, Read as _};
 use std::path::{Path, PathBuf};
@@ -373,13 +374,94 @@ fn verify(archive: &[u8], sums: &[u8], name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A build provenance check by the GitHub CLI, as `install.sh` runs it with
+/// `PROOFLINE_VERIFY_PROVENANCE=1`.
+struct Provenance {
+    gh: PathBuf,
+    version: String,
+}
+
+/// `PROOFLINE_VERIFY_PROVENANCE`: unset, empty or `0` is off and `1` is on.
+/// Anything else is refused, so a misspelt value cannot turn the check off.
+fn provenance_requested(value: Option<&OsStr>) -> anyhow::Result<bool> {
+    match value.map(OsStr::to_str) {
+        None | Some(Some("" | "0")) => Ok(false),
+        Some(Some("1")) => Ok(true),
+        _ => bail!("PROOFLINE_VERIFY_PROVENANCE must be 1 or 0; nothing was installed"),
+    }
+}
+
+/// The first executable `name` on `path`, resolved once so the check runs the
+/// program that was found.
+fn find_program(name: &str, path: Option<&OsStr>) -> Option<PathBuf> {
+    std::env::split_paths(path?)
+        .filter(|directory| directory.is_absolute())
+        .map(|directory| directory.join(name))
+        .find(|candidate| {
+            fs::metadata(candidate).is_ok_and(|metadata| {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+                }
+                #[cfg(not(unix))]
+                {
+                    metadata.is_file()
+                }
+            })
+        })
+}
+
+/// The signing certificate's identity: this repository's release workflow, at
+/// the release's tag or at main, the two refs a release is published from.
+fn provenance_identity(version: &str) -> String {
+    format!(
+        r"^https://github\.com/prooflinedev/cli/\.github/workflows/release\.yml@refs/(tags/v{}|heads/main)$",
+        version.replace('.', r"\.")
+    )
+}
+
+fn verify_provenance(provenance: &Provenance, archive: &[u8], name: &str) -> anyhow::Result<()> {
+    // `gh` reads a file, so the verified bytes are the ones installed next.
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join(name);
+    fs::write(&path, archive)?;
+    crate::say(&format!(
+        "checking build provenance of {name} with gh attestation verify"
+    ));
+    let status = Command::new(&provenance.gh)
+        .args(["attestation", "verify"])
+        .arg(&path)
+        .args(["--hostname", "github.com", "--repo", "prooflinedev/cli"])
+        .args([
+            "--cert-identity-regex",
+            &provenance_identity(&provenance.version),
+        ])
+        .arg("--deny-self-hosted-runners")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .status()
+        .context("could not run the GitHub CLI (gh); nothing was installed")?;
+    if !status.success() {
+        bail!(
+            "{name} has no build provenance from prooflinedev/cli's release workflow for {}; nothing was installed; run 'gh auth login' if gh is not signed in",
+            provenance.version
+        );
+    }
+    Ok(())
+}
+
 fn verify_and_replace(
     archive: &[u8],
     sums: &[u8],
     name: &str,
     destination: &Path,
+    provenance: Option<&Provenance>,
 ) -> anyhow::Result<()> {
     verify(archive, sums, name)?;
+    if let Some(provenance) = provenance {
+        verify_provenance(provenance, archive, name)?;
+    }
     replace(archive, destination)
 }
 
@@ -422,6 +504,16 @@ fn replace(archive: &[u8], destination: &Path) -> anyhow::Result<()> {
 
 /// Updates an official installer location after verifying the pinned archive.
 pub(crate) async fn install() -> anyhow::Result<()> {
+    // A provenance check that cannot run downloads nothing, as in install.sh.
+    let gh = if provenance_requested(std::env::var_os("PROOFLINE_VERIFY_PROVENANCE").as_deref())? {
+        Some(
+            find_program("gh", std::env::var_os("PATH").as_deref()).context(
+                "PROOFLINE_VERIFY_PROVENANCE=1 needs the GitHub CLI (gh), which is not on PATH; nothing was installed",
+            )?,
+        )
+    } else {
+        None
+    };
     let (destination, target) =
         tokio::task::spawn_blocking(|| Ok::<_, anyhow::Error>((destination()?, target()?)))
             .await??;
@@ -438,8 +530,14 @@ pub(crate) async fn install() -> anyhow::Result<()> {
     let release = format!("{RELEASES}/download/{version}");
     let sums = download(&client, &format!("{release}/SHA256SUMS"), 4096).await?;
     let archive = download(&client, &format!("{release}/{name}"), MAX_ARCHIVE).await?;
-    tokio::task::spawn_blocking(move || verify_and_replace(&archive, &sums, &name, &destination))
-        .await??;
+    let provenance = gh.map(|gh| Provenance {
+        gh,
+        version: version.clone(),
+    });
+    tokio::task::spawn_blocking(move || {
+        verify_and_replace(&archive, &sums, &name, &destination, provenance.as_ref())
+    })
+    .await??;
     crate::say(&format!("updated proofline to {version}"));
     Ok(())
 }

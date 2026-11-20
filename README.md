@@ -8,6 +8,8 @@ This repository is the published distribution of the Proofline CLI. `openapi.pub
 
 On Linux and macOS, install the CLI with `curl -fsSL https://proofline.sh/cli | sh`, then run `proofline login`. Run `proofline setup` to open the browser organization selector. Pass `--organization NAME` to open that GitHub organization's installation page, or `--print` to only print its address. Cloud trust and connection changes still require a signed-in administrator browser.
 
+`proofline update` replaces a binary in the installer directory with the newest release after checking it against that release's `SHA256SUMS`. With `PROOFLINE_VERIFY_PROVENANCE=1`, it also runs `gh attestation verify` on the archive and replaces the binary only if GitHub signed the archive for this repository's `release.yml`, on a GitHub-hosted runner, at that version's `vX.Y.Z` tag or at `main`. The check needs the [GitHub CLI](https://cli.github.com/) signed in to github.com. Without `gh`, the update downloads nothing. If the check fails, it keeps the installed binary. Any value other than `1` or `0` is refused.
+
 `proofline completions SHELL` prints a completion script for `zsh`, `bash`, `fish`, `powershell`, or `elvish` without signing in or making a network call. For example, add `source <(proofline completions zsh)` to `~/.zshrc`.
 
 ### Windows installation
