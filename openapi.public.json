@@ -1693,6 +1693,13 @@
             },
             "type": "array"
           },
+          "audit_mode": {
+            "description": "The repository audit's mode, `CODE_ONLY` or `INFRASTRUCTURE_AWARE`,\n when this `REVISION_SCAN` is an audit. An audit's findings are in its\n audit report, not in `finding_count` or the review's assessments.\n Null for every other review.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "base_branch_commit_sha": {
             "description": "The base branch tip GitHub reported when the review was triggered,\n display metadata that differs from `base_commit_sha` when the base\n branch moved after the branch point.",
             "type": [
@@ -4971,6 +4978,13 @@
             "format": "int64",
             "type": "integer"
           },
+          "audit_mode": {
+            "description": "The repository audit's mode, `CODE_ONLY` or `INFRASTRUCTURE_AWARE`,\n when this `REVISION_SCAN` is an audit. An audit's findings are in its\n audit report, not in `finding_count` or the review's assessments.\n Null for every other review.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "completed_at": {
             "description": "When the review reached a terminal status. Absent while it is still pending or running.",
             "format": "date-time",
@@ -6342,7 +6356,7 @@
   },
   "info": {
     "title": "Proofline Review API",
-    "version": "6.3.0"
+    "version": "6.4.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -7416,6 +7430,19 @@
             "style": "form"
           },
           {
+            "description": "`only` lists repository audits; `none` leaves them out, so\n `kind=REVISION_SCAN&audits=none` lists plain revision scans.",
+            "in": "query",
+            "name": "audits",
+            "schema": {
+              "description": "`only` lists repository audits; `none` leaves them out, so\n `kind=REVISION_SCAN&audits=none` lists plain revision scans.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "style": "form"
+          },
+          {
             "description": "`mine` for the caller's own pull requests, or a GitHub user ID. `mine`\n needs a person's sign-in or token.",
             "in": "query",
             "name": "author",
@@ -7680,6 +7707,19 @@
             "name": "attention",
             "schema": {
               "description": "`needed` lists terminal reviews of open pull requests with active\n findings, FAILED/INCOMPLETE/STOPPED execution, or an earlier reviewed commit.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "style": "form"
+          },
+          {
+            "description": "`only` lists repository audits; `none` leaves them out, so\n `kind=REVISION_SCAN&audits=none` lists plain revision scans.",
+            "in": "query",
+            "name": "audits",
+            "schema": {
+              "description": "`only` lists repository audits; `none` leaves them out, so\n `kind=REVISION_SCAN&audits=none` lists plain revision scans.",
               "type": [
                 "string",
                 "null"
