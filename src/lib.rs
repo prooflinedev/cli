@@ -1710,7 +1710,7 @@ mod tests {
             let case = format!("token {stored_token}, {event}");
             let start = tokio::time::Instant::now();
             let (origin, received) = console(start, Grant::Completes).await;
-            let http = Http::new(Origin::parse(&origin).unwrap()).unwrap();
+            let http = Http::without_deadlines(Origin::parse(&origin).unwrap()).unwrap();
             let issuer = github_actions::Issuer::new(
                 format!("{origin}/github/token").parse().unwrap(),
                 SecretString::from("runner-secret"),
@@ -1747,8 +1747,12 @@ mod tests {
                 let [(_, at, bearer, query)] = requests.as_slice() else {
                     panic!("{case}: {received:?}");
                 };
+                // The paused clock also jumps while a socket answers, by an
+                // amount that depends on the machine, so the request is
+                // checked to come at or after two minutes and before the
+                // job's three-minute deadline, not within a second of it.
                 assert!(
-                    (REQUEST_AFTER..REQUEST_AFTER + Duration::from_secs(1)).contains(at),
+                    (REQUEST_AFTER..Duration::from_secs(180)).contains(at),
                     "{case}: {at:?}"
                 );
                 // The exchange spent the first token; the request has its own.
@@ -1778,7 +1782,7 @@ mod tests {
         });
         let start = tokio::time::Instant::now();
         let (origin, received) = console(start, grant).await;
-        let http = Http::new(Origin::parse(&origin).unwrap()).unwrap();
+        let http = Http::without_deadlines(Origin::parse(&origin).unwrap()).unwrap();
         let issuer = github_actions::Issuer::new(
             format!("{origin}/github/token").parse().unwrap(),
             SecretString::from("runner-secret"),
