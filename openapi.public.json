@@ -1783,6 +1783,17 @@
               "null"
             ]
           },
+          "cost_funding": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReviewCostFunding"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What paid for `cost_microcredits`, read from each debit's own funding\n records. Present exactly when `cost_microcredits` is."
+          },
           "cost_microcredits": {
             "description": "The credits this run was charged so far, in microcredits, whoever\n paid: the plan, the free review month or the organization's credits.\n Null for a caller who is not a member of the organization.",
             "format": "int64",
@@ -3932,7 +3943,7 @@
             "type": "array"
           },
           "open_findings": {
-            "description": "Unresolved recorded finding series, including notification-suppressed\n findings, decisions whose dismissal or risk acceptance expired, and\n earlier published series of the pull request that this review did not\n find again.",
+            "description": "Unresolved recorded finding series, including notification-suppressed\n findings, decisions whose dismissal or risk acceptance expired, and\n earlier published series of the pull request that this review did not\n find again, and the supported findings its `KIAN` environment\n assessments published: each violated confirmed gate requirement the\n change does not set and each investigation finding, which have no\n severity.",
             "format": "uint",
             "minimum": 0,
             "type": "integer"
@@ -4656,6 +4667,32 @@
           "promote_findings",
           "stop",
           "validate_findings"
+        ],
+        "type": "object"
+      },
+      "ReviewCostFunding": {
+        "description": "What paid for a run's credit cost, as Usage splits a day. The three parts\n add up to the cost.",
+        "properties": {
+          "free_review_microcredits": {
+            "description": "Paid by the free review month: the same organization's\n `free-review:{debit_id}` grants for the run's debits.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "organization_microcredits": {
+            "description": "Taken from the organization's shared credit balance.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "plan_microcredits": {
+            "description": "Paid by the workspace allowance or the author's seat.",
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "plan_microcredits",
+          "free_review_microcredits",
+          "organization_microcredits"
         ],
         "type": "object"
       },
@@ -6425,7 +6462,7 @@
   },
   "info": {
     "title": "Proofline Review API",
-    "version": "7.0.0"
+    "version": "7.1.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -8269,7 +8306,7 @@
     },
     "/api/v1/organizations/{org_id}/reviews/{review_id}/stop": {
       "post": {
-        "description": "Stops the holder's own pending or running withheld patch, commit or named-file review. Requires a personal or CLI device token with live GitHub read access to the review's repository. Organization, CI job and MCP OAuth tokens cannot stop reviews. The stopped review retains its findings and exact code identity; requesting the same input returns that stopped review.",
+        "description": "Stops the holder's own pending or running withheld patch, commit or named-file review. Requires a personal or CLI device token with live GitHub read access to the review's repository. Organization, CI job and MCP OAuth tokens cannot stop reviews. A repository audit is refused on this route: only a person with live GitHub write access stops it, through the audit stop, and no token or platform authority does. The stopped review retains its findings and exact code identity; requesting the same input returns that stopped review.",
         "operationId": "stop_review",
         "parameters": [
           {
