@@ -222,6 +222,10 @@ struct LoginArgs {
     /// narrow them.
     #[arg(long = "scope", value_name = "SCOPE", default_values_t = DEFAULT_SCOPES.map(str::to_owned))]
     scopes: Vec<String>,
+    /// Scope to ask for on top of the scopes of the sign-in stored for this
+    /// console, or of the defaults when none is stored; repeat for several.
+    #[arg(long = "add-scope", value_name = "SCOPE", conflicts_with = "scopes")]
+    add_scopes: Vec<String>,
     /// Print the approval address instead of opening a browser.
     #[arg(long)]
     no_browser: bool,
@@ -635,7 +639,15 @@ async fn login(
     credentials::probe(http.origin())
         .await
         .context("could not read the OS keychain, so a sign-in could not be kept")?;
-    let challenge = device::start(http, &args.scopes).await?;
+    let scopes = if args.add_scopes.is_empty() {
+        args.scopes.clone()
+    } else {
+        let held = credentials::stored_scope(http.origin()).await?;
+        let scopes = with_added_scopes(held.as_deref(), &args.add_scopes);
+        say(&format!("Asking for {}.", scopes.join(" ")));
+        scopes
+    };
+    let challenge = device::start(http, &scopes).await?;
     let code = challenge.user_code.expose_secret();
     say(&format!("Your sign-in code is {code}."));
     let opened = !args.no_browser
@@ -672,6 +684,26 @@ async fn login(
             .unwrap_or_default()
     ));
     Ok(())
+}
+
+/// The scopes a sign-in with `--add-scope` asks for: the space-separated
+/// scopes `held` by the stored sign-in, or the defaults when it holds none,
+/// followed by each added scope that is not already among them.
+fn with_added_scopes(held: Option<&str>, added: &[String]) -> Vec<String> {
+    let mut scopes: Vec<String> = held
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    if scopes.is_empty() {
+        scopes = DEFAULT_SCOPES.map(str::to_owned).to_vec();
+    }
+    for scope in added {
+        if !scopes.contains(scope) {
+            scopes.push(scope.clone());
+        }
+    }
+    scopes
 }
 
 async fn logout(origin: &Origin, environment: bool) -> anyhow::Result<()> {
@@ -1970,5 +2002,53 @@ mod tests {
             ci_verdict(Some(Outcome::Incomplete), None, None, serious),
             Verdict::NotComplete
         );
+    }
+
+    #[test]
+    fn added_scopes_keep_the_stored_sign_in_scopes() {
+        let added = ["scans:request".to_owned(), "reviews:read".to_owned()];
+        assert_eq!(
+            with_added_scopes(Some("reviews:read  analytics:read\tsetup:write"), &added),
+            [
+                "reviews:read",
+                "analytics:read",
+                "setup:write",
+                "scans:request"
+            ]
+        );
+    }
+
+    #[test]
+    fn added_scopes_start_from_the_defaults_without_a_stored_scope() {
+        let added = ["scans:request".to_owned(), "scans:request".to_owned()];
+        let expected = [
+            "reviews:read",
+            "findings:read",
+            "reviews:request",
+            "scans:request",
+        ];
+        assert_eq!(with_added_scopes(None, &added), expected);
+        assert_eq!(with_added_scopes(Some(" "), &added), expected);
+    }
+
+    #[test]
+    fn add_scope_cannot_be_combined_with_scope() {
+        let parse = |args: &[&str]| Cli::try_parse_from(["proofline", "login"].iter().chain(args));
+        let Ok(Cli {
+            command: Command::Login(login),
+            ..
+        }) = parse(&[
+            "--add-scope",
+            "scans:request",
+            "--add-scope",
+            "analytics:read",
+        ])
+        else {
+            panic!("--add-scope alone should parse");
+        };
+        assert_eq!(login.add_scopes, ["scans:request", "analytics:read"]);
+        let error = parse(&["--add-scope", "scans:request", "--scope", "reviews:read"])
+            .expect_err("--scope and --add-scope conflict");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 }
