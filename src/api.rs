@@ -22,6 +22,7 @@ use crate::text::terminal_safe;
 pub const USER_AGENT: &str = concat!("proofline-cli/", env!("CARGO_PKG_VERSION"));
 const MAX_BODY: usize = 8 * 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_ATTEMPTS: u32 = 4;
 const MAX_RETRY_AFTER: u64 = 60;
 
@@ -106,6 +107,23 @@ fn json_content_type(headers: &header::HeaderMap) -> bool {
         })
 }
 
+/// An error's message followed by each cause, so a failed request says why
+/// ("Connection refused", "operation timed out", a certificate error) and not
+/// only that sending it failed.
+fn with_causes(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut message = error.to_string();
+    let mut cause = error.source();
+    while let Some(next) = cause {
+        let text = next.to_string();
+        if !message.ends_with(&text) {
+            message.push_str(": ");
+            message.push_str(&text);
+        }
+        cause = next.source();
+    }
+    message
+}
+
 impl ApiError {
     pub const fn status(&self) -> Option<u16> {
         match self {
@@ -177,10 +195,26 @@ pub struct Http {
 
 impl Http {
     pub fn new(origin: Origin) -> Result<Self, ApiError> {
+        Self::with_timeouts(origin, REQUEST_TIMEOUT, CONNECT_TIMEOUT)
+    }
+
+    /// A client for a test on a paused clock, which jumps ahead whenever the
+    /// runtime waits on a socket, so the real timeouts would fire first.
+    #[cfg(test)]
+    pub(crate) fn without_deadlines(origin: Origin) -> Result<Self, ApiError> {
+        let hour = Duration::from_secs(3600);
+        Self::with_timeouts(origin, hour, hour)
+    }
+
+    fn with_timeouts(
+        origin: Origin,
+        request: Duration,
+        connect: Duration,
+    ) -> Result<Self, ApiError> {
         let client = client_builder()
             .user_agent(USER_AGENT)
-            .timeout(REQUEST_TIMEOUT)
-            .connect_timeout(Duration::from_secs(10))
+            .timeout(request)
+            .connect_timeout(connect)
             // A redirect would carry the credential to another origin.
             .redirect(reqwest::redirect::Policy::none())
             // Api::get owns the read retry budget; the client never replays a POST.
@@ -201,7 +235,7 @@ impl Http {
         ApiError::Transport {
             origin: self.origin.to_string(),
             // reqwest's message names the URL, which carries no secret here.
-            reason: error.to_string(),
+            reason: with_causes(error),
         }
     }
 
@@ -704,5 +738,33 @@ impl Api {
         self.http
             .origin
             .join(["orgs", "by-id", &organization, "reviews", &review])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A request that cannot connect names why, not only that it failed.
+    #[tokio::test]
+    async fn a_transport_failure_names_its_cause() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let http = Http::new(Origin::parse(&format!("http://127.0.0.1:{port}")).unwrap()).unwrap();
+
+        let error = http
+            .send(http.get(format!("http://127.0.0.1:{port}/").parse().unwrap()))
+            .await
+            .err()
+            .unwrap();
+
+        let ApiError::Transport { reason, .. } = error else {
+            panic!("expected a transport error, got {error:?}");
+        };
+        assert!(
+            reason.to_lowercase().contains("refused"),
+            "the reason hides the cause: {reason}"
+        );
     }
 }
