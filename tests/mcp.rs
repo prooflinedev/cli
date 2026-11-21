@@ -989,6 +989,18 @@ async fn bounded_frames_serial_backpressure_and_broken_stdout_release_the_actual
             -32600,
             "jsonrpc",
         ),
+        (
+            b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"method\":\"ping\"}\n".to_vec(),
+            false,
+            -32600,
+            "jsonrpc",
+        ),
+        (
+            b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{},\"params\":{}}\n".to_vec(),
+            false,
+            -32600,
+            "jsonrpc",
+        ),
     ] {
         let fixture = Fixture::start().await;
         let mut bridge = Bridge::start(&fixture.origin, ORG);
