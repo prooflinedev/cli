@@ -7206,7 +7206,7 @@
     },
     "/api/v1/organizations/{org_id}/exports/{dataset}": {
       "get": {
-        "description": "Returns one page of a version-1 export dataset (`reviews`, `finding_outcomes`, `finding_validations`, `spend` or `findings`) for an RFC3339 window of at most 31 days, as NDJSON by default or CSV. Rows respect the token's repository restriction.",
+        "description": "Returns one page of an export dataset (`reviews`, `finding_outcomes`, `finding_validations`, `spend` or `findings`) for an RFC3339 window of at most 31 days, as NDJSON by default or CSV. Each dataset has its own row version, which the `X-Proofline-Export-Version` response header states on every page, including a page with no rows. Rows respect the token's repository restriction.",
         "operationId": "export_reviews",
         "parameters": [
           {
@@ -7336,7 +7336,7 @@
                 "style": "simple"
               },
               "X-Proofline-Export-Version": {
-                "description": "Dataset version 1.",
+                "description": "The row version of the selected dataset, sent on every page, including a page with no rows: `reviews` 1, `finding_outcomes` 1, `finding_validations` 2, `spend` 1, `findings` 2.",
                 "required": true,
                 "schema": {
                   "$schema": "https://json-schema.org/draft/2020-12/schema",
