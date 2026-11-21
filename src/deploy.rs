@@ -18,6 +18,8 @@ use crate::{
     poll_deadline, say, text,
 };
 
+const SAME_RUN: &str = "Proofline records the landing of a run's deploy only after the run completes. Read it from a separate workflow: https://proofline.sh/docs/ci/#read-the-checks-from-a-separate-workflow";
+
 /// Minutes `ci deploy` waits without `--timeout`.
 const DEFAULT_TIMEOUT_MINUTES: u64 = 30;
 
@@ -103,6 +105,14 @@ impl CiDeployArgs {
             self.run = Some(produced.id);
             self.attempt = produced.attempt;
         }
+    }
+
+    /// A deploying run cannot read its landing until the run finishes.
+    pub(crate) fn check_reader_run(&self, reader_run: Option<i64>) -> anyhow::Result<()> {
+        if self.run.is_some() && self.run == reader_run {
+            bail!(SAME_RUN);
+        }
+        Ok(())
     }
 
     /// The wait in minutes. The day check comes due a day after landing, past
@@ -231,7 +241,12 @@ fn conclude(readings: &[Reading], deadline_passed: bool) -> Option<Verdict> {
 
 /// Waits for the deploys of `commit` that `args` selects to record the
 /// `--until` check, prints them and returns how the job ends.
-pub(crate) async fn wait(api: &Api, args: &CiDeployArgs, commit: &str) -> anyhow::Result<Verdict> {
+pub(crate) async fn wait(
+    api: &Api,
+    args: &CiDeployArgs,
+    commit: &str,
+    reader_run: Option<i64>,
+) -> anyhow::Result<Verdict> {
     let minutes = args.timeout_minutes()?;
     let deadline = poll_deadline(minutes)?;
     let (name, repository_id) = connected_repository(api, &args.repository).await?;
@@ -251,7 +266,16 @@ pub(crate) async fn wait(api: &Api, args: &CiDeployArgs, commit: &str) -> anyhow
             .map(|deploy| judge(deploy, args.until))
             .collect();
         let now = tokio::time::Instant::now();
-        if let Some(verdict) = conclude(&readings, now >= deadline) {
+        let verdict = conclude(&readings, now >= deadline);
+        if let Some(id) = reader_run
+            && verdict != Some(Verdict::Regressed)
+            && selected.iter().zip(&readings).any(|(deploy, reading)| {
+                deploy.workflow_run_id == Some(id) && *reading == Reading::Waiting
+            })
+        {
+            bail!(SAME_RUN);
+        }
+        if let Some(verdict) = verdict {
             let mut stdout = std::io::stdout().lock();
             if args.json {
                 writeln!(stdout, "{}", serde_json::to_string_pretty(&raw)?)?;
@@ -568,6 +592,7 @@ mod tests {
     /// `answers` say, on a paused clock. Returns the result, the reads and
     /// how long the wait took on that clock.
     async fn run(
+        reader_run: Option<i64>,
         flags: &[&str],
         answers: Vec<(u16, Value)>,
     ) -> (anyhow::Result<Verdict>, usize, Duration) {
@@ -584,7 +609,7 @@ mod tests {
         let organization: Uuid = ORG.parse().unwrap();
         let api = Api::new(http, SecretString::from("plp_stored"), organization);
         let started = tokio::time::Instant::now();
-        let verdict = wait(&api, &args(flags), COMMIT).await;
+        let verdict = wait(&api, &args(flags), COMMIT, reader_run).await;
         let took = started.elapsed();
         ticker.abort();
         let reads = *reads.lock().unwrap();
@@ -696,7 +721,7 @@ mod tests {
                 Verdict::NotComplete,
             ),
         ] {
-            let (verdict, reads, _) = run(flags, vec![answer]).await;
+            let (verdict, reads, _) = run(None, flags, vec![answer]).await;
             assert_eq!(verdict.unwrap(), ended, "{case}");
             assert_eq!(reads, 1, "{case}");
         }
@@ -737,7 +762,7 @@ mod tests {
                 "removed_pull_requests": [42],
             }],
         });
-        let (verdict, ..) = run(&[], vec![recorded(std::slice::from_ref(&rollback))]).await;
+        let (verdict, ..) = run(None, &[], vec![recorded(std::slice::from_ref(&rollback))]).await;
         assert_eq!(verdict.unwrap(), Verdict::Done);
         let mut printed = Vec::new();
         write_lines(
@@ -758,7 +783,7 @@ mod tests {
         );
         assert_eq!(printed.lines().count(), 2, "{printed}");
         for (status, exit_four) in [(401, false), (403, false), (503, true)] {
-            let (verdict, ..) = run(&[], vec![(status, json!({ "detail": "no" }))]).await;
+            let (verdict, ..) = run(None, &[], vec![(status, json!({ "detail": "no" }))]).await;
             let error = verdict.unwrap_err();
             assert_eq!(unavailable(&error), exit_four, "{status}: {error:#}");
         }
@@ -771,6 +796,7 @@ mod tests {
         let none = recorded(&[]);
         let landed = recorded(&[deploy("deploy", &[1], &["HEALTHY"], &[])]);
         let (verdict, reads, took) = run(
+            None,
             &["--until", "20m"],
             vec![
                 none.clone(),
@@ -783,9 +809,23 @@ mod tests {
         assert_eq!(reads, 3);
         assert!(took < Duration::from_secs(60), "{took:?}");
 
+        let (verdict, reads, _) = run(Some(7), &["--until", "20m"], vec![landed.clone()]).await;
+        assert!(verdict.is_err());
+        assert_eq!(reads, 1);
+        let (verdict, reads, _) = run(Some(7), &[], vec![landed.clone()]).await;
+        assert_eq!(verdict.unwrap(), Verdict::Done);
+        assert_eq!(reads, 1);
+
+        let mut regressed = deploy("deploy:api", &[1], &["REGRESSED"], &[]);
+        regressed["workflow_run_id"] = json!(8);
+        let mixed = recorded(&[deploy("deploy:web", &[1], &["HEALTHY"], &[]), regressed]);
+        let (verdict, reads, _) = run(Some(7), &["--until", "20m"], vec![mixed]).await;
+        assert_eq!(verdict.unwrap(), Verdict::Regressed);
+        assert_eq!(reads, 1);
+
         for (case, answer) in [("no deploy", none), ("check not recorded", landed)] {
             let (verdict, reads, took) =
-                run(&["--until", "20m", "--timeout", "3"], vec![answer]).await;
+                run(None, &["--until", "20m", "--timeout", "3"], vec![answer]).await;
             assert_eq!(verdict.unwrap(), Verdict::NotComplete, "{case}");
             assert!(reads > 2, "{case}: {reads}");
             assert!(took >= Duration::from_secs(180), "{case}: {took:?}");
@@ -798,6 +838,8 @@ mod tests {
     /// deploy that lists no attempts never matches.
     #[tokio::test(start_paused = true)]
     async fn the_selection_decides_which_deploys_count() {
+        assert!(args(&["--run", "7"]).check_reader_run(Some(7)).is_err());
+
         let tasks = recorded(&[
             deploy("deploy:web", &[1], &["HEALTHY"], &[]),
             deploy("deploy:api", &[1], &["REGRESSED"], &[]),
@@ -807,7 +849,7 @@ mod tests {
             (&["--task", "deploy:api"][..], Verdict::Regressed),
             (&[][..], Verdict::Regressed),
         ] {
-            let (verdict, ..) = run(flags, vec![tasks.clone()]).await;
+            let (verdict, ..) = run(None, flags, vec![tasks.clone()]).await;
             assert_eq!(verdict.unwrap(), ended, "{flags:?}");
         }
 
@@ -825,7 +867,7 @@ mod tests {
                 Verdict::NotComplete,
             ),
         ] {
-            let (verdict, ..) = run(flags, vec![attempts.clone()]).await;
+            let (verdict, ..) = run(None, flags, vec![attempts.clone()]).await;
             assert_eq!(verdict.unwrap(), ended, "{flags:?}");
         }
 
@@ -843,7 +885,7 @@ mod tests {
             newer["workflow_run_id"] = json!(8);
             newer
         }]);
-        let (verdict, ..) = run(&["--run", "7", "--attempt", "3"], vec![newer]).await;
+        let (verdict, ..) = run(None, &["--run", "7", "--attempt", "3"], vec![newer]).await;
         assert_eq!(verdict.unwrap(), Verdict::Done);
         let mut explicit = args(&[
             "--commit",

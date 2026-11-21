@@ -600,6 +600,8 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
                     std::env::var("COMMIT_SHA").is_ok_and(|sha| !sha.trim().is_empty());
                 args.follow(&produced, cloud_build);
             }
+            let reader_run = github_actions::current_run_id();
+            args.check_reader_run(reader_run)?;
             let commit = ci_commit(args.commit.as_deref())?;
             args.timeout_minutes()?;
             let http = Http::new(origin)?;
@@ -611,7 +613,7 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
                     }
                     (token, _) => connect(http, token, cli.org).await?,
                 };
-                deploy::wait(&api, &args, &commit).await
+                deploy::wait(&api, &args, &commit, reader_run).await
             }
             .await;
             ci_ending(result)

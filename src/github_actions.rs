@@ -113,6 +113,15 @@ pub fn commit_under_test() -> anyhow::Result<Option<String>> {
     Ok(Some(parsed.pull_request.head.sha))
 }
 
+/// The ID of the job's own workflow run when GitHub Actions is running it.
+pub(crate) fn current_run_id() -> Option<i64> {
+    if std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true") {
+        std::env::var("GITHUB_RUN_ID").ok()?.parse().ok()
+    } else {
+        None
+    }
+}
+
 /// The completed run a `workflow_run` job follows: the run that triggered it,
 /// its head commit and its latest attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
