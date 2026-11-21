@@ -113,6 +113,59 @@ pub fn commit_under_test() -> anyhow::Result<Option<String>> {
     Ok(Some(parsed.pull_request.head.sha))
 }
 
+/// The completed run a `workflow_run` job follows: the run that triggered it,
+/// its head commit and its latest attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProducingRun {
+    pub head_sha: String,
+    pub id: i64,
+    pub attempt: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct WorkflowRunEvent {
+    workflow_run: WorkflowRun,
+}
+
+#[derive(Deserialize)]
+struct WorkflowRun {
+    head_sha: String,
+    id: i64,
+    run_attempt: Option<i64>,
+}
+
+const WORKFLOW_RUN_UNREADABLE: &str =
+    "the workflow_run event payload names no completed run; name it with --commit and --run";
+
+impl ProducingRun {
+    /// Reads the completed run from a `workflow_run` event payload.
+    pub fn parse(payload: &[u8]) -> anyhow::Result<Self> {
+        let parsed: WorkflowRunEvent =
+            serde_json::from_slice(payload).context(WORKFLOW_RUN_UNREADABLE)?;
+        let run = parsed.workflow_run;
+        if run.head_sha.trim().is_empty() {
+            bail!(WORKFLOW_RUN_UNREADABLE);
+        }
+        Ok(Self {
+            head_sha: run.head_sha,
+            id: run.id,
+            attempt: run.run_attempt,
+        })
+    }
+}
+
+/// The completed run this job follows on a `workflow_run` event, from the
+/// payload the runner wrote, or `None` on any other event and outside GitHub
+/// Actions.
+pub fn producing_run() -> anyhow::Result<Option<ProducingRun>> {
+    if std::env::var(EVENT_NAME).unwrap_or_default() != "workflow_run" {
+        return Ok(None);
+    }
+    let path = std::env::var_os(EVENT_PATH).context(WORKFLOW_RUN_UNREADABLE)?;
+    let payload = std::fs::read(path).context(WORKFLOW_RUN_UNREADABLE)?;
+    ProducingRun::parse(&payload).map(Some)
+}
+
 /// The events whose signed `ref` is the pull request's merge ref. The exchange
 /// verifies a head only against that ref, so `pull_request_target`, whose ref
 /// is the base branch, names none.

@@ -464,4 +464,7 @@ pub struct DeployCheckpoint {
     #[serde(default)]
     pub result: Option<String>,
     pub due_at: String,
+    /// Absent on older servers. An empty list means this check recorded no gaps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gaps: Option<Vec<String>>,
 }

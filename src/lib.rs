@@ -192,16 +192,17 @@ enum CiCommand {
     /// `--environment`, `--task`, `--run` and `--attempt` select, and waits
     /// until each has recorded the `--until` check. It then prints one line for
     /// each deploy and check through `--until`: the checkpoint, its result, the
-    /// deploy's gap codes and the deploy's page. Authentication is as for
+    /// checkpoint's gap codes and the deploy's page. Older servers supply
+    /// the deploy-wide gaps for every check. Authentication is as for
     /// `ci review`, so a GitHub Actions job granted `id-token: write` needs no
     /// stored secret.
     ///
     /// Exit codes:
-    ///   0  every selected deploy recorded HEALTHY at each check through
-    ///      `--until` and names no gap: no regression observed
+    ///   0  each check through `--until` recorded HEALTHY with no gap
+    ///      on every selected deploy: no regression observed
     ///   3  a selected deploy failed or recorded REGRESSED
-    ///   2  not established: a check is INCOMPLETE or SUPERSEDED, a deploy
-    ///      names a gap, the check is not recorded by `--timeout`, or no
+    ///   2  not established: a check through `--until` is INCOMPLETE,
+    ///      SUPERSEDED or names a gap, the check is not recorded by `--timeout`, or no
     ///      selected deploy is recorded
     ///   1  a usage, authentication or authorization error
     ///   4  Proofline could not be reached or failed
@@ -593,7 +594,12 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
             let result = ci_job(http, token, issuer, &event, cli.org, &args, &commit).await;
             ci_ending(result)
         }
-        Command::Ci(CiCommand::Deploy(args)) => {
+        Command::Ci(CiCommand::Deploy(mut args)) => {
+            if let Some(produced) = github_actions::producing_run()? {
+                let cloud_build =
+                    std::env::var("COMMIT_SHA").is_ok_and(|sha| !sha.trim().is_empty());
+                args.follow(&produced, cloud_build);
+            }
             let commit = ci_commit(args.commit.as_deref())?;
             args.timeout_minutes()?;
             let http = Http::new(origin)?;
