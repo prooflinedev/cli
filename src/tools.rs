@@ -176,14 +176,145 @@ pub(crate) async fn export(api: &Api, args: &ExportArgs) -> anyhow::Result<Verdi
     Ok(Verdict::Done)
 }
 
+/// One review status, as the review list filters it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum Status {
+    Pending,
+    Running,
+    Completed,
+    Incomplete,
+    Failed,
+    Superseded,
+    Stopped,
+    Excluded,
+}
+
+impl Status {
+    pub(crate) const fn query(self) -> &'static str {
+        match self {
+            Self::Pending => "PENDING",
+            Self::Running => "RUNNING",
+            Self::Completed => "COMPLETED",
+            Self::Incomplete => "INCOMPLETE",
+            Self::Failed => "FAILED",
+            Self::Superseded => "SUPERSEDED",
+            Self::Stopped => "STOPPED",
+            Self::Excluded => "EXCLUDED",
+        }
+    }
+}
+
+/// One review kind, as the review list filters it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum Kind {
+    PullRequest,
+    Deployment,
+    Patch,
+    Commit,
+    Files,
+    MergeGroup,
+    RevisionScan,
+}
+
+impl Kind {
+    pub(crate) const fn query(self) -> &'static str {
+        match self {
+            Self::PullRequest => "PULL_REQUEST",
+            Self::Deployment => "DEPLOYMENT",
+            Self::Patch => "PATCH",
+            Self::Commit => "COMMIT",
+            Self::Files => "FILES",
+            Self::MergeGroup => "MERGE_GROUP",
+            Self::RevisionScan => "REVISION_SCAN",
+        }
+    }
+}
+
+/// Whether a listed review has findings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum Findings {
+    /// Reviews with at least one finding.
+    Present,
+    /// Reviews with no finding.
+    None,
+}
+
+impl Findings {
+    pub(crate) const fn query(self) -> &'static str {
+        match self {
+            Self::Present => "present",
+            Self::None => "none",
+        }
+    }
+}
+
+/// `mine`, or a numeric GitHub user ID.
+fn author(value: &str) -> Result<String, String> {
+    if value == "mine" || (!value.is_empty() && value.bytes().all(|b| b.is_ascii_digit())) {
+        Ok(value.to_owned())
+    } else {
+        Err("expected `mine` or a numeric GitHub user ID".to_owned())
+    }
+}
+
 #[derive(Debug, Args)]
 pub(crate) struct ListArgs {
+    /// Repository ID to list reviews of.
     #[arg(long)]
     pub repository_id: Option<Uuid>,
+    /// GitHub repository as owner/name to list reviews of. Unlike other
+    /// commands, it does not default to the checkout's remote: without it,
+    /// the list spans the organization.
+    #[arg(long, value_name = "OWNER/NAME", conflicts_with = "repository_id")]
+    pub repo: Option<String>,
+    /// Free-text search.
     #[arg(long)]
     pub search: Option<String>,
+    /// Search with qualifiers, quoted values, AND/OR, groups and minus exclusions.
+    #[arg(long)]
+    pub query: Option<String>,
+    /// Only reviews with this status.
+    #[arg(long, value_enum)]
+    pub status: Option<Status>,
+    /// Only reviews of this kind.
+    #[arg(long, value_enum)]
+    pub kind: Option<Kind>,
+    /// `mine` for your own pull requests (needs a person's sign-in or token),
+    /// or a numeric GitHub user ID.
+    #[arg(long, value_parser = author)]
+    pub author: Option<String>,
+    /// Only terminal reviews of open pull requests with active findings,
+    /// failed, incomplete or stopped execution, or an earlier reviewed commit.
+    #[arg(long)]
+    pub needs_attention: bool,
+    /// Only reviews with findings (`present`) or without (`none`).
+    #[arg(long, value_enum)]
+    pub findings: Option<Findings>,
+    /// Reviews per page.
+    #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u32).range(1..))]
+    pub limit: u32,
+    /// Continuation cursor from a previous page.
     #[arg(long)]
     pub cursor: Option<String>,
+}
+
+impl ListArgs {
+    /// The server's query for these arguments, with the repository already
+    /// resolved to its ID.
+    pub(crate) fn filters(&self, repository: Option<Uuid>) -> crate::api::ReviewFilters<'_> {
+        crate::api::ReviewFilters {
+            repository,
+            search: self.search.as_deref(),
+            query: self.query.as_deref(),
+            status: self.status.map(Status::query),
+            kind: self.kind.map(Kind::query),
+            author: self.author.as_deref(),
+            attention: self.needs_attention,
+            findings: self.findings.map(Findings::query),
+            limit: self.limit,
+            cursor: self.cursor.as_deref(),
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -222,4 +353,63 @@ pub(crate) async fn session(api: &Api, command: SessionCommand) -> anyhow::Resul
         ).await?,
     };
     json(&value)
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::ValueEnum as _;
+    use serde_json::Value;
+
+    use super::{Findings, Kind, Status, author};
+
+    /// The review list's description of one query parameter.
+    fn described(name: &str) -> String {
+        let document: Value = serde_json::from_str(include_str!(concat!(
+            env!("OUT_DIR"),
+            "/openapi.public.json"
+        )))
+        .unwrap();
+        document["paths"]["/api/v1/organizations/{org_id}/reviews"]["get"]["parameters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|parameter| parameter["name"] == name)
+            .unwrap()["description"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    #[test]
+    fn each_filter_value_is_one_the_server_lists() {
+        let status = described("status");
+        for value in Status::value_variants() {
+            assert!(
+                status.contains(&format!("`{}`", value.query())),
+                "{value:?}"
+            );
+        }
+        let kind = described("kind");
+        for value in Kind::value_variants() {
+            assert!(kind.contains(&format!("`{}`", value.query())), "{value:?}");
+        }
+        let findings = described("findings");
+        for value in Findings::value_variants() {
+            assert!(
+                findings.contains(&format!("`{}`", value.query())),
+                "{value:?}"
+            );
+        }
+        assert!(described("attention").contains("`needed`"));
+        assert!(described("author").contains("`mine`"));
+    }
+
+    #[test]
+    fn author_is_mine_or_a_github_user_id() {
+        assert_eq!(author("mine").unwrap(), "mine");
+        assert_eq!(author("583231").unwrap(), "583231");
+        for refused in ["", "Mine", "octocat", "12a", "-1"] {
+            assert!(author(refused).is_err(), "{refused:?}");
+        }
+    }
 }

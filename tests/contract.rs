@@ -276,7 +276,18 @@ fn operations_the_cli_calls_exist() {
         schema(&document, "CustomerReviewDetail")
     );
     let list = &document["paths"]["/api/v1/organizations/{org_id}/reviews"]["get"]["parameters"];
-    for name in ["repository", "search", "cursor", "limit"] {
+    for name in [
+        "repository",
+        "search",
+        "cursor",
+        "limit",
+        "status",
+        "kind",
+        "author",
+        "attention",
+        "findings",
+        "query",
+    ] {
         assert!(
             list.as_array()
                 .unwrap()
