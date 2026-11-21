@@ -35,7 +35,7 @@ const DOMAINS: [&str; 18] = [
 // Baseline and quality code categories, the three deterministic CODE diff rules, and
 // committed_secret, which the reviewer no longer produces but recorded
 // findings keep.
-const CODE_DOMAINS: [&str; 19] = [
+const CODE_DOMAINS: [&str; 20] = [
     "logic",
     "edge_case",
     "error_handling",
@@ -50,6 +50,7 @@ const CODE_DOMAINS: [&str; 19] = [
     "prompt_instruction",
     "doc_drift",
     "ci_workflow",
+    "performance",
     "maintainability",
     "test_marker",
     "removed_assertion",

@@ -580,6 +580,13 @@ impl Api {
         serde_json::from_value(raw).map_err(|error| self.http.protocol(error.to_string()))
     }
 
+    /// The same repositories for a token that may request scans, which need
+    /// not read reviews. The route belongs to the first-party CLI contract.
+    pub(crate) async fn scan_repository_names(&self) -> Result<RepositoryNames, ApiError> {
+        let raw = self.get(self.url(&["scan-repository-names"])).await?;
+        serde_json::from_value(raw).map_err(|error| self.http.protocol(error.to_string()))
+    }
+
     /// The token's browser-delegated grants and whether they still work. The
     /// route belongs to the first-party CLI contract, not the public one.
     pub(crate) async fn agent_delegation(&self) -> Result<AgentDelegation, ApiError> {

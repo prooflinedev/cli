@@ -44,7 +44,7 @@ mod tools;
 
 use crate::model::{
     CodeAssessment, CommitReviewRequest, FileReviewRequest, OpenItems, PatchReviewRequest,
-    ReviewDetail, ReviewSummary,
+    RepositoryNames, ReviewDetail, ReviewSummary,
 };
 use crate::origin::{DEFAULT_ORIGIN, Origin};
 use crate::outcome::Outcome;
@@ -758,8 +758,8 @@ async fn status(http: Http, token: Option<SecretString>, org: Option<Uuid>) -> a
             }
         ),
     ];
-    if let Some(scope) = scope {
-        lines.push(format!("scopes: {}", text::one_line(&scope)));
+    if let Some(scope) = &scope {
+        lines.push(format!("scopes: {}", text::one_line(scope)));
     }
     if let Some(expires_at) = expires_at {
         let left = expires_at.saturating_sub(device::now());
@@ -769,10 +769,27 @@ async fn status(http: Http, token: Option<SecretString>, org: Option<Uuid>) -> a
             format!("expires: in {} hours", left.div_ceil(3600))
         });
     }
+    // A sign-in narrowed to scans cannot read reviews, so the probe reads the
+    // route that scope opens instead (#33149).
+    let scans_only = scope.as_deref().is_some_and(|scope| {
+        let mut scopes = scope.split_whitespace();
+        !scopes.clone().any(|scope| scope == "reviews:read")
+            && scopes.any(|scope| scope == "scans:request")
+    });
     let api = Api::new(http, token, organization_id);
-    let result = api.reviews(None, None, None).await;
+    let (result, accepted) = if scans_only {
+        (
+            api.scan_repository_names().await.map(drop),
+            "server: accepted the token for scans",
+        )
+    } else {
+        (
+            api.reviews(None, None, None).await.map(drop),
+            "server: accepted the token for reviews",
+        )
+    };
     lines.push(match &result {
-        Ok(_) => "server: accepted the token for reviews".to_owned(),
+        Ok(()) => accepted.to_owned(),
         Err(error) if error.status() == Some(401) => {
             "server: the token is expired, revoked or malformed; run `proofline login`".to_owned()
         }
@@ -840,6 +857,18 @@ fn unique(
 async fn connected_repository(api: &Api, args: &RepositoryArgs) -> anyhow::Result<(String, Uuid)> {
     let name = repository_name(args).await?;
     let names = api.repository_names().await?;
+    connected(api, name, names)
+}
+
+/// A connected repository, for requesting a scan, resolved through the route
+/// a sign-in holding only `scans:request` can read.
+async fn scannable_repository(api: &Api, args: &RepositoryArgs) -> anyhow::Result<(String, Uuid)> {
+    let name = repository_name(args).await?;
+    let names = api.scan_repository_names().await?;
+    connected(api, name, names)
+}
+
+fn connected(api: &Api, name: String, names: RepositoryNames) -> anyhow::Result<(String, Uuid)> {
     let candidates = names
         .repositories
         .into_iter()

@@ -63,12 +63,19 @@ pub(crate) fn request(args: &ScanArgs) -> anyhow::Result<ScanRequest> {
     })
 }
 
+const SCAN_SIGN_IN: &str = "this sign-in cannot request scans; run `proofline login --scope reviews:read --scope findings:read --scope reviews:request --scope scans:request`, and have the token's repositories include this one";
+
 pub(crate) async fn run(
     api: &Api,
     args: &ScanArgs,
     request: &ScanRequest,
 ) -> anyhow::Result<Verdict> {
-    let (name, repository_id) = crate::connected_repository(api, &args.repository).await?;
+    let (name, repository_id) = match crate::scannable_repository(api, &args.repository).await {
+        Err(error) if error.downcast_ref::<ApiError>().and_then(ApiError::status) == Some(403) => {
+            return Err(error.context(SCAN_SIGN_IN));
+        }
+        resolved => resolved?,
+    };
     let name = text::terminal_safe(&name);
     let target = request
         .commit_sha
@@ -85,9 +92,7 @@ pub(crate) async fn run(
     let response = match api.request_scan(repository_id, request).await {
         Ok(response) => response,
         Err(error) if error.status() == Some(403) => {
-            return Err(anyhow::Error::new(error).context(
-                "this sign-in cannot request scans; run `proofline login --scope reviews:read --scope findings:read --scope reviews:request --scope scans:request`, and have the token's repositories include this one",
-            ));
+            return Err(anyhow::Error::new(error).context(SCAN_SIGN_IN));
         }
         // The scan may have started, so the caller gets the one retry that
         // cannot start a second one, and an exit code that says "unknown".
@@ -117,19 +122,9 @@ pub(crate) async fn run(
         response.resolution_id
     ));
     if args.no_wait {
-        let url = api.review_url(review_id);
-        if args.output.json {
-            return tools::json(&serde_json::json!({
-                "outcome": response.outcome,
-                "resolution_id": response.resolution_id,
-                "review_id": review_id,
-                "review_url": url.as_str(),
-            }));
-        }
-        writeln!(std::io::stdout().lock(), "{url}")?;
-        return Ok(Verdict::Done);
+        return link(api, args, &response, review_id);
     }
-    show(
+    match show(
         api,
         review_id,
         true,
@@ -138,6 +133,37 @@ pub(crate) async fn run(
         None,
     )
     .await
+    {
+        // A sign-in that may request scans need not read reviews. The scan
+        // has started, so the caller gets its link instead of an error.
+        Err(error) if error.downcast_ref::<ApiError>().and_then(ApiError::status) == Some(403) => {
+            say(
+                "This sign-in cannot read reviews, so the CLI does not wait for the result; open the scan's link instead.",
+            );
+            link(api, args, &response, review_id)
+        }
+        verdict => verdict,
+    }
+}
+
+/// The started scan's link, as `--no-wait` prints it.
+fn link(
+    api: &Api,
+    args: &ScanArgs,
+    response: &ScanResponse,
+    review_id: Uuid,
+) -> anyhow::Result<Verdict> {
+    let url = api.review_url(review_id);
+    if args.output.json {
+        return tools::json(&serde_json::json!({
+            "outcome": response.outcome,
+            "resolution_id": response.resolution_id,
+            "review_id": review_id,
+            "review_url": url.as_str(),
+        }));
+    }
+    writeln!(std::io::stdout().lock(), "{url}")?;
+    Ok(Verdict::Done)
 }
 
 /// Whether a failed request leaves its outcome unknown: the server may have

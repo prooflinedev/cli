@@ -15,6 +15,7 @@ const ORG: &str = "0190f3a0-0000-7000-8000-000000000001";
 const TOKEN: &str = "pld_secretsecretsecret";
 const REPOSITORY: &str = "0190f3a0-0000-7000-8000-000000000022";
 const REVIEW: &str = "0190f3a0-0000-7000-8000-000000000033";
+const UNREADABLE_REVIEW: &str = "0190f3a0-0000-7000-8000-000000000034";
 const RESOLUTION: &str = "0190f3a0-0000-7000-8000-000000000055";
 const REQUEST: &str = "0190f3a0-0000-7000-8000-000000000066";
 
@@ -30,7 +31,13 @@ async fn scan(State(fake): State<Fake>, headers: HeaderMap, Json(body): Json<Val
     (fake.reply)()
 }
 
-async fn review(Path(id): Path<Uuid>) -> Json<Value> {
+async fn review(Path(id): Path<Uuid>) -> Response {
+    if id.to_string() == UNREADABLE_REVIEW {
+        return refused(
+            StatusCode::FORBIDDEN,
+            "this API token needs the reviews:read scope",
+        )();
+    }
     Json(json!({
         "id": id,
         "kind": "REVISION_SCAN",
@@ -48,6 +55,7 @@ async fn review(Path(id): Path<Uuid>) -> Json<Value> {
         "head_commit_sha": "0123456789abcdef0123456789abcdef01234567",
         "repository_full_name": "acme/web",
     }))
+    .into_response()
 }
 
 fn created(outcome: &'static str) -> Arc<dyn Fn() -> Response + Send + Sync> {
@@ -74,7 +82,9 @@ async fn serve(reply: Arc<dyn Fn() -> Response + Send + Sync>) -> (String, Fake)
     };
     let app = Router::new()
         .route(
-            &format!("/api/v1/organizations/{ORG}/repository-names"),
+            // A scan-only sign-in cannot read `/repository-names` (#33149),
+            // so the stand-in serves only the scan route's list.
+            &format!("/api/v1/organizations/{ORG}/scan-repository-names"),
             get(|| async {
                 Json(json!({ "repositories": [{ "id": REPOSITORY, "full_name": "acme/web" }] }))
             }),
@@ -184,6 +194,28 @@ async fn a_commit_scan_waits_for_the_scan_review() {
         })]
     );
     assert!(stderr(&output).contains("Found the existing scan"));
+}
+
+/// CLI 0.4.1 refused a `scans:request` sign-in before it asked for the scan
+/// (#33149). Such a sign-in starts the scan and gets its link, since it cannot
+/// read the review the scan produces.
+#[tokio::test]
+async fn a_scan_only_sign_in_starts_the_scan_and_prints_its_link() {
+    let reply: Arc<dyn Fn() -> Response + Send + Sync> = Arc::new(|| {
+        Json(json!({"resolution_id": RESOLUTION, "outcome": "CREATED", "review_id": UNREADABLE_REVIEW}))
+            .into_response()
+    });
+    let (origin, fake) = serve(reply).await;
+    let output = cli(&origin, &["--ref", "main", "--budget", "1"]).await;
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(fake.bodies.lock().unwrap().len(), 1);
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .trim_end()
+            .ends_with(&format!("/reviews/{UNREADABLE_REVIEW}")),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
 }
 
 #[tokio::test]
