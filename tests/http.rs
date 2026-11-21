@@ -1209,7 +1209,19 @@ async fn departed() -> Origin {
             &format!("/api/v1/organizations/{ORG}/reviews"),
             get(|| async {
                 Json(json!({
+                    // A newer audit at the same head, which no head
+                    // selection takes: its findings are in its report.
                     "items": [{
+                        "id": "0190f3a0-0000-7000-8000-0000000000ab",
+                        "kind": "REVISION_SCAN",
+                        "audit_mode": "CODE_ONLY",
+                        "status": "COMPLETED",
+                        "created_at": "2026-10-02T00:00:00Z",
+                        "head_commit_sha": DEPARTED_HEAD,
+                        "pull_request_number": null,
+                        "repository_id": DEPARTED_REPOSITORY,
+                        "run_number": 1,
+                    }, {
                         "id": "0190f3a0-0000-7000-8000-0000000000aa",
                         "kind": "PULL_REQUEST",
                         "status": "COMPLETED",
@@ -1261,7 +1273,9 @@ async fn findings_of_a_departed_repository_still_resolve_through_its_reviews() {
         }
     };
     // The fixture review is complete with an incomplete assessment, so a
-    // command that found it reads NotComplete rather than failing.
+    // command that found it reads NotComplete rather than failing. The
+    // detail route serves only the pull-request review, so a head selection
+    // that took the newer audit fails as a wrong review.
     for selector in [["--pr", "9"], ["--head", DEPARTED_HEAD]] {
         assert_eq!(
             run(selector, "findings").await.unwrap(),

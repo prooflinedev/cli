@@ -68,6 +68,10 @@ pub struct ReviewSummary {
     pub pull_request_number: Option<i64>,
     pub repository_id: Option<Uuid>,
     pub run_number: Option<i64>,
+    /// Set when this `REVISION_SCAN` is a repository audit, whose findings
+    /// are in its report rather than the review's assessments.
+    #[serde(default)]
+    pub audit_mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -394,4 +398,70 @@ pub struct CommitReviewRequest {
 pub struct CommitReviewResponse {
     pub review_id: Uuid,
     pub existing: bool,
+}
+
+/// The deploys of one commit that Proofline recorded, across the
+/// organization's environments.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CommitDeployVerifications {
+    pub recorded: bool,
+    pub deploys: Vec<CommitDeploy>,
+}
+
+/// One deploy of the commit. State, checkpoint, result and gap names stay
+/// strings, so a value a newer server adds is read, and judged as nothing the
+/// CLI recognizes, rather than refused.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CommitDeploy {
+    pub environment_id: Uuid,
+    #[serde(default)]
+    pub github_environment: Option<String>,
+    #[serde(default)]
+    pub deployment_task: Option<String>,
+    #[serde(default)]
+    pub workflow_run_id: Option<i64>,
+    #[serde(default)]
+    pub workflow_run_attempt: Option<i64>,
+    #[serde(default)]
+    pub workflow_run_attempts: Vec<i64>,
+    pub state: String,
+    pub regressed: bool,
+    pub checkpoints: Vec<DeployCheckpoint>,
+    pub gaps: Vec<String>,
+    #[serde(default)]
+    pub deploy_url: Option<String>,
+    /// Present when the deploy is a rollback: the previous deploy of the same
+    /// task ran a commit merged into the branch after this one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollback: Option<CommitDeployRollback>,
+}
+
+/// The deploy a rollback restores, when the read names one, and the deploys
+/// it rolls back, newest first.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct CommitDeployRollback {
+    #[serde(default)]
+    pub restores: Option<RollbackDeploy>,
+    #[serde(default)]
+    pub rolls_back: Vec<RollbackDeploy>,
+}
+
+/// One deploy a rollback names. Every field is optional, so a shape a newer
+/// server sends is read rather than refused.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RollbackDeploy {
+    #[serde(default)]
+    pub commit_sha: Option<String>,
+    #[serde(default)]
+    pub landed_at: Option<String>,
+    #[serde(default)]
+    pub deploy_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct DeployCheckpoint {
+    pub checkpoint: String,
+    #[serde(default)]
+    pub result: Option<String>,
+    pub due_at: String,
 }

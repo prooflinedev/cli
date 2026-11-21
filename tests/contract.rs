@@ -3,12 +3,12 @@
 use std::process::Command;
 
 use proofline_cli::model::{
-    Assessment, Check, Checks, CodeAssessment, CommitReviewRequest, CommitReviewResponse,
-    CoverageUploadRequest, CoverageUploadResponse, EvidenceRef, FileReviewRequest,
-    FileReviewResponse, FileScope, FilterChoice, Finding, OpenItems, PatchReviewRequest,
-    PatchReviewResponse, RepositoryName, RepositoryNames, ReviewDetail, ReviewFilters, ReviewPage,
-    ReviewSubject, ReviewSummary, RunNowMode, RunNowRequest, RunNowResponse, StopResponse,
-    UploadedReport,
+    Assessment, Check, Checks, CodeAssessment, CommitDeploy, CommitDeployVerifications,
+    CommitReviewRequest, CommitReviewResponse, CoverageUploadRequest, CoverageUploadResponse,
+    DeployCheckpoint, EvidenceRef, FileReviewRequest, FileReviewResponse, FileScope, FilterChoice,
+    Finding, OpenItems, PatchReviewRequest, PatchReviewResponse, RepositoryName, RepositoryNames,
+    ReviewDetail, ReviewFilters, ReviewPage, ReviewSubject, ReviewSummary, RunNowMode,
+    RunNowRequest, RunNowResponse, StopResponse, UploadedReport,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -173,6 +173,9 @@ fn types_match_the_public_contract() {
     holds::<FileReviewResponse>("FileReviewResponse");
     holds::<FileScope>("FileScope");
     holds::<ReviewSubject>("SubjectView");
+    holds::<CommitDeployVerifications>("CommitDeployVerifications");
+    holds::<CommitDeploy>("CommitDeploy");
+    holds::<DeployCheckpoint>("DeployCoverageCheckpoint");
 
     // Schema display has no console, credentials or checkout to read. It uses
     // the bundled public contract, even when the configured origin is invalid.
@@ -232,6 +235,10 @@ fn operations_the_cli_calls_exist() {
         ("get", "/api/v1/organizations/{org_id}/reviews"),
         ("get", "/api/v1/organizations/{org_id}/reviews/{review_id}"),
         ("get", "/api/v1/organizations/{org_id}/repository-names"),
+        (
+            "get",
+            "/api/v1/organizations/{org_id}/repositories/{repo_id}/commits/{commit_sha}/deploy-verifications",
+        ),
         (
             "post",
             "/api/v1/organizations/{org_id}/repositories/{repo_id}/coverage-reports",

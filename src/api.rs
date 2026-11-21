@@ -13,10 +13,10 @@ use uuid::Uuid;
 
 use crate::github_actions::Renewal;
 use crate::model::{
-    CommitReviewRequest, CommitReviewResponse, CoverageUploadRequest, CoverageUploadResponse,
-    FileReviewRequest, FileReviewResponse, PatchReviewRequest, PatchReviewResponse,
-    RepositoryNames, ReviewDetail, ReviewPage, RunNowMode, RunNowRequest, RunNowResponse,
-    ScanRequest, ScanResponse, StopResponse,
+    CommitDeployVerifications, CommitReviewRequest, CommitReviewResponse, CoverageUploadRequest,
+    CoverageUploadResponse, FileReviewRequest, FileReviewResponse, PatchReviewRequest,
+    PatchReviewResponse, RepositoryNames, ReviewDetail, ReviewPage, RunNowMode, RunNowRequest,
+    RunNowResponse, ScanRequest, ScanResponse, StopResponse,
 };
 use crate::origin::Origin;
 use crate::text::terminal_safe;
@@ -702,6 +702,22 @@ impl Api {
             return self.decode(&reply.body);
         }
         Err(self.http.problem(&reply))
+    }
+
+    /// Each recorded deploy of `commit` in the repository, as the raw document
+    /// and its typed reading.
+    pub async fn commit_deploy_verifications(
+        &self,
+        repository_id: Uuid,
+        commit: &str,
+    ) -> Result<(serde_json::Value, CommitDeployVerifications), ApiError> {
+        let repository = repository_id.to_string();
+        let raw = self
+            .get(self.url_get_commit_deploy_verifications(&repository, commit))
+            .await?;
+        let typed = serde_json::from_value(raw.clone())
+            .map_err(|error| self.http.protocol(error.to_string()))?;
+        Ok((raw, typed))
     }
 
     /// Requests a scan of one ref or commit. One attempt: the client never

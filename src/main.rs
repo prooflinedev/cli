@@ -51,8 +51,9 @@ fn main() -> ExitCode {
         // Proofline gave no answer in time; distinct from the caller's error.
         Ok(Verdict::Unavailable) => ExitCode::from(4),
         // `--fail-on`: the review is complete and a finding reaches the
-        // caller's threshold.
-        Ok(Verdict::ThresholdReached) => ExitCode::from(3),
+        // caller's threshold. `ci deploy`: a deploy failed or a check
+        // recorded a regression.
+        Ok(Verdict::ThresholdReached | Verdict::Regressed) => ExitCode::from(3),
         Ok(Verdict::Blocked) => ExitCode::FAILURE,
         Err(error) => {
             eprintln!("proofline: {error:#}");

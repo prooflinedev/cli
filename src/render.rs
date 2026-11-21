@@ -205,6 +205,12 @@ fn stored_check(out: &mut Vec<String>, check: &StoredCheck) {
 }
 
 /// The review, with separate CODE and environment assessment blocks.
+/// A repository audit read as a review. Its findings are in its report, which
+/// the review page at `url` links.
+pub fn audit(url: &Url) -> String {
+    format!("Repository audit: its findings are in its report, not in this review.\n{url}\n")
+}
+
 pub fn review(review: &ReviewDetail, state: Option<Outcome>, url: &Url) -> String {
     let mut out = vec![headline(review, state), url.to_string()];
     if let Some(reason) = outcome::review_gap(review) {

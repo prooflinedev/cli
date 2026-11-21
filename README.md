@@ -37,6 +37,8 @@ Native knowledge, plan, fix and configuration commands send the selected organiz
 
 In GitHub Actions, `proofline ci review --annotations` prints unresolved findings as workflow annotations at verified cited lines. Findings without a verified head location appear on the job. The review link contains the full result.
 
+`proofline ci deploy --until 1h` waits until Proofline has recorded the deploy checks of the job's commit through the hour check, then exits 0 when each recorded `HEALTHY` with no gap, 3 when a deploy failed or regressed, and 2 when the result is not established. `--environment`, `--task`, `--run` and `--attempt` select the deploy, and `--json` prints the response. Each deploy prints one line per check. A deploy that rolled the environment back to an earlier commit first prints a `rollback` line with the page of the deploy it restores, when Proofline recorded one, and the pages of the deploys it rolled back. A rollback's exit code comes from its checks like any other deploy's; the line does not mean the rollback fixed anything.
+
 ## Scans
 
 `proofline scan --ref main --budget 200` scans the whole repository at one commit, not a pull request's change. GitHub resolves the ref once, when the request arrives, and the scan records that commit; `--commit SHA` names an exact full SHA instead, and you give one of the two. The command waits for the scan review and prints it like `proofline review`, while `--no-wait` prints its link and `--json` prints JSON.

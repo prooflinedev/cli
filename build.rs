@@ -12,6 +12,11 @@ const OPERATIONS: &[(&str, &str, &[&str])] = &[
     ("get", "export_reviews", &["dataset"]),
     ("get", "get_agent_session", &["session_id"]),
     ("get", "get_agent_session_prompt", &["finding_id"]),
+    (
+        "get",
+        "get_commit_deploy_verifications",
+        &["repo_id", "commit_sha"],
+    ),
     ("get", "get_finding_fix_prompt", &["finding_id"]),
     (
         "get",

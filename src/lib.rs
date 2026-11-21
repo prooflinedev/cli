@@ -8,6 +8,7 @@ pub mod api;
 mod config;
 mod coverage;
 pub mod credentials;
+mod deploy;
 pub mod device;
 pub mod git;
 mod github_actions;
@@ -184,6 +185,28 @@ enum CiCommand {
     /// Such a job on a `pull_request` event that finds no review after two
     /// minutes asks once for a withheld review of its head.
     Review(CiReviewArgs),
+    /// Wait for Proofline to record a check of the deploys of the commit
+    /// under test and exit by what the checks recorded.
+    ///
+    /// It reads the deploys of the commit in the repository, keeps those that
+    /// `--environment`, `--task`, `--run` and `--attempt` select, and waits
+    /// until each has recorded the `--until` check. It then prints one line for
+    /// each deploy and check through `--until`: the checkpoint, its result, the
+    /// deploy's gap codes and the deploy's page. Authentication is as for
+    /// `ci review`, so a GitHub Actions job granted `id-token: write` needs no
+    /// stored secret.
+    ///
+    /// Exit codes:
+    ///   0  every selected deploy recorded HEALTHY at each check through
+    ///      `--until` and names no gap: no regression observed
+    ///   3  a selected deploy failed or recorded REGRESSED
+    ///   2  not established: a check is INCOMPLETE or SUPERSEDED, a deploy
+    ///      names a gap, the check is not recorded by `--timeout`, or no
+    ///      selected deploy is recorded
+    ///   1  a usage, authentication or authorization error
+    ///   4  Proofline could not be reached or failed
+    #[command(verbatim_doc_comment)]
+    Deploy(deploy::CiDeployArgs),
 }
 
 #[derive(Debug, Args)]
@@ -389,6 +412,8 @@ pub enum Verdict {
     ThresholdReached,
     /// A Git hook's exit policy refuses the commit or push.
     Blocked,
+    /// A deploy failed or one of its checks recorded a regression.
+    Regressed,
 }
 
 /// Runs one command. `token` is `PROOFLINE_TOKEN`, read by the caller.
@@ -566,13 +591,24 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
             let event = std::env::var(github_actions::EVENT_NAME).unwrap_or_default();
             let issuer = github_actions::Issuer::from_environment();
             let result = ci_job(http, token, issuer, &event, cli.org, &args, &commit).await;
-            match result {
-                Err(error) if unavailable(&error) => {
-                    say(&format!("proofline: {error:#}"));
-                    Ok(Verdict::Unavailable)
-                }
-                result => result,
+            ci_ending(result)
+        }
+        Command::Ci(CiCommand::Deploy(args)) => {
+            let commit = ci_commit(args.commit.as_deref())?;
+            args.timeout_minutes()?;
+            let http = Http::new(origin)?;
+            let issuer = github_actions::Issuer::from_environment();
+            let result = async {
+                let api = match (token, issuer) {
+                    (None, Some(issuer)) => {
+                        github_actions::api(http, &issuer, cli.org, None).await?
+                    }
+                    (token, _) => connect(http, token, cli.org).await?,
+                };
+                deploy::wait(&api, &args, &commit).await
             }
+            .await;
+            ci_ending(result)
         }
         Command::Hooks(args) => hooks::manage(args).await.map(|()| Verdict::Done),
         Command::Coverage(coverage::Command::Upload(args)) => {
@@ -1061,7 +1097,11 @@ async fn findings(api: &Api, args: &FindingsArgs) -> anyhow::Result<Verdict> {
                 None => git::head().await?,
             };
             let (name, repository_id) = reviewed_repository(api, &args.repository).await?;
-            latest(api, repository_id, &sha, |item| item.head_commit_sha.as_deref() == Some(sha.as_str()))
+            // An audit is a revision scan of this commit too, but its
+            // findings are in its report, so it never answers for the head.
+            latest(api, repository_id, &sha, |item| {
+                item.audit_mode.is_none() && item.head_commit_sha.as_deref() == Some(sha.as_str())
+            })
                 .await?
                 .with_context(|| format!("no review of {name} has head commit {sha}; push it and open a pull request, or name one with --pr"))?
         }
@@ -1140,6 +1180,11 @@ async fn show(
     };
     let sarif = matches!(format, OutputFormat::Sarif);
     let (raw, detail, state) = read_review(api, review_id, deadline, sarif).await?;
+    // `audit_mode` marks an audit, as on a listed review (`ReviewSummary`).
+    if raw.get("audit_mode").is_some_and(|mode| !mode.is_null()) {
+        print_audit(api, raw, &detail, format)?;
+        return Ok(Verdict::NotComplete);
+    }
     print_review(api, review_id, raw, &detail, state, format)?;
     match state {
         Some(Outcome::Completed) => {
@@ -1151,7 +1196,7 @@ async fn show(
                 Verdict::Unavailable => say(
                     "Proofline returned the completed review without `open_items`, so --fail-on could not be measured. It is not a pass.",
                 ),
-                Verdict::Done | Verdict::NotComplete | Verdict::Blocked => {}
+                Verdict::Done | Verdict::NotComplete | Verdict::Blocked | Verdict::Regressed => {}
             }
             return Ok(verdict);
         }
@@ -1190,6 +1235,18 @@ fn ci_commit(flag: Option<&str>) -> anyhow::Result<String> {
             .context("name the commit under test with --commit, COMMIT_SHA or GITHUB_SHA")?,
     };
     Ok(git::commit_sha(&raw)?)
+}
+
+/// A CI command's result, with a failure that is Proofline's reported as
+/// unavailable (exit 4) rather than as the caller's error (exit 1).
+fn ci_ending(result: anyhow::Result<Verdict>) -> anyhow::Result<Verdict> {
+    match result {
+        Err(error) if unavailable(&error) => {
+            say(&format!("proofline: {error:#}"));
+            Ok(Verdict::Unavailable)
+        }
+        result => result,
+    }
 }
 
 /// Whether a failure is Proofline's rather than the caller's: the console
@@ -1454,7 +1511,7 @@ fn say_ci_ending(
             Verdict::Unavailable => say(
                 "Proofline returned the completed review without `open_items`, so --fail-on could not be measured. It is not a pass.",
             ),
-            Verdict::Done | Verdict::NotComplete | Verdict::Blocked => {}
+            Verdict::Done | Verdict::NotComplete | Verdict::Blocked | Verdict::Regressed => {}
         },
         Some(ended) => say_not_complete(ended),
     }
@@ -1516,6 +1573,34 @@ fn review_verdict(detail: &ReviewDetail, fail_on: Option<Severity>) -> Verdict {
     } else {
         Verdict::Done
     }
+}
+
+/// A repository audit read as a review: its findings are in its report, which
+/// the review page links, so it is never a result to read as complete.
+fn print_audit(
+    api: &Api,
+    raw: serde_json::Value,
+    detail: &ReviewDetail,
+    format: OutputFormat,
+) -> anyhow::Result<()> {
+    let url = api.review_url(detail.id);
+    let mut stdout = std::io::stdout().lock();
+    match format {
+        OutputFormat::Json => {
+            let document = serde_json::json!({
+                "schema": result::FORMAT,
+                "outcome": result::REPOSITORY_AUDIT,
+                "review_url": url.as_str(),
+                "review": raw,
+            });
+            writeln!(stdout, "{}", serde_json::to_string_pretty(&document)?)?;
+        }
+        // `read_review` refuses SARIF for any review but a pull request's.
+        OutputFormat::Sarif | OutputFormat::Text => {
+            write!(stdout, "{}", render::audit(&url))?;
+        }
+    }
+    Ok(())
 }
 
 fn print_review(

@@ -845,6 +845,17 @@
             "description": "Whether any check recorded `REGRESSED`, whatever its gaps.",
             "type": "boolean"
           },
+          "rollback": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CommitDeployRollback"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present when the deploy is a rollback: the previous deploy of the same\n task ran a commit that a recorded merge into this commit's branch made\n after this commit, as the deploy's console page reads it. Absent for a\n forward deploy and when either merge is unrecorded."
+          },
           "state": {
             "allOf": [
               {
@@ -884,6 +895,33 @@
           "regressed",
           "checkpoints",
           "gaps"
+        ],
+        "type": "object"
+      },
+      "CommitDeployRollback": {
+        "description": "What a rollback deploy rolled back, and what it restored.",
+        "properties": {
+          "restores": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CommitRollbackDeploy"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The latest earlier deploy of this commit by the same task, before the\n deploys this one rolls back, within 30 days. Absent when the ledger\n holds none."
+          },
+          "rolls_back": {
+            "description": "Each deploy of the same task that landed a commit merged into this\n commit's branch after it, after `restores` and before this deploy,\n newest first.",
+            "items": {
+              "$ref": "#/components/schemas/CommitRollbackDeploy"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "rolls_back"
         ],
         "type": "object"
       },
@@ -943,6 +981,32 @@
         "required": [
           "review_id",
           "existing"
+        ],
+        "type": "object"
+      },
+      "CommitRollbackDeploy": {
+        "description": "One deploy a rollback names.",
+        "properties": {
+          "commit_sha": {
+            "description": "The commit that deploy ran.",
+            "type": "string"
+          },
+          "deploy_url": {
+            "description": "The deploy's console page.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "landed_at": {
+            "description": "When its last deployment first succeeded, or its AWS run ended.",
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "commit_sha",
+          "landed_at"
         ],
         "type": "object"
       },
@@ -2330,6 +2394,13 @@
             "description": "What this review covers: the revision under review and any companion\n repositories, workflow runs, artifacts or deployments.",
             "items": {
               "$ref": "#/components/schemas/SubjectView"
+            },
+            "type": "array"
+          },
+          "submitted_reviews": {
+            "description": "Every distinct review Proofline submitted on the pull request for this\n run, including the early code publisher's, oldest first. Absent when it\n submitted none.",
+            "items": {
+              "$ref": "#/components/schemas/SubmittedReview"
             },
             "type": "array"
           },
@@ -6771,6 +6842,25 @@
           "kind",
           "role",
           "release_authorizations"
+        ],
+        "type": "object"
+      },
+      "SubmittedReview": {
+        "description": "One review Proofline submitted on the pull request.",
+        "properties": {
+          "commit_sha": {
+            "description": "The commit the review was submitted for.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
         ],
         "type": "object"
       },

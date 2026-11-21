@@ -4,6 +4,10 @@ use serde_json::{Map, Value, json};
 
 pub(crate) const FORMAT: &str = "proofline.review-result.v1";
 
+/// The outcome of a repository audit read as a review: its findings are in
+/// its report at `review_url`, and it is never a pass.
+pub(crate) const REPOSITORY_AUDIT: &str = "REPOSITORY_AUDIT";
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SchemaError {
     #[error("the bundled public API schema could not be read: {0}")]
@@ -43,8 +47,8 @@ pub(crate) fn schema() -> Result<Value, SchemaError> {
         "properties": {
             "schema": { "const": FORMAT },
             "outcome": {
-                "enum": ["COMPLETED", "INCOMPLETE", "FAILED", "STOPPED", null],
-                "description": "The CLI's reading of completeness; null while the review runs."
+                "enum": ["COMPLETED", "INCOMPLETE", "FAILED", "STOPPED", REPOSITORY_AUDIT, null],
+                "description": "The CLI's reading of completeness; null while the review runs. REPOSITORY_AUDIT is an audit, whose findings are in its report at review_url."
             },
             "review_url": { "type": "string", "format": "uri" },
             "review": { "$ref": "#/$defs/CustomerReviewDetail" }
