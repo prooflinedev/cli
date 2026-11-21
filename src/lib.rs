@@ -35,7 +35,7 @@ use clap::{Args, Parser, Subcommand};
 use secrecy::{ExposeSecret as _, SecretString};
 use uuid::Uuid;
 
-use crate::api::{Api, ApiError, Http};
+use crate::api::{Api, ApiError, DelegationState, Http};
 use crate::credentials::{Credential, Source};
 mod fixes;
 mod knowledge;
@@ -696,6 +696,12 @@ async fn status(http: Http, token: Option<SecretString>, org: Option<Uuid>) -> a
         expires_at,
         source,
     } = credentials::load(http.origin(), token, org).await?;
+    // A stored sign-in names its scopes; an environment token may hold any.
+    let delegates = scope.as_deref().is_none_or(|scope| {
+        scope
+            .split_whitespace()
+            .any(|scope| matches!(scope, "setup:write" | "org:configure"))
+    });
     let origin = http.origin().clone();
     let mut lines = vec![
         format!("console: {origin}"),
@@ -722,15 +728,41 @@ async fn status(http: Http, token: Option<SecretString>, org: Option<Uuid>) -> a
     let api = Api::new(http, token, organization_id);
     let result = api.reviews(None, None, None).await;
     lines.push(match &result {
-        Ok(_) => "server: accepted the token".to_owned(),
+        Ok(_) => "server: accepted the token for reviews".to_owned(),
         Err(error) if error.status() == Some(401) => {
             "server: the token is expired, revoked or malformed; run `proofline login`".to_owned()
         }
         Err(error) => format!("server: {error}"),
     });
+    if result.is_ok() && delegates {
+        lines.extend(delegation(&api).await);
+    }
     writeln!(std::io::stdout().lock(), "{}", lines.join("\n"))?;
     result?;
     Ok(())
+}
+
+/// Whether the token's setup and configuration grants still work: they act
+/// for the browser session that approved them and end with it, while review
+/// access continues. `None` for a token that holds neither grant.
+async fn delegation(api: &Api) -> Option<String> {
+    let delegation = match api.agent_delegation().await {
+        Ok(delegation) => delegation,
+        Err(error) => return Some(format!("setup delegation: could not be read: {error}")),
+    };
+    if delegation.scopes.is_empty() {
+        return None;
+    }
+    let scopes = text::one_line(&delegation.scopes.join(", "));
+    Some(match delegation.state {
+        Some(DelegationState::Active) => {
+            format!("setup delegation: active for {scopes}")
+        }
+        Some(DelegationState::Ended) | None => format!(
+            "setup delegation: ended for {scopes} because the approving browser sign-in ended; review access still works. Run `{}` and approve it in the browser",
+            config::LOGIN
+        ),
+    })
 }
 
 async fn repository_name(args: &RepositoryArgs) -> anyhow::Result<String> {
@@ -1168,7 +1200,7 @@ fn unavailable(error: &anyhow::Error) -> bool {
         .is_some_and(|error| match error {
             ApiError::Transport { .. } => true,
             ApiError::Problem { status, .. } => *status >= 500,
-            ApiError::Protocol { .. } => false,
+            ApiError::Protocol { .. } | ApiError::Renewal { .. } => false,
         })
 }
 
@@ -1561,14 +1593,54 @@ mod tests {
         Refused,
     }
 
-    /// A runner that issues numbered OIDC tokens and a console on which no
-    /// review of `HEAD` ever appears, except the one a job requests, which
-    /// the console answers as `grant` says.
+    /// How the stand-in console answers a job's credential exchanges.
+    #[derive(Clone, Copy)]
+    enum Exchange {
+        /// Each exchange grants a numbered credential for this many seconds.
+        Grants(i64),
+        /// The first grants one for this many seconds, and each later
+        /// exchange answers with this status.
+        ThenAnswers(i64, u16),
+    }
+
+    /// An hour-long credential, as Proofline grants.
+    const HOURLY: Exchange = Exchange::Grants(3_600);
+
+    /// `unix` seconds as RFC 3339 in UTC, as the exchange writes `expires_at`.
+    fn rfc3339(unix: i64) -> String {
+        let (days, seconds) = (unix.div_euclid(86_400), unix.rem_euclid(86_400));
+        let days = days + 719_468;
+        let era = days.div_euclid(146_097);
+        let of_era = days - era * 146_097;
+        let year_of_era = (of_era - of_era / 1_460 + of_era / 36_524 - of_era / 146_096) / 365;
+        let of_year = of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+        let shifted_month = (5 * of_year + 2) / 153;
+        let day = of_year - (153 * shifted_month + 2) / 5 + 1;
+        let month = if shifted_month < 10 {
+            shifted_month + 3
+        } else {
+            shifted_month - 9
+        };
+        let year = year_of_era + era * 400 + i64::from(month <= 2);
+        format!(
+            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+            seconds / 3_600,
+            seconds % 3_600 / 60,
+            seconds % 60
+        )
+    }
+
+    /// A runner that issues numbered OIDC tokens, a credential exchange that
+    /// answers as `exchange` says, and a console on which no review of `HEAD`
+    /// ever appears, except the one a job requests, which the console answers
+    /// as `grant` says.
     async fn console(
         start: tokio::time::Instant,
         grant: Grant,
+        exchange: Exchange,
     ) -> (String, Arc<Mutex<Vec<Received>>>) {
         let issued = Arc::new(Mutex::new(0_u32));
+        let exchanged = Arc::new(Mutex::new(0_u32));
         let app = Router::new()
             .route(
                 "/github/token",
@@ -1586,13 +1658,33 @@ mod tests {
             )
             .route(
                 "/api/v1/ci/github-actions/credentials",
-                post(|| async {
-                    Json(json!({
-                        "organization_id": ORG,
-                        "repository_id": REPOSITORY,
-                        "token": "plj_job",
-                        "expires_at": "2026-10-11T01:00:00Z",
-                    }))
+                post(move || {
+                    let exchanged = Arc::clone(&exchanged);
+                    async move {
+                        let number = {
+                            let mut exchanged = exchanged.lock().unwrap();
+                            *exchanged += 1;
+                            *exchanged
+                        };
+                        let lifetime = match exchange {
+                            Exchange::ThenAnswers(_, status) if number > 1 => {
+                                let status = axum::http::StatusCode::from_u16(status).unwrap();
+                                return (status, Json(json!({ "detail": "refused" })))
+                                    .into_response();
+                            }
+                            Exchange::Grants(lifetime) | Exchange::ThenAnswers(lifetime, _) => {
+                                lifetime
+                            }
+                        };
+                        let now = i64::try_from(device::now()).unwrap();
+                        Json(json!({
+                            "organization_id": ORG,
+                            "repository_id": REPOSITORY,
+                            "token": format!("plj_job-{number}"),
+                            "expires_at": rfc3339(now + lifetime),
+                        }))
+                        .into_response()
+                    }
                 }),
             )
             .route(
@@ -1709,7 +1801,7 @@ mod tests {
         ] {
             let case = format!("token {stored_token}, {event}");
             let start = tokio::time::Instant::now();
-            let (origin, received) = console(start, Grant::Completes).await;
+            let (origin, received) = console(start, Grant::Completes, HOURLY).await;
             let http = Http::new(Origin::parse(&origin).unwrap()).unwrap();
             let issuer = github_actions::Issuer::new(
                 format!("{origin}/github/token").parse().unwrap(),
@@ -1767,9 +1859,12 @@ mod tests {
     }
 
     /// Runs a `pull_request` job on its own identity with a three-minute
-    /// timeout against a console that answers its request as `grant` says,
-    /// on a paused clock.
-    async fn pull_request_job(grant: Grant) -> (Verdict, Vec<Received>) {
+    /// timeout against a console that answers its request as `grant` says
+    /// and its exchanges as `exchange` says, on a paused clock.
+    async fn pull_request_job(
+        grant: Grant,
+        exchange: Exchange,
+    ) -> (anyhow::Result<Verdict>, Vec<Received>) {
         // As in the test above, a 10 ms ticker bounds each jump of the clock.
         let ticker = tokio::spawn(async {
             for _ in 0..1_000_000 {
@@ -1777,7 +1872,7 @@ mod tests {
             }
         });
         let start = tokio::time::Instant::now();
-        let (origin, received) = console(start, grant).await;
+        let (origin, received) = console(start, grant, exchange).await;
         let http = Http::new(Origin::parse(&origin).unwrap()).unwrap();
         let issuer = github_actions::Issuer::new(
             format!("{origin}/github/token").parse().unwrap(),
@@ -1795,9 +1890,7 @@ mod tests {
                 remote: "origin".to_owned(),
             },
         };
-        let verdict = ci_job(http, None, Some(issuer), "pull_request", None, &args, HEAD)
-            .await
-            .unwrap();
+        let verdict = ci_job(http, None, Some(issuer), "pull_request", None, &args, HEAD).await;
         ticker.abort();
         let received = received.lock().unwrap().clone();
         (verdict, received)
@@ -1814,8 +1907,8 @@ mod tests {
     /// so it ends at its deadline with no review, which is never a pass.
     #[tokio::test(start_paused = true)]
     async fn a_refused_request_is_asked_once_and_the_wait_runs_to_the_deadline() {
-        let (verdict, received) = pull_request_job(Grant::Refused).await;
-        assert_eq!(verdict, Verdict::Unavailable);
+        let (verdict, received) = pull_request_job(Grant::Refused, HOURLY).await;
+        assert_eq!(verdict.unwrap(), Verdict::Unavailable);
         assert_eq!(review_requests(&received), 1, "{received:?}");
         let last = received.iter().map(|(_, at, ..)| *at).max().unwrap();
         assert!(last >= Duration::from_secs(180), "{last:?}");
@@ -1825,8 +1918,8 @@ mod tests {
     /// still running then has no result, which is never a pass.
     #[tokio::test(start_paused = true)]
     async fn a_review_still_running_at_the_deadline_is_unavailable() {
-        let (verdict, received) = pull_request_job(Grant::StaysRunning).await;
-        assert_eq!(verdict, Verdict::Unavailable);
+        let (verdict, received) = pull_request_job(Grant::StaysRunning, HOURLY).await;
+        assert_eq!(verdict.unwrap(), Verdict::Unavailable);
         assert_eq!(review_requests(&received), 1, "{received:?}");
         let read = format!("GET /api/v1/organizations/{ORG}/reviews/{REQUESTED}");
         let last_read = received
@@ -1836,6 +1929,57 @@ mod tests {
             .max()
             .unwrap();
         assert!(last_read >= Duration::from_secs(180), "{last_read:?}");
+    }
+
+    /// A credential granted for 100 seconds is renewed at the first read past
+    /// half its lifetime, with a newly issued identity, so the wait reads under the first and
+    /// completes under the second, and the job still asks for one review. A
+    /// renewal the console refuses ends the same wait before it asks, as a
+    /// failure (exit 1); one it cannot serve ends it as unavailable (exit 4).
+    #[tokio::test(start_paused = true)]
+    async fn a_wait_renews_its_credential_and_a_refused_renewal_ends_it() {
+        let reviews = format!("GET /api/v1/organizations/{ORG}/reviews");
+        let requested = format!("GET /api/v1/organizations/{ORG}/reviews/{REQUESTED}");
+        let exchanges = "POST /api/v1/ci/github-actions/credentials";
+        let (verdict, received) = pull_request_job(Grant::Completes, Exchange::Grants(100)).await;
+        assert_eq!(verdict.unwrap(), Verdict::Done);
+        let at = |path: &str| -> Vec<(Duration, &str)> {
+            received
+                .iter()
+                .filter(|(request, ..)| request == path)
+                .map(|(_, at, bearer, _)| (*at, bearer.as_str()))
+                .collect()
+        };
+        let renewals = at(exchanges);
+        assert_eq!(renewals.len(), 2, "{received:?}");
+        // Each exchange spends its own runner identity; the review request
+        // between them has the third.
+        assert_eq!(renewals[0].1, "Bearer job-identity-1");
+        assert_eq!(renewals[1].1, "Bearer job-identity-2");
+        assert!(renewals[1].0 >= Duration::from_secs(50), "{renewals:?}");
+        let listed = at(&reviews);
+        assert_eq!(listed[0].1, "Bearer plj_job-1", "{listed:?}");
+        assert!(listed.iter().all(|(when, bearer)| {
+            *bearer
+                == if *when < renewals[1].0 {
+                    "Bearer plj_job-1"
+                } else {
+                    "Bearer plj_job-2"
+                }
+        }));
+        let completed = at(&requested);
+        assert_eq!(completed.last().unwrap().1, "Bearer plj_job-2");
+        assert_eq!(review_requests(&received), 1, "{received:?}");
+
+        for (status, exit_four) in [(403, false), (503, true)] {
+            let (verdict, received) =
+                pull_request_job(Grant::Completes, Exchange::ThenAnswers(100, status)).await;
+            let error = verdict.unwrap_err();
+            assert_eq!(unavailable(&error), exit_four, "{status}: {error:#}");
+            assert_eq!(review_requests(&received), 0, "{status}: {received:?}");
+            let last = received.iter().map(|(_, at, ..)| *at).max().unwrap();
+            assert!(last < REQUEST_AFTER, "{status}: {last:?}");
+        }
     }
 
     #[test]

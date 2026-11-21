@@ -1,6 +1,7 @@
 //! The review API over HTTP: bearer authentication, bounded bodies, explicit
 //! timeouts, no redirects, and bounded retries for reads.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::{Method, StatusCode, header};
@@ -10,6 +11,7 @@ use serde::de::DeserializeOwned;
 use url::Url;
 use uuid::Uuid;
 
+use crate::github_actions::Renewal;
 use crate::model::{
     CommitReviewRequest, CommitReviewResponse, CoverageUploadRequest, CoverageUploadResponse,
     FileReviewRequest, FileReviewResponse, PatchReviewRequest, PatchReviewResponse,
@@ -37,6 +39,10 @@ pub enum ApiError {
     Transport { origin: String, reason: String },
     #[error("{origin} sent a response this CLI cannot read: {reason}")]
     Protocol { origin: String, reason: String },
+    /// A CI job's credential could not be renewed before a request: the
+    /// runner issued no identity, or the exchange named another organization.
+    #[error("could not renew this job's credential: {reason}")]
+    Renewal { reason: String },
 }
 
 /// Closed transport failures for the stdio bridge. Upstream bodies and client
@@ -110,7 +116,7 @@ impl ApiError {
     pub const fn status(&self) -> Option<u16> {
         match self {
             Self::Problem { status, .. } => Some(*status),
-            Self::Transport { .. } | Self::Protocol { .. } => None,
+            Self::Transport { .. } | Self::Protocol { .. } | Self::Renewal { .. } => None,
         }
     }
 }
@@ -328,12 +334,35 @@ impl Http {
     }
 }
 
+/// The `setup:write` and `org:configure` grants a token holds, and whether
+/// the browser session that approved them still lets the token use them.
+#[derive(Debug, Deserialize)]
+pub(crate) struct AgentDelegation {
+    pub scopes: Vec<String>,
+    pub state: Option<DelegationState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub(crate) enum DelegationState {
+    Active,
+    Ended,
+}
+
 /// The review API, authorized by one token in one organization.
 #[derive(Debug, Clone)]
 pub struct Api {
     http: Http,
-    token: SecretString,
+    credential: Credential,
     organization_id: Uuid,
+}
+
+/// The bearer of every request: a token as given, or a CI job's credential,
+/// which renews itself before it expires.
+#[derive(Debug, Clone)]
+enum Credential {
+    Fixed(SecretString),
+    Renewed(Arc<Renewal>),
 }
 
 include!(concat!(env!("OUT_DIR"), "/routes.rs"));
@@ -342,7 +371,15 @@ impl Api {
     pub const fn new(http: Http, token: SecretString, organization_id: Uuid) -> Self {
         Self {
             http,
-            token,
+            credential: Credential::Fixed(token),
+            organization_id,
+        }
+    }
+
+    pub(crate) const fn renewing(http: Http, renewal: Arc<Renewal>, organization_id: Uuid) -> Self {
+        Self {
+            http,
+            credential: Credential::Renewed(renewal),
             organization_id,
         }
     }
@@ -362,12 +399,17 @@ impl Api {
         self.http.origin.join(segments)
     }
 
-    fn request(&self, method: Method, url: Url) -> reqwest::RequestBuilder {
-        self.http
+    async fn request(&self, method: Method, url: Url) -> Result<reqwest::RequestBuilder, ApiError> {
+        let token = match &self.credential {
+            Credential::Fixed(token) => token.clone(),
+            Credential::Renewed(renewal) => renewal.token().await?,
+        };
+        Ok(self
+            .http
             .client
             .request(method, url)
-            .bearer_auth(self.token.expose_secret())
-            .header(header::ACCEPT, "application/json")
+            .bearer_auth(token.expose_secret())
+            .header(header::ACCEPT, "application/json"))
     }
 
     /// GET with up to three retries on 429 and 503, honoring `Retry-After` up
@@ -379,6 +421,7 @@ impl Api {
                 .http
                 .send(
                     self.request(Method::GET, url.clone())
+                        .await?
                         .header(header::ACCEPT, accept),
                 )
                 .await?;
@@ -413,7 +456,7 @@ impl Api {
     ) -> Result<serde_json::Value, ApiError> {
         let (reply, _) = self
             .http
-            .send(self.request(Method::POST, url).json(body))
+            .send(self.request(Method::POST, url).await?.json(body))
             .await?;
         if !reply.status.is_success() {
             return Err(self.http.problem(&reply));
@@ -466,7 +509,10 @@ impl Api {
     pub(crate) async fn rerun(&self, review: Uuid) -> Result<serde_json::Value, ApiError> {
         let (reply, _) = self
             .http
-            .send(self.request(Method::POST, self.url_rerun_review(&review.to_string())))
+            .send(
+                self.request(Method::POST, self.url_rerun_review(&review.to_string()))
+                    .await?,
+            )
             .await?;
         if !reply.status.is_success() {
             return Err(self.http.problem(&reply));
@@ -534,6 +580,13 @@ impl Api {
         serde_json::from_value(raw).map_err(|error| self.http.protocol(error.to_string()))
     }
 
+    /// The token's browser-delegated grants and whether they still work. The
+    /// route belongs to the first-party CLI contract, not the public one.
+    pub(crate) async fn agent_delegation(&self) -> Result<AgentDelegation, ApiError> {
+        let raw = self.get(self.url(&["agent-delegation"])).await?;
+        serde_json::from_value(raw).map_err(|error| self.http.protocol(error.to_string()))
+    }
+
     /// Requests a review of an open pull request's current head. One attempt:
     /// repeating a mutation could start another review.
     pub async fn request_review(
@@ -564,7 +617,7 @@ impl Api {
         let repository = repository_id.to_string();
         let number = number.to_string();
         let url = self.url_request_review(&repository, &number);
-        let request = self.request(Method::POST, url);
+        let request = self.request(Method::POST, url).await?;
         let request = match mode {
             Some(mode) => request.json(&RunNowRequest { mode }),
             None => request,
@@ -587,7 +640,7 @@ impl Api {
         let url = self.url_request_patch_review(&repository);
         let (reply, _) = self
             .http
-            .send(self.request(Method::POST, url).json(request))
+            .send(self.request(Method::POST, url).await?.json(request))
             .await?;
         if reply.status.is_success() {
             return self.decode(&reply.body);
@@ -606,7 +659,7 @@ impl Api {
         let url = self.url_upload_coverage_reports(&repository);
         let (reply, _) = self
             .http
-            .send(self.request(Method::POST, url).json(request))
+            .send(self.request(Method::POST, url).await?.json(request))
             .await?;
         if matches!(reply.status, StatusCode::OK | StatusCode::CREATED) {
             return self.decode(&reply.body);
@@ -624,7 +677,7 @@ impl Api {
         let url = self.url_request_file_review(&repository);
         let (reply, _) = self
             .http
-            .send(self.request(Method::POST, url).json(request))
+            .send(self.request(Method::POST, url).await?.json(request))
             .await?;
         if reply.status.is_success() {
             return self.decode(&reply.body);
@@ -643,7 +696,7 @@ impl Api {
         let url = self.url_request_commit_review(&repository);
         let (reply, _) = self
             .http
-            .send(self.request(Method::POST, url).json(request))
+            .send(self.request(Method::POST, url).await?.json(request))
             .await?;
         if reply.status.is_success() {
             return self.decode(&reply.body);
@@ -663,7 +716,7 @@ impl Api {
         let url = self.url_request_scan(&repository);
         let (reply, _) = self
             .http
-            .send(self.request(Method::POST, url).json(request))
+            .send(self.request(Method::POST, url).await?.json(request))
             .await?;
         if reply.status.is_success() {
             return self.decode(&reply.body);
@@ -680,7 +733,10 @@ impl Api {
         let id = review_id.to_string();
         let (reply, _) = self
             .http
-            .send(self.request(Method::POST, self.url_stop_review(&id)))
+            .send(
+                self.request(Method::POST, self.url_stop_review(&id))
+                    .await?,
+            )
             .await?;
         if !reply.status.is_success() {
             return Err(self.http.problem(&reply));

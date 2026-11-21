@@ -108,6 +108,30 @@ pub struct LocalReverification {
     /// as the API returned it for `--json`.
     #[serde(default)]
     pub checks: serde_json::Value,
+    /// The check a code reproduction stored for the finding, which the
+    /// pushed head runs again. The patch review does not run it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stored_check: Option<StoredCheck>,
+}
+
+/// A finding's stored check and the newest result it gave.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StoredCheck {
+    pub check_id: Uuid,
+    /// The command the sandbox ran the test with. Untrusted text.
+    pub command: String,
+    pub last_result: Option<StoredCheckResult>,
+}
+
+/// The newest settled rerun of a stored check, or its reproduction's run.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct StoredCheckResult {
+    /// `RERUN` or `REPRODUCTION`.
+    pub source: String,
+    /// `FAILED`, `DID_NOT_FAIL` or `UNAVAILABLE`.
+    pub result: String,
+    pub commit_sha: Option<String>,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

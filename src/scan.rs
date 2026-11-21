@@ -146,6 +146,8 @@ const fn uncertain(error: &ApiError) -> bool {
     match error {
         ApiError::Transport { .. } | ApiError::Protocol { .. } => true,
         ApiError::Problem { status, .. } => *status >= 500,
+        // A renewal fails before its request is sent.
+        ApiError::Renewal { .. } => false,
     }
 }
 

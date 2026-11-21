@@ -798,6 +798,116 @@
         ],
         "type": "object"
       },
+      "CommitDeploy": {
+        "description": "One deploy of the commit and where its verification stands.",
+        "properties": {
+          "checkpoints": {
+            "description": "The four checks in order, each with its recorded result, if any, and\n when a missing one becomes overdue. Empty when no verification of\n the deploy exists.",
+            "items": {
+              "$ref": "#/components/schemas/DeployCoverageCheckpoint"
+            },
+            "type": "array"
+          },
+          "deploy_url": {
+            "description": "The deploy's console page.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "deployment_task": {
+            "description": "The GitHub deployment's task, such as `deploy` or `deploy:web`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "environment_id": {
+            "description": "The Proofline environment that holds the deploy.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "gaps": {
+            "description": "What the checks that leave the deploy unproven name.",
+            "items": {
+              "$ref": "#/components/schemas/DeployVerificationGap"
+            },
+            "type": "array"
+          },
+          "github_environment": {
+            "description": "The GitHub Environment the deployment named.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "regressed": {
+            "description": "Whether any check recorded `REGRESSED`, whatever its gaps.",
+            "type": "boolean"
+          },
+          "state": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DeployCoverageState"
+              }
+            ],
+            "description": "Where the deploy's verification stands."
+          },
+          "workflow_run_attempt": {
+            "description": "The attempt of that run that created the deployment addressing the\n deploy; above 1 for a rerun.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "workflow_run_attempts": {
+            "description": "Each distinct attempt of that run that created one of the deploy's\n deployments, ascending. A retry of a job that failed belongs to the\n deploy it retried, and a re-run of a job that had already landed is a\n deploy of its own. Absent outside Actions and when no recorded\n deployment of the deploy names its attempt.",
+            "items": {
+              "format": "int64",
+              "type": "integer"
+            },
+            "type": "array"
+          },
+          "workflow_run_id": {
+            "description": "The Actions run that created the deploy's deployments; absent outside\n Actions.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "environment_id",
+          "state",
+          "regressed",
+          "checkpoints",
+          "gaps"
+        ],
+        "type": "object"
+      },
+      "CommitDeployVerifications": {
+        "description": "The deploys of one commit that Proofline recorded, across the\n organization's environments.",
+        "properties": {
+          "deploys": {
+            "description": "Each recorded deploy, earliest landing first.",
+            "items": {
+              "$ref": "#/components/schemas/CommitDeploy"
+            },
+            "type": "array"
+          },
+          "recorded": {
+            "description": "Whether the ledger holds any deploy of the commit. `false` says only\n that none was recorded, never anything about a deploy.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "recorded",
+          "deploys"
+        ],
+        "type": "object"
+      },
       "CommitReviewRequest": {
         "additionalProperties": false,
         "description": "Pushed commits to review: the exact base the change is compared with and\n the exact head it ends at.",
@@ -1960,7 +2070,7 @@
                 "type": "null"
               }
             ],
-            "description": "What Proofline still has open for the reviewed head, counted from the\n current finding decisions. Absent while the review is `PENDING` or\n `RUNNING`."
+            "description": "What Proofline still has open for the reviewed head, counted from the\n current finding decisions. Absent while the review is `PENDING` or\n `RUNNING`, and for a repository audit, whose findings are in its\n report."
           },
           "open_items_observation": {
             "anyOf": [
@@ -2147,6 +2257,14 @@
               "null"
             ]
           },
+          "review_cost_microcredits": {
+            "description": "The review work within the total, excluding the separately billed PR\n walkthrough. Visible to the same callers as the total.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "review_retracted_at": {
             "description": "When a submitted pull request review was marked retracted, a marker\n only older versions set. Null otherwise.",
             "format": "date-time",
@@ -2308,6 +2426,289 @@
           "NOT_SELECTED"
         ],
         "type": "string"
+      },
+      "DeployCheckResult": {
+        "oneOf": [
+          {
+            "const": "HEALTHY",
+            "description": "The deployed revision runs, a completed change check covered it, and\n every signal the deploy compares was read in full and stayed within\n tolerance. A deploy whose task the delivery target maps to services\n compares only the signals that name no service and those that name\n one of its services in the signal's Cloud Run project, and in its\n location when it names one, or in the signal's ECS account and region,\n and in its cluster when it names one. Every other deploy compares\n every watched signal. With none watched, every ECS service's rollout\n completed instead.",
+            "type": "string"
+          },
+          {
+            "const": "REGRESSED",
+            "description": "The deploy stopped running after it landed, its own ECS rollout\n failed, or a signal moved past its tolerance in the worse direction.",
+            "type": "string"
+          },
+          {
+            "const": "SUPERSEDED",
+            "description": "A later deploy of another revision replaced this one.",
+            "type": "string"
+          },
+          {
+            "const": "INCOMPLETE",
+            "description": "Nothing regressed, and at least one gap leaves the check unproven.",
+            "type": "string"
+          }
+        ]
+      },
+      "DeployCheckpoint": {
+        "description": "One of the four checks of a deploy.",
+        "enum": [
+          "LANDING",
+          "MINUTES_20",
+          "HOUR_1",
+          "DAY_1"
+        ],
+        "type": "string"
+      },
+      "DeployCoverageCheckpoint": {
+        "description": "One checkpoint of a verified deploy.",
+        "properties": {
+          "checkpoint": {
+            "$ref": "#/components/schemas/DeployCheckpoint"
+          },
+          "due_at": {
+            "description": "When a missing check becomes overdue, allowing the workflow's read\n delay, landing inventory reread, successor wait and transient-read retries.",
+            "format": "date-time",
+            "type": "string"
+          },
+          "result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DeployCheckResult"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The recorded result; absent while no check of this window is recorded."
+          }
+        },
+        "required": [
+          "checkpoint",
+          "due_at"
+        ],
+        "type": "object"
+      },
+      "DeployCoverageState": {
+        "description": "Where one deploy's verification stands. Each deploy has exactly one, so\n the counts add up to the population.",
+        "oneOf": [
+          {
+            "const": "VERIFIED",
+            "description": "All four checks recorded `HEALTHY` or `REGRESSED` and none names a\n gap, a change-check gap included.",
+            "type": "string"
+          },
+          {
+            "const": "VERIFIED_UNTIL_SUPERSEDED",
+            "description": "A later deploy of the same task replaced this one after its landing\n check, and every check before then recorded `HEALTHY` or `REGRESSED`\n and names no gap, a change-check gap included.\n The verification observed the deploy for as long as it\n ran; the next deploy's own verification covers the time after.",
+            "type": "string"
+          },
+          {
+            "const": "SUPERSEDED",
+            "description": "A later deploy replaced this one at its landing check, or a check\n before the replacement has no recorded result.",
+            "type": "string"
+          },
+          {
+            "const": "INCOMPLETE",
+            "description": "A check recorded `INCOMPLETE`, or a check other than `SUPERSEDED`\n names a gap, a change-check gap included, whatever it recorded.",
+            "type": "string"
+          },
+          {
+            "const": "UNRECORDED",
+            "description": "A check came due, or the verification run ended, with no result\n recorded for it.",
+            "type": "string"
+          },
+          {
+            "const": "NOT_YET_DUE",
+            "description": "The checks recorded so far established the revision and signals, and\n the next one is not due yet.",
+            "type": "string"
+          },
+          {
+            "const": "UNVERIFIED",
+            "description": "The deploy landed and no verification of it exists in this\n environment, as when it landed while deploy checks were off. A GitHub\n deploy with no verification whose deployments were all first received\n before the environment's link to its repository existed is not in the\n population at all.",
+            "type": "string"
+          },
+          {
+            "const": "FAILED",
+            "description": "The latest status of one of the deploy's GitHub deployments is\n `failure` or `error`, even after it landed; in an Actions run, the\n deployment of the latest attempt of one of its jobs.",
+            "type": "string"
+          },
+          {
+            "const": "INACTIVE",
+            "description": "The ledger holds only `inactive` statuses of the deploy's GitHub\n deployments: it never saw them land or fail.",
+            "type": "string"
+          }
+        ]
+      },
+      "DeployVerificationGap": {
+        "description": "A named reason a check could not establish part of what it compares.",
+        "oneOf": [
+          {
+            "const": "CHANGE_CHECK_MISSING",
+            "description": "No review covered the deployed revision.",
+            "type": "string"
+          },
+          {
+            "const": "CHANGE_CHECK_INCOMPLETE",
+            "description": "The change check that covered it did not complete.",
+            "type": "string"
+          },
+          {
+            "const": "ENVIRONMENT_NOT_CHECKED",
+            "description": "A completed review covered the deployed revision but did not assess\n this environment, as a pull request review does while environment\n checks are off. The review is cited; the environment stays unchecked.",
+            "type": "string"
+          },
+          {
+            "const": "RUNNING_REVISION_UNKNOWN",
+            "description": "The ledger shows no running revision for the deploy, or a late check's\n runtime read shows a later deployment of the same task that landed\n after the check came due, so it shows the present and not the window.",
+            "type": "string"
+          },
+          {
+            "const": "RUNTIME_TARGET_UNAVAILABLE",
+            "description": "The check found no runtime to read: the environment names no Cloud\n Run service, the deploy's task is mapped to no approved service, or\n the delivery target's ECS runtime has no connected AWS account. An\n AWS run whose delivery target names no ECS runtime records it too.",
+            "type": "string"
+          },
+          {
+            "const": "RUNTIME_CAPABILITY_UNQUALIFIED",
+            "description": "The AWS runtime was not read, because no serving artifact could yet\n be bound to a repository commit. Checks before AWS serving bindings\n recorded this for every AWS deploy; no check records it now.",
+            "type": "string"
+          },
+          {
+            "const": "AWS_TELEMETRY_CONNECTION_UNAVAILABLE",
+            "description": "No active AWS connection of the environment can read the `CloudWatch`\n signal, or, when every watched signal is a `CloudWatch` signal, any of\n them.",
+            "type": "string"
+          },
+          {
+            "const": "RUNTIME_INVENTORY_UNAVAILABLE",
+            "description": "The check could not read an inventory of the connection's Cloud Run\n services or ECS tasks: Kian retains none, or the read failed or timed\n out. Nothing shows what runs.",
+            "type": "string"
+          },
+          {
+            "const": "RUNTIME_INVENTORY_STALE",
+            "description": "The newest inventory is older than the reader accepts, or was\n observed before the deploy landed, so nothing is read from it.",
+            "type": "string"
+          },
+          {
+            "const": "RUNTIME_INVENTORY_INCOMPLETE",
+            "description": "The newest inventory's collection did not read every table the\n runtime read needs in full, so nothing is read from it.",
+            "type": "string"
+          },
+          {
+            "const": "RUNTIME_SERVICE_UNKNOWN",
+            "description": "The inventory holds no single record of a service the check reads.",
+            "type": "string"
+          },
+          {
+            "const": "RUNTIME_TRAFFIC_UNKNOWN",
+            "description": "A Cloud Run service's traffic shares do not add up to 100 percent,\n so what serves it is unknown.",
+            "type": "string"
+          },
+          {
+            "const": "RUNTIME_REVISION_UNKNOWN",
+            "description": "A serving Cloud Run route names no revision the inventory holds, or\n an ECS service has no running task, more tasks than the reader\n reads, or a running container without an image digest.",
+            "type": "string"
+          },
+          {
+            "const": "RUNTIME_ROLLOUT_UNSETTLED",
+            "description": "An ECS service's rollout has not settled: its primary deployment's\n rollout is not complete, it has more than one deployment, or it runs\n fewer tasks than it wants. When nothing else decides the runtime read,\n the check reads once more, after the next inventory collection, and\n records this only from that read. A failed rollout or a ledger\n successor decides the check at the first read, which records this\n beside it.",
+            "type": "string"
+          },
+          {
+            "const": "RUNTIME_COMMIT_BINDING_MISSING",
+            "description": "A serving revision or container shows no commit: neither a qualified\n attestation of a Cloud Run revision's image digest nor its\n `commit-sha` label names a commit, an ECS image has no single\n qualified attestation of its commit, or every running container was\n built elsewhere.",
+            "type": "string"
+          },
+          {
+            "const": "RUNTIME_ATTESTATIONS_PERMISSION_PENDING",
+            "description": "The running image's commit binding was not read because the\n repository's GitHub installation has not accepted the App's\n attestations permission. It replaces `RuntimeCommitBindingMissing`.",
+            "type": "string"
+          },
+          {
+            "const": "RUNTIME_IMAGE_BUILT_EARLIER",
+            "description": "A running ECS container binds to a commit the deployed revision\n descends from, and the images its ECR repository received after it were\n not all read or bound, so whether a later build at or before the\n deployed revision replaced it is unknown. The newest such build runs the\n deploy, and a replaced one is a mismatch.",
+            "type": "string"
+          },
+          {
+            "const": "RUNTIME_TASK_UNMAPPED",
+            "description": "The repository deploys several GitHub deployment tasks into the\n environment, and its delivery target's task map does not name this\n deploy's task. No other task's services stand for it.",
+            "type": "string"
+          },
+          {
+            "const": "TELEMETRY_CONNECTION_UNAVAILABLE",
+            "description": "Proofline holds no Cloud Monitoring read access for the environment.",
+            "type": "string"
+          },
+          {
+            "const": "TELEMETRY_CREDENTIAL_UNAVAILABLE",
+            "description": "The read credential could not be minted for this window.",
+            "type": "string"
+          },
+          {
+            "const": "NO_SIGNALS_CONFIGURED",
+            "description": "The environment watches no signal. A check whose every ECS service's\n rollout completed records it under the report's `suggestions`\n instead.",
+            "type": "string"
+          },
+          {
+            "const": "NO_SIGNALS_FOR_TASK_SERVICES",
+            "description": "The environment watches signals, but the deploy's task is mapped to\n services and every watched signal names a service the check does not\n compare, so it compared none. A mapped task's check compares a signal\n that names one of its services in the signal's Cloud Run project, and\n in its location when it names one, or in the signal's ECS account and\n region, and in its cluster when it names one.",
+            "type": "string"
+          },
+          {
+            "const": "SIGNAL_PROJECT_NOT_CONNECTED",
+            "description": "No verified Cloud Build connection of the environment reads the\n signal's project. A Cloud Run, GKE or other connection to the same\n project does not read its metrics.",
+            "type": "string"
+          },
+          {
+            "const": "SIGNAL_CONFIGURATION_INVALID",
+            "description": "The signal's descriptors or statistic do not form a valid query, the\n project has no such metric, or the statistic cannot apply to the\n metric's kind and value type.",
+            "type": "string"
+          },
+          {
+            "const": "SIGNAL_RESPONSE_INVALID",
+            "description": "Cloud Monitoring answered with something the reader refused.",
+            "type": "string"
+          },
+          {
+            "const": "SIGNAL_READ_PARTIAL",
+            "description": "The provider read covered only part of the window, for the reason\n the reading records.",
+            "type": "string"
+          },
+          {
+            "const": "SIGNAL_READ_UNAVAILABLE",
+            "description": "The provider read returned nothing for the window, for the reason\n the reading records, such as a refused permission.",
+            "type": "string"
+          },
+          {
+            "const": "SIGNAL_NO_DATA",
+            "description": "A complete read returned no point and the signal does not treat that\n as zero.",
+            "type": "string"
+          },
+          {
+            "const": "SIGNAL_NOT_SINGLE_SERIES",
+            "description": "The provider reduced the read to more than one series.",
+            "type": "string"
+          },
+          {
+            "const": "SIGNAL_BUCKET_UNEXPECTED",
+            "description": "The read returned more than one bucket for the window.",
+            "type": "string"
+          },
+          {
+            "const": "BASELINE_UNAVAILABLE",
+            "description": "The window has a value and its baseline before landing has none.",
+            "type": "string"
+          },
+          {
+            "const": "BELOW_TRAFFIC_FLOOR",
+            "description": "A compared service's traffic signal counted fewer requests than its\n floor in the check's window or in its baseline, so that service's\n other signals say too little to call the check healthy. Each of the\n service's signal reports names the floor, both windows and their\n counts under `traffic`.",
+            "type": "string"
+          },
+          {
+            "const": "BASELINE_HELD_REGRESSION",
+            "description": "An earlier deploy of the same task found the signal regressed in a\n check whose window overlaps the hour before this deploy started, and\n the baseline that check compared with is not usable: its window ended\n more than a day before this deploy started, or the signal would no\n longer send the query it cites. The regressed hour is never compared\n in its place, so the signal is not compared.",
+            "type": "string"
+          }
+        ]
       },
       "DomainView": {
         "properties": {
@@ -3628,6 +4029,21 @@
           }
         ]
       },
+      "KianFindingSource": {
+        "description": "What published a supported Kian finding.",
+        "oneOf": [
+          {
+            "const": "CONFIRMED_REQUIREMENT",
+            "description": "A service violates a confirmed gate requirement of its delivery\n target ([`requirements`]).",
+            "type": "string"
+          },
+          {
+            "const": "INVESTIGATION",
+            "description": "The environment investigation found it ([`kian_investigation`]).",
+            "type": "string"
+          }
+        ]
+      },
       "LinkedIssueCapture": {
         "description": "The count and outcome of a review's linked-issue receipt. Issue numbers,\n titles and the receipt's gaps stay in the receipt.",
         "properties": {
@@ -3694,6 +4110,17 @@
               }
             ],
             "description": "The local re-verification result; it does not change the original finding."
+          },
+          "stored_check": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocalStoredCheck"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The check a code reproduction stored for the finding, which a pushed\n head runs again; run its command against the local changes before\n pushing. The patch review does not run it. Absent for a finding with\n no stored check."
           }
         },
         "required": [
@@ -3713,6 +4140,35 @@
           "PENDING"
         ],
         "type": "string"
+      },
+      "LocalStoredCheck": {
+        "description": "A finding's stored check and the newest result it gave. Its runs show\n what the code did under the conditions the test exercised in a sandbox,\n and establish no fact about a deployed environment.",
+        "properties": {
+          "check_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "command": {
+            "description": "The command the sandbox ran the test with, as the agent recorded it,\n with the reproducing review's protected values withheld, and withheld\n whole when that provenance is gone. Untrusted text: render it as text.",
+            "type": "string"
+          },
+          "last_result": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StoredCheckResult"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Absent only for a check with no recorded run."
+          }
+        },
+        "required": [
+          "check_id",
+          "command"
+        ],
+        "type": "object"
       },
       "MatchedLocalFinding": {
         "description": "A local occurrence with the same semantic fingerprint as this finding.",
@@ -4806,6 +5262,28 @@
             "description": "Model text with protected values withheld. Render it as plain text.",
             "type": "string"
           },
+          "requirement": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReviewRequirementTarget"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The delivery target whose confirmed gate requirement the finding\n reports. Absent for an investigation's finding."
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/KianFindingSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What published the finding: a confirmed gate requirement its\n delivery target's services violate, or the environment investigation.\n Every listed finding carries it."
+          },
           "title": {
             "description": "Model text with protected values withheld. Render it as plain text.",
             "type": "string"
@@ -5004,6 +5482,36 @@
           "items",
           "truncated",
           "filters"
+        ],
+        "type": "object"
+      },
+      "ReviewRequirementTarget": {
+        "description": "The delivery target whose confirmed entry a finding reports, as its Gate\n requirements page addresses it.",
+        "properties": {
+          "delivery_target_id": {
+            "description": "The delivery target.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "environment_id": {
+            "description": "The environment of the assessment that asked the requirement.",
+            "format": "uuid",
+            "type": "string"
+          },
+          "repository_full_name": {
+            "description": "The repository's `owner/name`, which names the target to a reader.",
+            "type": "string"
+          },
+          "repository_name": {
+            "description": "The repository's name, as the page's address names it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "environment_id",
+          "repository_name",
+          "repository_full_name",
+          "delivery_target_id"
         ],
         "type": "object"
       },
@@ -5938,7 +6446,7 @@
         "type": "string"
       },
       "SpendExportRow": {
-        "description": "UTC daily debit totals using only the account and transport recorded at charge time.",
+        "description": "UTC daily debit totals using only the account and transport recorded at\n charge time, each split by what paid for it as Billing's Usage splits it.",
         "properties": {
           "account": {
             "description": "Recorded attribution, not a current credential label or inferred account.",
@@ -5972,6 +6480,12 @@
             "format": "int64",
             "type": "integer"
           },
+          "free_review_microcredits": {
+            "default": 0,
+            "description": "The part the free review month paid: this organization's\n `free-review:{debit}` grants for the row's debits.",
+            "format": "int64",
+            "type": "integer"
+          },
           "microcredits": {
             "description": "Exact integer charge units; one credit contains one million microcredits.",
             "format": "int64",
@@ -5981,6 +6495,24 @@
             "description": "The organization charged.",
             "format": "uuid",
             "type": "string"
+          },
+          "organization_microcredits": {
+            "default": 0,
+            "description": "The part the organization's shared credit balance paid.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "own_key_microcredits": {
+            "default": 0,
+            "description": "The part run on this organization's own provider key: a tariff\n equivalent its provider bills, not credit spend. The four funding\n columns add up to `microcredits`.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "plan_microcredits": {
+            "default": 0,
+            "description": "The part of `microcredits` the workspace allowance or the author's seat paid.",
+            "format": "int64",
+            "type": "integer"
           },
           "transport": {
             "description": "The model transport recorded at charge time, null when the debit records none.",
@@ -6052,6 +6584,57 @@
           "stopped_at"
         ],
         "type": "object"
+      },
+      "StoredCheckOutcome": {
+        "description": "What the test did: `FAILED` as at the reproduction or otherwise,\n `DID_NOT_FAIL` when it exited cleanly, which shows only that this test\n did not fail under the conditions it exercised, or `UNAVAILABLE` when it\n could not answer.",
+        "enum": [
+          "FAILED",
+          "DID_NOT_FAIL",
+          "UNAVAILABLE"
+        ],
+        "type": "string"
+      },
+      "StoredCheckResult": {
+        "description": "The newest result of a stored check: its newest settled rerun at a later\n pull request head, or the reproduction's own head run when it has not\n run again.",
+        "properties": {
+          "commit_sha": {
+            "description": "The commit the check ran at, or would have run at when a rerun could\n not start.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "description": "Why a rerun did not pass, such as `STILL_FAILS` or\n `SERVICE_NOT_STARTED`. Absent for a pass and for the reproduction.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "result": {
+            "$ref": "#/components/schemas/StoredCheckOutcome"
+          },
+          "source": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/StoredCheckResultSource"
+              }
+            ],
+            "description": "`RERUN` or `REPRODUCTION`."
+          }
+        },
+        "required": [
+          "source",
+          "result"
+        ],
+        "type": "object"
+      },
+      "StoredCheckResultSource": {
+        "enum": [
+          "REPRODUCTION",
+          "RERUN"
+        ],
+        "type": "string"
       },
       "SubjectAuthorization": {
         "description": "One assessment's authorization of one subject, by identity.\n\n The display name is not the answer on its own: an environment's external key\n is unique within its organization and a display name is mutable metadata,\n so two environments of one review can carry the same one.\n Collapsing to it would leave a reader unable to tell which assessment\n authorized the subject and which one gapped, which is the confusion this\n field exists to remove.",
@@ -6462,7 +7045,7 @@
   },
   "info": {
     "title": "Proofline Review API",
-    "version": "7.1.0"
+    "version": "7.2.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -7000,6 +7583,74 @@
         ],
         "summary": "Review pushed commits",
         "x-proofline-token-scope": "reviews:request"
+      }
+    },
+    "/api/v1/organizations/{org_id}/repositories/{repo_id}/commits/{commit_sha}/deploy-verifications": {
+      "get": {
+        "description": "Returns each deploy of one exact commit in the repository that Proofline recorded, across the organization's environments: its environment ID, GitHub Environment, task, workflow run and attempt, where its verification stands, whether a check regressed, each check's result and due time, the gaps that leave it unproven and its console page. `commit_sha` must be a full 40-character lowercase commit SHA; a branch, tag or abbreviated SHA gets 400. A commit with no recorded deploy returns `recorded: false` and no deploys, which is never a result about a deploy. A repository outside the token's repository restriction or organization returns 404.",
+        "operationId": "get_commit_deploy_verifications",
+        "parameters": [
+          {
+            "description": "The full 40-character lowercase commit SHA the job deployed. A branch,\n tag or abbreviated SHA is refused.",
+            "in": "path",
+            "name": "commit_sha",
+            "required": true,
+            "schema": {
+              "description": "The full 40-character lowercase commit SHA the job deployed. A branch,\n tag or abbreviated SHA is refused.",
+              "type": "string"
+            },
+            "style": "simple"
+          },
+          {
+            "in": "path",
+            "name": "org_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "style": "simple"
+          },
+          {
+            "in": "path",
+            "name": "repo_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "style": "simple"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommitDeployVerifications"
+                }
+              }
+            },
+            "description": "The deploys of one commit that Proofline recorded, across the\n organization's environments."
+          },
+          "default": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "An RFC 9457 problem; the HTTP status remains authoritative."
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Get a commit's deploy verifications",
+        "x-proofline-token-scope": "reviews:read"
       }
     },
     "/api/v1/organizations/{org_id}/repositories/{repo_id}/coverage-reports": {

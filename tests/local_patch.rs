@@ -107,6 +107,16 @@ async fn settled_review(State(fixture): State<Fixture>, headers: HeaderMap) -> J
             "iteration": 1,
             "outcome": "RESOLVED_VERIFIED",
             "checks": [],
+            "stored_check": {
+                "check_id": FINDING,
+                "command": "cargo test orders::keeps_lost_orders",
+                "last_result": {
+                    "source": "RERUN",
+                    "result": "FAILED",
+                    "commit_sha": "d".repeat(40),
+                    "reason": "STILL_FAILS",
+                },
+            },
         }],
     }))
 }
@@ -421,6 +431,25 @@ async fn verify_sends_the_findings_and_prints_their_local_outcomes() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
         stdout.contains(&format!("  {FINDING}  RESOLVED_VERIFIED  (request 1 of 3)")),
+        "{stdout}"
+    );
+    // The finding's stored check gives the command to run locally and its
+    // last result, under the finding it belongs to.
+    let check = stdout
+        .lines()
+        .skip_while(|line| !line.contains(FINDING))
+        .skip(1)
+        .take(2)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        check.contains("cargo test orders::keeps_lost_orders"),
+        "{stdout}"
+    );
+    assert!(
+        check.contains("FAILED")
+            && check.contains("STILL_FAILS")
+            && check.contains(&"d".repeat(40)),
         "{stdout}"
     );
     server.close().await;

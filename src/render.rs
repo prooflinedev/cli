@@ -5,7 +5,9 @@ use std::cmp::Reverse;
 
 use url::Url;
 
-use crate::model::{Assessment, CodeAssessment, Finding, LocalReverification, ReviewDetail};
+use crate::model::{
+    Assessment, CodeAssessment, Finding, LocalReverification, ReviewDetail, StoredCheck,
+};
 use crate::outcome::{self, Outcome};
 use crate::severity::Severity;
 use crate::text::{one_line, terminal_safe};
@@ -168,7 +170,38 @@ fn reverifications(out: &mut Vec<String>, items: &[LocalReverification]) {
             one_line(&item.outcome),
             item.iteration
         ));
+        if let Some(check) = &item.stored_check {
+            stored_check(out, check);
+        }
     }
+}
+
+/// A finding's stored check: the command to run against the local changes,
+/// what it last gave and what such a run can show.
+fn stored_check(out: &mut Vec<String>, check: &StoredCheck) {
+    out.push(format!("    Stored check: {}", one_line(&check.command)));
+    if let Some(last) = &check.last_result {
+        let at = last
+            .commit_sha
+            .as_deref()
+            .map_or_else(String::new, |sha| format!(" at {}", one_line(sha)));
+        let source = if last.source == "RERUN" {
+            "a later head's run"
+        } else {
+            "the reproduction"
+        };
+        let reason = last
+            .reason
+            .as_deref()
+            .map_or_else(String::new, |reason| format!(" ({})", one_line(reason)));
+        out.push(format!(
+            "    Last result: {}{reason}{at}, from {source}",
+            one_line(&last.result)
+        ));
+    }
+    out.push(
+        "    The run shows code behavior under the conditions the test exercised, and no environment fact. The patch review did not run it.".to_owned(),
+    );
 }
 
 /// The review, with separate CODE and environment assessment blocks.

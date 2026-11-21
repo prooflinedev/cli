@@ -227,8 +227,9 @@ async fn status_preserves_metadata_and_reports_failed_checks_with_exit_one() {
         let observed = Arc::clone(&requests);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
-        let server = if let Some(status) = status {
-            let app = Router::new().route(
+        let server =
+            if let Some(status) = status {
+                let app = Router::new().route(
                 &format!("/api/v1/organizations/{ORG}/reviews"),
                 get(move |headers: HeaderMap| {
                     let observed = Arc::clone(&observed);
@@ -246,14 +247,21 @@ async fn status_preserves_metadata_and_reports_failed_checks_with_exit_one() {
                         (status, Json(body))
                     }
                 }),
+            )
+            .route(
+                &format!("/api/v1/organizations/{ORG}/agent-delegation"),
+                get(|headers: HeaderMap| async move {
+                    assert_eq!(headers[header::AUTHORIZATION], format!("Bearer {TOKEN}"));
+                    Json(json!({ "scopes": ["setup:write", "org:configure"], "state": "ENDED" }))
+                }),
             );
-            Some(tokio::spawn(async move {
-                axum::serve(listener, app).await.unwrap();
-            }))
-        } else {
-            drop(listener);
-            None
-        };
+                Some(tokio::spawn(async move {
+                    axum::serve(listener, app).await.unwrap();
+                }))
+            } else {
+                drop(listener);
+                None
+            };
         let output = cli(&origin, &["status"]).await;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -265,6 +273,16 @@ async fn status_preserves_metadata_and_reports_failed_checks_with_exit_one() {
         if status == Some(StatusCode::OK) {
             assert_eq!(output.status.code(), Some(0), "{stderr}");
             assert!(stdout.contains("server: accepted the token"), "{stdout}");
+            // The token still reads reviews after the browser sign-in that
+            // approved its setup grants ended, and status says how to renew them.
+            assert!(
+                stdout.contains("setup delegation: ended for setup:write, org:configure"),
+                "{stdout}"
+            );
+            assert!(
+                stdout.contains("--scope setup:write --scope org:configure`"),
+                "{stdout}"
+            );
             assert!(stderr.is_empty(), "{stderr}");
         } else {
             assert_eq!(output.status.code(), Some(1), "{stderr}");
