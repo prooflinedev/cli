@@ -30,7 +30,14 @@ fn integrity_and_archive_refusals_preserve_installed_binary() {
         format!("{digest}  other.tar.gz\n"),
     ] {
         assert!(
-            verify_and_replace(&good, invalid.as_bytes(), "release.tar.gz", &destination).is_err()
+            verify_and_replace(
+                &good,
+                invalid.as_bytes(),
+                "release.tar.gz",
+                &destination,
+                None
+            )
+            .is_err()
         );
         assert_eq!(fs::read(&destination).unwrap(), b"old binary");
     }
@@ -370,5 +377,163 @@ fn installed_symlink_is_reported_as_a_symlink() {
     ] {
         let error = install_path(&executable, &bin).unwrap_err().to_string();
         assert!(error.contains("symbolic link"), "{executable:?}: {error}");
+    }
+}
+
+#[test]
+fn provenance_setting_accepts_only_one_or_zero() {
+    for off in [None, Some(""), Some("0")] {
+        assert!(!provenance_requested(off.map(OsStr::new)).unwrap());
+    }
+    assert!(provenance_requested(Some(OsStr::new("1"))).unwrap());
+    for invalid in ["yes", "true", "on", " 1", "2"] {
+        let error = provenance_requested(Some(OsStr::new(invalid))).unwrap_err();
+        assert!(error.to_string().contains("must be 1 or 0"), "{invalid}");
+    }
+}
+
+#[test]
+fn provenance_identity_pins_the_release_workflow_and_tag() {
+    assert_eq!(
+        provenance_identity("0.3.9"),
+        r"^https://github\.com/prooflinedev/cli/\.github/workflows/release\.yml@refs/(tags/v0\.3\.9|heads/main)$"
+    );
+}
+
+#[cfg(unix)]
+mod provenance {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    fn executable(path: &Path, contents: &str) {
+        fs::write(path, contents).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// A stand-in `gh` that records its arguments and the file it was given.
+    fn fake_gh(directory: &Path, status: i32) -> PathBuf {
+        let gh = directory.join("gh");
+        let log = directory.join("gh.log");
+        let seen = directory.join("gh.archive");
+        executable(
+            &gh,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\ncp \"$3\" '{}'\nexit {status}\n",
+                log.display(),
+                seen.display()
+            ),
+        );
+        gh
+    }
+
+    fn release() -> (Vec<u8>, String) {
+        let good = archive("proofline", tar::EntryType::Regular, b"new binary");
+        let sums = format!("{:x}  release.tar.gz\n", Sha256::digest(&good));
+        (good, sums)
+    }
+
+    #[test]
+    fn programs_are_found_only_as_executable_files_on_absolute_path_entries() {
+        let directory = tempfile::tempdir().unwrap();
+        let bin = directory.path().join("bin");
+        fs::create_dir_all(bin.join("gh-directory/gh")).unwrap();
+        fs::write(bin.join("plain"), b"not executable").unwrap();
+        executable(&bin.join("gh"), "#!/bin/sh\n");
+        let path = std::env::join_paths([Path::new("relative"), &bin]).unwrap();
+        assert_eq!(find_program("gh", Some(&path)), Some(bin.join("gh")));
+        assert_eq!(find_program("plain", Some(&path)), None);
+        let only_directory = std::env::join_paths([bin.join("gh-directory")]).unwrap();
+        assert_eq!(find_program("gh", Some(&only_directory)), None);
+        assert_eq!(find_program("gh", None), None);
+        executable(&directory.path().join("relative-gh"), "#!/bin/sh\n");
+        assert_eq!(find_program("gh", Some(OsStr::new("relative"))), None);
+    }
+
+    #[test]
+    fn verified_provenance_checks_the_downloaded_bytes_before_replacing() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("proofline");
+        fs::write(&destination, b"old binary").unwrap();
+        let (good, sums) = release();
+        let provenance = Provenance {
+            gh: fake_gh(directory.path(), 0),
+            version: "0.3.9".to_owned(),
+        };
+        verify_and_replace(
+            &good,
+            sums.as_bytes(),
+            "release.tar.gz",
+            &destination,
+            Some(&provenance),
+        )
+        .unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"new binary");
+        assert_eq!(fs::read(directory.path().join("gh.archive")).unwrap(), good);
+
+        let log = fs::read_to_string(directory.path().join("gh.log")).unwrap();
+        let arguments: Vec<_> = log.lines().collect();
+        assert_eq!(arguments[..2], ["attestation", "verify"]);
+        assert!(arguments[2].ends_with("/release.tar.gz"));
+        assert_eq!(
+            arguments[3..],
+            [
+                "--hostname",
+                "github.com",
+                "--repo",
+                "prooflinedev/cli",
+                "--cert-identity-regex",
+                &provenance_identity("0.3.9"),
+                "--deny-self-hosted-runners",
+            ]
+        );
+    }
+
+    #[test]
+    fn failed_provenance_keeps_the_installed_binary() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("proofline");
+        fs::write(&destination, b"old binary").unwrap();
+        let (good, sums) = release();
+        let provenance = Provenance {
+            gh: fake_gh(directory.path(), 1),
+            version: "0.3.9".to_owned(),
+        };
+        let error = verify_and_replace(
+            &good,
+            sums.as_bytes(),
+            "release.tar.gz",
+            &destination,
+            Some(&provenance),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("has no build provenance"), "{error}");
+        assert!(error.contains("nothing was installed"), "{error}");
+        assert_eq!(fs::read(&destination).unwrap(), b"old binary");
+    }
+
+    #[test]
+    fn checksum_mismatch_stops_before_provenance_check() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("proofline");
+        fs::write(&destination, b"old binary").unwrap();
+        let (good, _) = release();
+        let wrong = format!("{}  release.tar.gz\n", "0".repeat(64));
+        let provenance = Provenance {
+            gh: fake_gh(directory.path(), 0),
+            version: "0.3.9".to_owned(),
+        };
+        assert!(
+            verify_and_replace(
+                &good,
+                wrong.as_bytes(),
+                "release.tar.gz",
+                &destination,
+                Some(&provenance),
+            )
+            .is_err()
+        );
+        assert!(!directory.path().join("gh.log").exists());
+        assert_eq!(fs::read(&destination).unwrap(), b"old binary");
     }
 }
