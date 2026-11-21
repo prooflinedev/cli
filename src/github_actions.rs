@@ -246,7 +246,7 @@ async fn exchange(
 /// The seconds since the Unix epoch of an RFC 3339 time in UTC, as the
 /// exchange writes `expires_at`: `2026-11-21T03:00:00Z`, with or without
 /// fractional seconds. `None` for anything else.
-fn unix_seconds(time: &str) -> Option<i64> {
+pub(crate) fn unix_seconds(time: &str) -> Option<i64> {
     let (date, clock) = time.strip_suffix('Z')?.split_once('T')?;
     let clock = clock.split_once('.').map_or(clock, |(whole, _)| whole);
     let number = |part: &str| part.parse::<i64>().ok();

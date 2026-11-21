@@ -1729,7 +1729,7 @@ mod tests {
     const HOURLY: Exchange = Exchange::Grants(3_600);
 
     /// `unix` seconds as RFC 3339 in UTC, as the exchange writes `expires_at`.
-    fn rfc3339(unix: i64) -> String {
+    pub(crate) fn rfc3339(unix: i64) -> String {
         let (days, seconds) = (unix.div_euclid(86_400), unix.rem_euclid(86_400));
         let days = days + 719_468;
         let era = days.div_euclid(146_097);

@@ -20,7 +20,8 @@ use crate::{
 
 const SAME_RUN: &str = "Proofline records the landing of a run's deploy only after the run completes. Read it from a separate workflow: https://proofline.sh/docs/ci/#read-the-checks-from-a-separate-workflow";
 
-/// Minutes `ci deploy` waits without `--timeout`.
+/// Minutes `ci deploy` waits without `--timeout`, at least. A wait for the
+/// 20-minute or hour check also lasts until that check is due.
 const DEFAULT_TIMEOUT_MINUTES: u64 = 30;
 
 #[derive(Debug, Args)]
@@ -50,8 +51,9 @@ pub(crate) struct CiDeployArgs {
     /// The check to wait for. The checks before it count too.
     #[arg(long, value_enum, default_value_t = Until::Landing)]
     until: Until,
-    /// Minutes to wait for the check, 30 by default. `--until 1d` needs an
-    /// explicit value.
+    /// Minutes to wait for the check. By default 30, or for `--until 20m` and
+    /// `--until 1h` until the selected deploys' check is due if that is later.
+    /// `--until 1d` needs an explicit value.
     #[arg(long, value_name = "MINUTES")]
     timeout: Option<u64>,
     /// Print the route's response as JSON instead of text.
@@ -127,6 +129,13 @@ impl CiDeployArgs {
             ),
             (None, _) => Ok(DEFAULT_TIMEOUT_MINUTES),
         }
+    }
+
+    /// Whether the wait lasts until the selected deploys' check is due: the
+    /// default wait for the 20-minute or hour check, which an on-time check
+    /// can outlast.
+    fn waits_until_due(&self) -> bool {
+        self.timeout.is_none() && matches!(self.until, Until::Minutes20 | Until::Hour1)
     }
 
     fn selects(&self, deploy: &CommitDeploy) -> bool {
@@ -247,8 +256,9 @@ pub(crate) async fn wait(
     commit: &str,
     reader_run: Option<i64>,
 ) -> anyhow::Result<Verdict> {
-    let minutes = args.timeout_minutes()?;
-    let deadline = poll_deadline(minutes)?;
+    let started = tokio::time::Instant::now();
+    let started_unix = i64::try_from(crate::device::now()).unwrap_or(i64::MAX);
+    let mut deadline = poll_deadline(args.timeout_minutes()?)?;
     let (name, repository_id) = connected_repository(api, &args.repository).await?;
     let checkpoint = args.until.api_name();
     let mut delay = FIRST_POLL_SECONDS;
@@ -265,6 +275,9 @@ pub(crate) async fn wait(
             .iter()
             .map(|deploy| judge(deploy, args.until))
             .collect();
+        if args.waits_until_due() {
+            deadline = deadline.max(due(&selected, args.until, started, started_unix));
+        }
         let now = tokio::time::Instant::now();
         let verdict = conclude(&readings, now >= deadline);
         if let Some(id) = reader_run
@@ -290,6 +303,10 @@ pub(crate) async fn wait(
                 .copied()
                 .zip(readings.iter().copied())
                 .collect();
+            let waited = deadline
+                .saturating_duration_since(started)
+                .as_secs()
+                .div_ceil(60);
             say(&ending(
                 verdict,
                 &judged,
@@ -297,7 +314,7 @@ pub(crate) async fn wait(
                 &name,
                 commit,
                 checkpoint,
-                minutes,
+                waited,
             ));
             return Ok(verdict);
         }
@@ -315,6 +332,29 @@ pub(crate) async fn wait(
         tokio::time::sleep(pause).await;
         delay = (delay * 2).min(LONGEST_POLL_SECONDS);
     }
+}
+
+/// When the latest of the selected deploys' `until` check is due, on the
+/// clock the wait sleeps on, counted from the wait's start at `started_unix`
+/// seconds: `started` for a check due before then or a time that does not
+/// parse.
+fn due(
+    selected: &[&CommitDeploy],
+    until: Until,
+    started: tokio::time::Instant,
+    started_unix: i64,
+) -> tokio::time::Instant {
+    let seconds = selected
+        .iter()
+        .flat_map(|deploy| &deploy.checkpoints)
+        .filter(|check| check.checkpoint == until.api_name())
+        .filter_map(|check| crate::github_actions::unix_seconds(&check.due_at))
+        .map(|due| u64::try_from(due.saturating_sub(started_unix)).unwrap_or(0))
+        .max()
+        .unwrap_or(0);
+    started
+        .checked_add(Duration::from_secs(seconds))
+        .unwrap_or(started)
 }
 
 fn count(deploys: usize) -> String {
@@ -831,6 +871,16 @@ mod tests {
             assert!(took >= Duration::from_secs(180), "{case}: {took:?}");
             assert!(took < Duration::from_secs(190), "{case}: {took:?}");
         }
+
+        // Without --timeout, a wait for the hour check lasts until the check
+        // is due, 50 minutes from now, past the 30-minute floor.
+        let mut due = deploy("deploy", &[1], &["HEALTHY", "HEALTHY"], &[]);
+        let due_at = i64::try_from(crate::device::now()).unwrap() + 50 * 60;
+        due["checkpoints"][2]["due_at"] = json!(crate::tests::rfc3339(due_at));
+        let (verdict, _, took) = run(None, &["--until", "1h"], vec![recorded(&[due])]).await;
+        assert_eq!(verdict.unwrap(), Verdict::NotComplete);
+        assert!(took >= Duration::from_secs(49 * 60), "{took:?}");
+        assert!(took < Duration::from_secs(51 * 60), "{took:?}");
     }
 
     /// `--task` takes one task's deploy of a commit deployed by two, and
@@ -917,6 +967,14 @@ mod tests {
         assert!(ci_commit(Some("main")).is_err());
         assert!(ci_commit(Some("89abcdef0123")).is_err());
         assert!(args(&["--until", "1d"]).timeout_minutes().is_err());
+        for (flags, until_due) in [
+            (&["--until", "20m"][..], true),
+            (&["--until", "1h"][..], true),
+            (&[][..], false),
+            (&["--until", "1h", "--timeout", "5"][..], false),
+        ] {
+            assert_eq!(args(flags).waits_until_due(), until_due, "{flags:?}");
+        }
         assert_eq!(
             args(&["--until", "1d", "--timeout", "1560"])
                 .timeout_minutes()
