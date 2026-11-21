@@ -152,7 +152,7 @@ enum Command {
     /// Remove the stored token from the OS keychain.
     Logout,
     /// Show which organization and token the CLI uses.
-    Status,
+    Status(StatusArgs),
     /// Review the checkout's local changes, pushed commits, or an open pull
     /// request's current head.
     Review(ReviewArgs),
@@ -245,6 +245,13 @@ struct OutputArgs {
     /// Minutes to wait for a running review.
     #[arg(long, default_value_t = 20, value_name = "MINUTES")]
     timeout: u64,
+}
+
+#[derive(Debug, Args)]
+struct StatusArgs {
+    /// Print the status information as JSON.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -502,7 +509,7 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
         Command::Logout => logout(&origin, token.is_some())
             .await
             .map(|()| Verdict::Done),
-        Command::Status => status(Http::new(origin)?, token, cli.org)
+        Command::Status(args) => status(Http::new(origin)?, token, cli.org, args.json)
             .await
             .map(|()| Verdict::Done),
         Command::Review(args) => {
@@ -688,7 +695,12 @@ async fn logout(origin: &Origin, environment: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn status(http: Http, token: Option<SecretString>, org: Option<Uuid>) -> anyhow::Result<()> {
+async fn status(
+    http: Http,
+    token: Option<SecretString>,
+    org: Option<Uuid>,
+    json: bool,
+) -> anyhow::Result<()> {
     let Credential {
         token,
         organization_id,
@@ -697,38 +709,80 @@ async fn status(http: Http, token: Option<SecretString>, org: Option<Uuid>) -> a
         source,
     } = credentials::load(http.origin(), token, org).await?;
     let origin = http.origin().clone();
-    let mut lines = vec![
-        format!("console: {origin}"),
-        format!("organization: {organization_id}"),
-        format!(
-            "token: {}",
-            match source {
-                Source::Environment => "PROOFLINE_TOKEN",
-                Source::Keychain => "OS keychain",
-            }
-        ),
-    ];
-    if let Some(scope) = scope {
-        lines.push(format!("scopes: {}", text::one_line(&scope)));
-    }
-    if let Some(expires_at) = expires_at {
-        let left = expires_at.saturating_sub(device::now());
-        lines.push(if left == 0 {
-            "expires: expired; run `proofline login`".to_owned()
-        } else {
-            format!("expires: in {} hours", left.div_ceil(3600))
-        });
-    }
     let api = Api::new(http, token, organization_id);
     let result = api.reviews(None, None, None).await;
-    lines.push(match &result {
-        Ok(_) => "server: accepted the token".to_owned(),
-        Err(error) if error.status() == Some(401) => {
-            "server: the token is expired, revoked or malformed; run `proofline login`".to_owned()
+
+    if json {
+        let server_message = match &result {
+            Ok(_) => "accepted the token".to_owned(),
+            Err(error) if error.status() == Some(401) => {
+                "the token is expired, revoked or malformed; run `proofline login`".to_owned()
+            }
+            Err(error) => format!("{error}"),
+        };
+        let token_source = match source {
+            Source::Environment => "PROOFLINE_TOKEN",
+            Source::Keychain => "OS keychain",
+        };
+        let expires_in_hours = expires_at.map(|exp| {
+            let left = exp.saturating_sub(device::now());
+            if left == 0 {
+                0
+            } else {
+                left.div_ceil(3600)
+            }
+        });
+        let is_expired = expires_at.map(|exp| exp.saturating_sub(device::now()) == 0);
+        let payload = serde_json::json!({
+            "console": origin.to_string(),
+            "organization_id": organization_id,
+            "token": token_source,
+            "scopes": scope.as_deref().map(text::one_line),
+            "expires_at": expires_at,
+            "expires_in_hours": expires_in_hours,
+            "expired": is_expired,
+            "server": {
+                "accepted": result.is_ok(),
+                "message": server_message,
+            }
+        });
+        writeln!(
+            std::io::stdout().lock(),
+            "{}",
+            serde_json::to_string_pretty(&payload)?
+        )?;
+    } else {
+        let mut lines = vec![
+            format!("console: {origin}"),
+            format!("organization: {organization_id}"),
+            format!(
+                "token: {}",
+                match source {
+                    Source::Environment => "PROOFLINE_TOKEN",
+                    Source::Keychain => "OS keychain",
+                }
+            ),
+        ];
+        if let Some(scope) = &scope {
+            lines.push(format!("scopes: {}", text::one_line(scope)));
         }
-        Err(error) => format!("server: {error}"),
-    });
-    writeln!(std::io::stdout().lock(), "{}", lines.join("\n"))?;
+        if let Some(expires_at) = expires_at {
+            let left = expires_at.saturating_sub(device::now());
+            lines.push(if left == 0 {
+                "expires: expired; run `proofline login`".to_owned()
+            } else {
+                format!("expires: in {} hours", left.div_ceil(3600))
+            });
+        }
+        lines.push(match &result {
+            Ok(_) => "server: accepted the token".to_owned(),
+            Err(error) if error.status() == Some(401) => {
+                "server: the token is expired, revoked or malformed; run `proofline login`".to_owned()
+            }
+            Err(error) => format!("server: {error}"),
+        });
+        writeln!(std::io::stdout().lock(), "{}", lines.join("\n"))?;
+    }
     result?;
     Ok(())
 }

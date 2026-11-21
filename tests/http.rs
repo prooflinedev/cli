@@ -292,6 +292,54 @@ async fn status_preserves_metadata_and_reports_failed_checks_with_exit_one() {
 }
 
 #[tokio::test]
+async fn status_json_reports_structured_metadata_and_respects_server_outcome() {
+    for (status, expected_code, expected_accepted) in [
+        (StatusCode::OK, 0, true),
+        (StatusCode::UNAUTHORIZED, 1, false),
+    ] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new().route(
+            &format!("/api/v1/organizations/{ORG}/reviews"),
+            get(move |headers: HeaderMap| async move {
+                assert_eq!(headers[header::AUTHORIZATION], format!("Bearer {TOKEN}"));
+                let body = if status.is_success() {
+                    json!({
+                        "items": [],
+                        "next_cursor": null,
+                        "truncated": false,
+                        "filters": { "repositories": [] },
+                    })
+                } else {
+                    json!({ "title": "Access refused", "status": status.as_u16() })
+                };
+                (status, Json(body))
+            }),
+        );
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let output = cli(&origin, &["status", "--json"]).await;
+        assert_eq!(output.status.code(), Some(expected_code));
+        let value: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("status --json outputs valid JSON");
+        assert_eq!(value["console"], origin);
+        assert_eq!(value["organization_id"], ORG);
+        assert_eq!(value["token"], "PROOFLINE_TOKEN");
+        assert_eq!(value["server"]["accepted"], expected_accepted);
+        if expected_accepted {
+            assert_eq!(value["server"]["message"], "accepted the token");
+        } else {
+            assert!(value["server"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("run `proofline login`"));
+        }
+        server.abort();
+    }
+}
+
+#[tokio::test]
 async fn findings_timeout_applies_only_to_waiting_and_never_panics() {
     for (timeout, wait, code, reads) in [
         ("18446744073709551615", false, 2, 1),
