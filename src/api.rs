@@ -1,6 +1,7 @@
 //! The review API over HTTP: bearer authentication, bounded bodies, explicit
 //! timeouts, no redirects, and bounded retries for reads.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use reqwest::{Method, StatusCode, header};
@@ -24,6 +25,8 @@ const MAX_BODY: usize = 8 * 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const READ_ATTEMPTS: u32 = 4;
 const MAX_RETRY_AFTER: u64 = 60;
+const HISTORY_PAGE_SIZE: &str = "50";
+const HISTORY_MAX_PAGES: usize = 100;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApiError {
@@ -444,13 +447,102 @@ impl Api {
         self.get(url).await
     }
 
+    /// Reads every recorded run for one pull request, following opaque cursors.
+    ///
+    /// The endpoint is paginated even though the CLI command presents one history.
+    /// Keep the traversal bounded and fail closed: an invalid cursor or exhausted
+    /// page budget must never look like a complete history to the caller.
     pub(crate) async fn history(
         &self,
         repository: &str,
         number: u64,
     ) -> Result<serde_json::Value, ApiError> {
-        self.get(self.url_list_pull_request_reviews(repository, &number.to_string()))
-            .await
+        let mut cursor: Option<String> = None;
+        let mut seen = HashSet::new();
+        let mut history: Option<serde_json::Value> = None;
+
+        for _ in 0..HISTORY_MAX_PAGES {
+            let mut url =
+                self.url_list_pull_request_reviews(repository, &number.to_string());
+            {
+                let mut query = url.query_pairs_mut();
+                query.append_pair("limit", HISTORY_PAGE_SIZE);
+                if let Some(cursor) = cursor.as_deref() {
+                    query.append_pair("cursor", cursor);
+                }
+            }
+
+            let mut page = self.get(url).await?;
+            let truncated = page
+                .get("truncated")
+                .and_then(serde_json::Value::as_bool)
+                .ok_or_else(|| self.http.protocol("pull-request history has no valid truncated flag"))?;
+            let next_cursor = match page.get("next_cursor") {
+                None | Some(serde_json::Value::Null) => None,
+                Some(serde_json::Value::String(value)) => Some(value.clone()),
+                Some(_) => {
+                    return Err(self
+                        .http
+                        .protocol("pull-request history has an invalid continuation cursor"));
+                }
+            };
+
+            match (truncated, next_cursor.as_deref()) {
+                (false, None) => {}
+                (false, Some(_)) => {
+                    return Err(self.http.protocol(
+                        "pull-request history returned a continuation cursor without truncation",
+                    ));
+                }
+                (true, Some(value)) if !value.is_empty() => {
+                    if !seen.insert(value.to_owned()) {
+                        return Err(self
+                            .http
+                            .protocol("pull-request history returned a repeated continuation cursor"));
+                    }
+                }
+                (true, _) => {
+                    return Err(self
+                        .http
+                        .protocol("pull-request history is truncated without a usable continuation cursor"));
+                }
+            }
+
+            let page_items = page
+                .get_mut("items")
+                .and_then(serde_json::Value::as_array_mut)
+                .map(std::mem::take)
+                .ok_or_else(|| self.http.protocol("pull-request history has no items array"))?;
+
+            match history.as_mut() {
+                Some(history) => {
+                    let items = history
+                        .get_mut("items")
+                        .and_then(serde_json::Value::as_array_mut)
+                        .ok_or_else(|| self.http.protocol("pull-request history accumulator is invalid"))?;
+                    items.extend(page_items);
+                }
+                None => {
+                    page["items"] = serde_json::Value::Array(page_items);
+                    page["next_cursor"] = serde_json::Value::Null;
+                    page["truncated"] = serde_json::Value::Bool(false);
+                    history = Some(page);
+                }
+            }
+
+            match next_cursor {
+                None => {
+                    return history.ok_or_else(|| {
+                        self.http.protocol("pull-request history returned no pages")
+                    });
+                }
+                Some(next) => cursor = Some(next),
+            }
+        }
+
+        Err(self.http.protocol(
+            "pull-request history exceeded the 100-page safety limit before completing",
+        ))
     }
 
     pub(crate) async fn guidance(&self, repository: Uuid) -> Result<serde_json::Value, ApiError> {
