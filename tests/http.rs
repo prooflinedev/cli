@@ -3538,3 +3538,120 @@ async fn config_proposal_targets_must_match_the_selected_organization() {
     assert_eq!(server.requests()[0]["arguments"]["organization_id"], ORG);
     assert_eq!(server.frames.load(Ordering::SeqCst), 3);
 }
+
+/// `reviews` passes each filter on in the server's spelling, sends only the
+/// page size when none is given, and resolves `--repo` against the review
+/// collection's repositories before listing.
+#[tokio::test]
+async fn reviews_sends_each_filter_in_the_servers_spelling() {
+    let queries = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&queries);
+    let app = Router::new().route(
+        &format!("/api/v1/organizations/{ORG}/reviews"),
+        get(move |uri: axum::http::Uri| {
+            let seen = Arc::clone(&seen);
+            async move {
+                let pairs: BTreeSet<(String, String)> =
+                    url::form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes())
+                        .into_owned()
+                        .collect();
+                seen.lock().unwrap().push(pairs);
+                Json(json!({
+                    "items": [],
+                    "next_cursor": null,
+                    "truncated": false,
+                    "filters": {"repositories": [{"id": REPOSITORY, "name": "Owner/Repo"}]},
+                }))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let pairs = |pairs: &[(&str, &str)]| -> BTreeSet<(String, String)> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect()
+    };
+    let cases = [
+        (
+            vec![
+                "reviews",
+                "--status",
+                "failed",
+                "--kind",
+                "pull-request",
+                "--author",
+                "mine",
+                "--needs-attention",
+                "--findings",
+                "present",
+                "--query",
+                "severity:serious",
+                "--limit",
+                "10",
+            ],
+            vec![pairs(&[
+                ("status", "FAILED"),
+                ("kind", "PULL_REQUEST"),
+                ("author", "mine"),
+                ("attention", "needed"),
+                ("findings", "present"),
+                ("query", "severity:serious"),
+                ("limit", "10"),
+            ])],
+        ),
+        (vec!["reviews"], vec![pairs(&[("limit", "50")])]),
+        (
+            vec!["reviews", "--repo", "owner/repo", "--findings", "none"],
+            vec![
+                pairs(&[("limit", "50")]),
+                pairs(&[
+                    ("limit", "50"),
+                    ("repository", REPOSITORY),
+                    ("findings", "none"),
+                ]),
+            ],
+        ),
+    ];
+    for (args, expected) in cases {
+        let output = cli(&origin, &args).await;
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            queries.lock().unwrap().drain(..).collect::<Vec<_>>(),
+            expected,
+            "{args:?}"
+        );
+    }
+
+    let unknown = cli(&origin, &["reviews", "--repo", "other/repo"]).await;
+    assert!(!unknown.status.success());
+    assert!(String::from_utf8_lossy(&unknown.stderr).contains("other/repo has no reviews"));
+    queries.lock().unwrap().clear();
+
+    for refused in [
+        vec![
+            "reviews",
+            "--repo",
+            "owner/repo",
+            "--repository-id",
+            REPOSITORY,
+        ],
+        vec!["reviews", "--author", "bob"],
+        vec!["reviews", "--status", "done"],
+        vec!["reviews", "--limit", "0"],
+    ] {
+        let output = cli(&origin, &refused).await;
+        assert!(!output.status.success(), "{refused:?}");
+    }
+    assert!(
+        queries.lock().unwrap().is_empty(),
+        "a refused flag sent a request"
+    );
+    server.abort();
+}

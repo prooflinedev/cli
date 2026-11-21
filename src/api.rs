@@ -349,6 +349,23 @@ pub(crate) enum DelegationState {
     Ended,
 }
 
+/// One page's query on the review list. Values are already in the server's
+/// spelling; `None` leaves a filter out.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ReviewFilters<'a> {
+    pub repository: Option<Uuid>,
+    pub search: Option<&'a str>,
+    pub query: Option<&'a str>,
+    pub status: Option<&'a str>,
+    pub kind: Option<&'a str>,
+    pub author: Option<&'a str>,
+    /// Sends `attention=needed`, the parameter's only value.
+    pub attention: bool,
+    pub findings: Option<&'a str>,
+    pub limit: u32,
+    pub cursor: Option<&'a str>,
+}
+
 /// The review API, authorized by one token in one organization.
 #[derive(Debug, Clone)]
 pub struct Api {
@@ -466,22 +483,30 @@ impl Api {
 
     pub(crate) async fn list_page(
         &self,
-        repository: Option<Uuid>,
-        search: Option<&str>,
-        cursor: Option<&str>,
+        filters: &ReviewFilters<'_>,
     ) -> Result<serde_json::Value, ApiError> {
         let mut url = self.url_list_reviews();
         {
             let mut query = url.query_pairs_mut();
-            query.append_pair("limit", "50");
-            if let Some(repository) = repository {
+            query.append_pair("limit", &filters.limit.to_string());
+            if let Some(repository) = filters.repository {
                 query.append_pair("repository", &repository.to_string());
             }
-            if let Some(search) = search {
-                query.append_pair("search", search);
+            if filters.attention {
+                query.append_pair("attention", "needed");
             }
-            if let Some(cursor) = cursor {
-                query.append_pair("cursor", cursor);
+            for (key, value) in [
+                ("search", filters.search),
+                ("query", filters.query),
+                ("status", filters.status),
+                ("kind", filters.kind),
+                ("author", filters.author),
+                ("findings", filters.findings),
+                ("cursor", filters.cursor),
+            ] {
+                if let Some(value) = value {
+                    query.append_pair(key, value);
+                }
             }
         }
         self.get(url).await

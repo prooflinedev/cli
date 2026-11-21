@@ -486,14 +486,11 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
         Command::Plan(command) => knowledge::run(origin, token, cli.org, command.request()).await,
         Command::Reviews(args) => {
             let api = connect(Http::new(origin)?, token, cli.org).await?;
-            tools::json(
-                &api.list_page(
-                    args.repository_id,
-                    args.search.as_deref(),
-                    args.cursor.as_deref(),
-                )
-                .await?,
-            )
+            let repository = match &args.repo {
+                Some(name) => Some(reviewed_repository_named(&api, name).await?.1),
+                None => args.repository_id,
+            };
+            tools::json(&api.list_page(&args.filters(repository)).await?)
         }
         Command::Routing { review_id } => {
             let api = connect(Http::new(origin)?, token, cli.org).await?;
@@ -856,14 +853,18 @@ async fn connected_repository(api: &Api, args: &RepositoryArgs) -> anyhow::Resul
 /// keeps its reviews, so this reads the review collection's repositories, not
 /// the connected ones.
 async fn reviewed_repository(api: &Api, args: &RepositoryArgs) -> anyhow::Result<(String, Uuid)> {
-    let name = repository_name(args).await?;
+    reviewed_repository_named(api, &repository_name(args).await?).await
+}
+
+/// [`reviewed_repository`] for a name given as owner/name.
+async fn reviewed_repository_named(api: &Api, name: &str) -> anyhow::Result<(String, Uuid)> {
     let page = api.reviews(None, None, None).await?;
     let candidates = page
         .filters
         .repositories
         .into_iter()
         .map(|choice| (choice.id, choice.name));
-    let (id, full_name) = unique(api, &name, candidates, || {
+    let (id, full_name) = unique(api, name, candidates, || {
         anyhow::anyhow!(
             "{name} has no reviews in organization {} that this token can read; check the repository name and the token's repositories",
             api.organization_id()
