@@ -9,6 +9,13 @@
 # ~/.local/bin, or in PROOFLINE_INSTALL_DIR when that is set. PROOFLINE_VERSION
 # selects another release.
 #
+# SHA256SUMS comes from the same origin as the archive, so it catches a damaged
+# download but not a replaced release. PROOFLINE_VERIFY_PROVENANCE=1 also has
+# `gh attestation verify` check the archive's build provenance: GitHub must have
+# signed it for this repository's release workflow, on a GitHub-hosted runner,
+# at this version's tag or at main. It needs the GitHub CLI signed in to
+# github.com.
+#
 # Every statement is inside a function and the last line calls it, so a
 # download cut short runs nothing.
 
@@ -17,6 +24,7 @@ set -eu
 PROOFLINE_CLI=https://proofline.sh/cli
 PROOFLINE_INSTALLER_VERSION=0.3.10
 PROOFLINE_SETUP_MIN_VERSION=0.1.8
+PROOFLINE_SOURCE_REPOSITORY=prooflinedev/cli
 
 say() {
   printf 'proofline install: %s\n' "$*" >&2
@@ -71,8 +79,27 @@ sha256() {
   fi
 }
 
+# Checks the archive's build provenance with the GitHub CLI. The signing
+# certificate names the workflow and the ref it ran at; a release is published
+# from its vX.Y.Z tag or by a dispatch on main, so only those two refs pass.
+verify_provenance() {
+  # The version is already checked to be digits and dots.
+  tag=$(printf '%s\n' "v$2" | sed 's/\./\\./g')
+  identity="^https://github\\.com/prooflinedev/cli/\\.github/workflows/release\\.yml@refs/(tags/$tag|heads/main)\$"
+  gh attestation verify "$1" \
+    --hostname github.com \
+    --repo "$PROOFLINE_SOURCE_REPOSITORY" \
+    --cert-identity-regex "$identity" \
+    --deny-self-hosted-runners >&2
+}
+
 main() {
   setup=false
+  case "${PROOFLINE_VERIFY_PROVENANCE:-}" in
+    '' | 0) provenance=false ;;
+    1) provenance=true ;;
+    *) refuse "PROOFLINE_VERIFY_PROVENANCE must be 1 or 0; nothing was installed" ;;
+  esac
   case "$#:$*" in
     0:) ;;
     1:--setup) setup=true ;;
@@ -88,6 +115,10 @@ main() {
   # trees. Check before downloading, so a machine without it gets nothing.
   if [ "$setup" = true ] && ! command -v git >/dev/null 2>&1; then
     refuse "coding-agent setup needs git, which is not on PATH; nothing was installed; install Git and rerun this command, or omit --setup to install only the CLI"
+  fi
+  # Likewise, a provenance check that cannot run downloads nothing.
+  if [ "$provenance" = true ] && ! command -v gh >/dev/null 2>&1; then
+    refuse "PROOFLINE_VERIFY_PROVENANCE=1 needs the GitHub CLI (gh), which is not on PATH; nothing was installed"
   fi
 
   need curl
@@ -123,6 +154,11 @@ main() {
   actual=$(sha256 "$work/$archive")
   [ "$actual" = "$expected" ] ||
     refuse "the download does not match SHA256SUMS ($actual, expected $expected); nothing was installed"
+  if [ "$provenance" = true ]; then
+    say "checking build provenance of $archive with gh attestation verify"
+    verify_provenance "$work/$archive" "$version" ||
+      refuse "$archive has no build provenance from $PROOFLINE_SOURCE_REPOSITORY's release workflow for $version; nothing was installed; run 'gh auth login' if gh is not signed in"
+  fi
 
   tar -xzf "$work/$archive" -C "$work" proofline ||
     refuse "$archive does not contain proofline"
