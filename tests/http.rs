@@ -2600,7 +2600,8 @@ async fn history_and_run_send_the_matched_name_without_its_owner() {
         let prefix = prefix.clone();
         async move {
             let path = request.uri().path().to_owned();
-            seen.lock().unwrap().push(path.clone());
+            let uri = request.uri().to_string();
+            seen.lock().unwrap().push(uri);
             if path == format!("{prefix}/reviews") {
                 return Json(json!({
                     "items": [],
@@ -2610,7 +2611,22 @@ async fn history_and_run_send_the_matched_name_without_its_owner() {
                 }));
             }
             if path == format!("{prefix}/reviews/pr/Repo/7") {
-                return Json(json!({"items": [{"run_number": 2}]}));
+                assert_eq!(request.uri().query(), Some("limit=50"));
+                return Json(json!({
+                    "items": [{
+                        "id": SELECTED_REVIEW,
+                        "kind": "PULL_REQUEST",
+                        "status": "COMPLETED",
+                        "created_at": "2026-11-21T00:00:00Z",
+                        "head_commit_sha": null,
+                        "pull_request_number": 7,
+                        "repository_id": REPOSITORY,
+                        "run_number": 2
+                    }],
+                    "next_cursor": null,
+                    "truncated": false,
+                    "filters": {"repositories": []}
+                }));
             }
             if path == format!("{prefix}/reviews/pr/Repo/7/runs/2") {
                 return Json(json!({"run_number": 2}));
@@ -2643,7 +2659,7 @@ async fn history_and_run_send_the_matched_name_without_its_owner() {
             .lock()
             .unwrap()
             .drain(..)
-            .filter(|path| path.contains("/reviews/pr/"))
+            .filter(|uri| uri.contains("/reviews/pr/"))
             .collect::<Vec<_>>()
     };
     for (args, read) in [
@@ -2670,7 +2686,10 @@ async fn history_and_run_send_the_matched_name_without_its_owner() {
         );
         assert_eq!(
             reads(&requests),
-            [format!("/api/v1/organizations/{ORG}/{read}")],
+            [format!(
+                "/api/v1/organizations/{ORG}/{read}{}",
+                if read == "reviews/pr/Repo/7" { "?limit=50" } else { "" }
+            )],
             "{args:?}"
         );
     }
@@ -2688,6 +2707,167 @@ async fn history_and_run_send_the_matched_name_without_its_owner() {
         assert!(reads(&requests).is_empty(), "{args:?}");
     }
     server.abort();
+}
+
+
+/// A history page keeps the same review-summary fields as the collection API.
+fn history_page(run: i64, id: &str, next_cursor: Option<&str>, truncated: bool) -> Value {
+    json!({
+        "items": [{
+            "id": id,
+            "kind": "PULL_REQUEST",
+            "status": "COMPLETED",
+            "created_at": "2026-11-21T00:00:00Z",
+            "head_commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "pull_request_number": 7,
+            "repository_id": REPOSITORY,
+            "run_number": run
+        }],
+        "next_cursor": next_cursor,
+        "truncated": truncated,
+        "filters": {"repositories": []}
+    })
+}
+
+#[tokio::test]
+async fn history_follows_every_cursor_and_preserves_server_order() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&requests);
+    let prefix = format!("/api/v1/organizations/{ORG}");
+    let app = Router::new().fallback(move |request: axum::extract::Request| {
+        let seen = Arc::clone(&seen);
+        let prefix = prefix.clone();
+        async move {
+            let path = request.uri().path().to_owned();
+            let query = request.uri().query().unwrap_or_default().to_owned();
+            seen.lock().unwrap().push(format!("{path}?{query}"));
+            if path == format!("{prefix}/reviews") {
+                return Json(json!({
+                    "items": [],
+                    "next_cursor": null,
+                    "truncated": false,
+                    "filters": {"repositories": [{"id": REPOSITORY, "name": "Owner/Repo"}]}
+                }));
+            }
+            if path == format!("{prefix}/reviews/pr/Repo/7") {
+                let (run, id, next, truncated) = match query.as_str() {
+                    "limit=50" => (
+                        3,
+                        "00000000-0000-4000-8000-000000000003",
+                        Some("opaque/+cursor"),
+                        true,
+                    ),
+                    "limit=50&cursor=opaque%2F%2Bcursor" => (
+                        2,
+                        "00000000-0000-4000-8000-000000000002",
+                        Some("last"),
+                        true,
+                    ),
+                    "limit=50&cursor=last" => (
+                        1,
+                        "00000000-0000-4000-8000-000000000001",
+                        None,
+                        false,
+                    ),
+                    other => panic!("unexpected history query: {other}"),
+                };
+                return Json(history_page(run, id, next, truncated));
+            }
+            Json(json!({}))
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let output = cli(&origin, &["history", "--repo", "owner/repo", "--pr", "7"]).await;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let runs = result["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["run_number"].as_i64().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(runs, [3, 2, 1]);
+    assert_eq!(result["truncated"], false);
+    assert_eq!(result["next_cursor"], Value::Null);
+
+    let history_reads = requests
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|uri| uri.contains("/reviews/pr/"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        history_reads,
+        [
+            format!("/api/v1/organizations/{ORG}/reviews/pr/Repo/7?limit=50"),
+            format!(
+                "/api/v1/organizations/{ORG}/reviews/pr/Repo/7?limit=50&cursor=opaque%2F%2Bcursor"
+            ),
+            format!("/api/v1/organizations/{ORG}/reviews/pr/Repo/7?limit=50&cursor=last"),
+        ]
+    );
+    server.abort();
+}
+
+#[tokio::test]
+async fn history_fails_closed_on_bad_cursors_and_the_page_limit() {
+    for failure in ["missing", "repeated", "page-limit"] {
+        let history_requests = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&history_requests);
+        let prefix = format!("/api/v1/organizations/{ORG}");
+        let app = Router::new().fallback(move |request: axum::extract::Request| {
+            let count = Arc::clone(&count);
+            let prefix = prefix.clone();
+            async move {
+                let path = request.uri().path().to_owned();
+                if path == format!("{prefix}/reviews") {
+                    return Json(json!({
+                        "items": [],
+                        "next_cursor": null,
+                        "truncated": false,
+                        "filters": {"repositories": [{"id": REPOSITORY, "name": "Owner/Repo"}]}
+                    }));
+                }
+                if path == format!("{prefix}/reviews/pr/Repo/7") {
+                    let index = count.fetch_add(1, Ordering::SeqCst);
+                    let next = match failure {
+                        "missing" => None,
+                        "repeated" => Some("loop".to_owned()),
+                        _ => Some(format!("cursor-{index}")),
+                    };
+                    return Json(history_page(1, SELECTED_REVIEW, next.as_deref(), true));
+                }
+                Json(json!({}))
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let output = cli(&origin, &["history", "--repo", "owner/repo", "--pr", "7"]).await;
+        assert!(!output.status.success(), "{failure}");
+        assert!(output.stdout.is_empty(), "{failure}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("pull-request history"),
+            "{failure}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let expected = match failure {
+            "missing" => 1,
+            "repeated" => 2,
+            _ => 100,
+        };
+        assert_eq!(history_requests.load(Ordering::SeqCst), expected, "{failure}");
+        server.abort();
+    }
 }
 
 /// The CLI in `directory` with `git` on its path, for commands that read the
