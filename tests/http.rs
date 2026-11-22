@@ -2522,6 +2522,99 @@ async fn ci_review_annotations_put_open_findings_on_the_diff_as_escaped_workflow
 }
 
 #[tokio::test]
+async fn ci_review_annotations_name_gaps_and_mark_partial_findings() {
+    let app = Router::new()
+        .route(
+            &format!("/api/v1/organizations/{ORG}/repository-names"),
+            get(|| async {
+                Json(json!({ "repositories": [{ "id": CI_REPOSITORY, "full_name": "acme/app" }] }))
+            }),
+        )
+        .route(
+            &format!("/api/v1/organizations/{ORG}/reviews"),
+            get(|| async {
+                Json(json!({
+                    "items": [{
+                        "id": CI_REVIEW,
+                        "kind": "PULL_REQUEST",
+                        "status": "COMPLETED",
+                        "created_at": "2026-10-01T00:00:00Z",
+                        "head_commit_sha": CI_HEAD,
+                        "pull_request_number": 12,
+                        "repository_id": CI_REPOSITORY,
+                        "run_number": 1,
+                    }],
+                    "next_cursor": null,
+                    "truncated": false,
+                    "filters": { "repositories": [], "environments": [], "authors": [] },
+                }))
+            }),
+        )
+        .route(
+            &format!("/api/v1/organizations/{ORG}/reviews/{CI_REVIEW}"),
+            get(|| async {
+                Json(json!({
+                    "id": CI_REVIEW,
+                    "kind": "PULL_REQUEST",
+                    "status": "COMPLETED",
+                    "head_commit_sha": CI_HEAD,
+                    "pull_request_number": 12,
+                    "run_number": 1,
+                    "assessment_count": 1,
+                    "assessments": [{
+                        "id": "0190f3a0-0000-7000-8000-0000000000f2",
+                        "environment_display_name": "production",
+                        "status": "INCOMPLETE",
+                        "incompleteness_kind": "WORLD_UNAVAILABLE",
+                        "findings": [{
+                            "id": "0190f3a0-0000-7000-8000-0000000000a1",
+                            "severity": "SERIOUS",
+                            "risk_domain": "data_integrity",
+                            "claim": "retries drop orders",
+                            "impact": "orders are lost",
+                            "lifecycle_state": "NEW",
+                            "evidence_refs": [],
+                        }],
+                        "checks": { "receipt_recorded": true, "status": "READY", "families": [] },
+                    }],
+                }))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let output = cli(
+        &origin,
+        &[
+            "ci",
+            "review",
+            "--repo",
+            "acme/app",
+            "--commit",
+            CI_HEAD,
+            "--timeout",
+            "0",
+            "--json",
+            "--annotations",
+        ],
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(
+        "::error title=Proofline production%3A WORLD_UNAVAILABLE::production: WORLD_UNAVAILABLE. Findings here are not a complete result."
+    ));
+    assert!(stderr.contains("::error title=Proofline Review%3A REVIEW_RESULT_INCOMPLETE::Review "));
+    assert!(stderr.contains(
+        "::error title=Proofline production (partial)%3A data_integrity::retries drop orders"
+    ));
+    // The gap annotations do not change the result on stdout.
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["outcome"], "INCOMPLETE");
+}
+
+#[tokio::test]
 async fn native_tools_keep_tenant_paths_and_reruns_make_one_attempt() {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&requests);
