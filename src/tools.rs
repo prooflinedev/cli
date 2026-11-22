@@ -210,12 +210,15 @@ pub(crate) enum SessionCommand {
     },
     /// Read the recorded vendor session status.
     Get { session_id: Uuid },
+    /// List the finding's recorded sessions, such as after a start whose answer was lost.
+    List { finding_id: Uuid },
 }
 
 pub(crate) async fn session(api: &Api, command: SessionCommand) -> anyhow::Result<Verdict> {
     let value = match command {
         SessionCommand::Prompt { finding_id } => api.get(api.url_get_agent_session_prompt(&finding_id.to_string())).await?,
         SessionCommand::Get { session_id } => api.get(api.url_get_agent_session(&session_id.to_string())).await?,
+        SessionCommand::List { finding_id } => api.finding_agent_sessions(finding_id).await?,
         SessionCommand::Start { finding_id, connection_id, prompt_digest } => api.tool_post(
             api.url_start_agent_session(&finding_id.to_string()),
             &serde_json::json!({"connection_id": connection_id, "prompt_digest": prompt_digest}),

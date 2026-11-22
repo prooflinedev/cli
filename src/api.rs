@@ -613,6 +613,16 @@ impl Api {
         serde_json::from_value(raw).map_err(|error| self.http.protocol(error.to_string()))
     }
 
+    /// A finding's recorded coding-agent sessions, oldest first. The route
+    /// belongs to the first-party CLI contract, not the public one.
+    pub(crate) async fn finding_agent_sessions(
+        &self,
+        finding_id: Uuid,
+    ) -> Result<serde_json::Value, ApiError> {
+        self.get(self.url(&["findings", &finding_id.to_string(), "agent-sessions"]))
+            .await
+    }
+
     /// The token's browser-delegated grants and whether they still work. The
     /// route belongs to the first-party CLI contract, not the public one.
     pub(crate) async fn agent_delegation(&self) -> Result<AgentDelegation, ApiError> {

@@ -41,6 +41,8 @@ In GitHub Actions, `proofline ci review --annotations` prints unresolved finding
 
 ## Scans
 
+Proofline cannot analyze a scan's files yet. An accepted scan reads the repository's files at its commit but analyzes none of them, so a scan of a repository with files ends `FAILED` or `INCOMPLETE` with no findings, and the command exits 2. That empty finding list says nothing about the code.
+
 `proofline scan --ref main --budget 200` scans the whole repository at one commit, not a pull request's change. GitHub resolves the ref once, when the request arrives, and the scan records that commit; `--commit SHA` names an exact full SHA instead, and you give one of the two. The command waits for the scan review and prints it like `proofline review`, while `--no-wait` prints its link and `--json` prints JSON.
 
 `--budget` is required and has no default: it is the most credits the whole scan may spend, capped by the organization's on-demand scan limit, and a limit of 0 turns on-demand scans off. Results stay in Proofline and are never posted to GitHub. The token needs `scans:request` and live GitHub write access to the repository. The default sign-in omits that scope, so run `proofline login --scope reviews:read --scope findings:read --scope reviews:request --scope scans:request`; `--scope` replaces the defaults, so list every scope you want. A sign-in that holds only `scans:request` and a repository restriction can request a scan, but cannot read the review it produces, so the command prints the scan's link instead of waiting.
@@ -62,7 +64,7 @@ proofline fix status REQUEST_ID
 
 These `fix` commands return MCP tool results as JSON, and `isError: true` exits nonzero. A successful read is not a verdict: `PENDING`, `UNAVAILABLE`, and `NOT_VERIFIED` retain their meaning. Only the server's recorded re-verification establishes a fix. Reads require `reviews:read`, while verification also requires `reviews:request` and current repository write access.
 
-`proofline session prompt FINDING_ID` returns the protected prompt and eligible connections. After reviewing it, run `proofline session start FINDING_ID --connection-id UUID --prompt-digest DIGEST`. This command starts once and can incur vendor charges. `proofline session get SESSION_ID` reads status. These commands require a personal token with `agent_sessions:start`; device sign-in cannot grant this authority.
+`proofline session prompt FINDING_ID` returns the protected prompt and eligible connections. After reviewing it, run `proofline session start FINDING_ID --connection-id UUID --prompt-digest DIGEST`. This command starts once and can incur vendor charges. `proofline session get SESSION_ID` reads status, and `proofline session list FINDING_ID` lists the finding's recorded sessions, such as after a start whose answer was lost. These commands require a personal token with `agent_sessions:start`; device sign-in cannot grant this authority.
 
 ## Knowledge and plans
 

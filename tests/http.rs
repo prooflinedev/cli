@@ -2806,6 +2806,10 @@ async fn native_session_and_collection_keep_scope_cursor_and_single_start() {
                         Json(json!({"detail":"start uncertain; inspect vendor"})),
                     )
                 }
+            })
+            .get(|headers: HeaderMap| async move {
+                assert_eq!(headers[header::AUTHORIZATION], format!("Bearer {TOKEN}"));
+                Json(json!([{"id": REPOSITORY, "status": "STARTING"}]))
             }),
         );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2835,6 +2839,18 @@ async fn native_session_and_collection_keep_scope_cursor_and_single_start() {
     )
     .await;
     assert!(!started.status.success());
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    // The caller has no session ID; the finding's list shows whether the start was recorded.
+    let listed = cli(&origin, &["session", "list", SELECTED_REVIEW]).await;
+    assert!(
+        listed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&listed.stdout).unwrap()[0]["id"],
+        REPOSITORY
+    );
     assert_eq!(starts.load(Ordering::SeqCst), 1);
     server.abort();
 }
