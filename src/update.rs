@@ -197,7 +197,17 @@ fn prepare_check(
 /// exit. Std limits inheritance only through unstable or unsafe APIs, so on
 /// Windows discovery waits for an invocation whose output is a console.
 fn may_detach() -> bool {
-    !cfg!(windows) || (std::io::stdout().is_terminal() && std::io::stderr().is_terminal())
+    detachable(
+        cfg!(windows),
+        std::io::stdout().is_terminal(),
+        std::io::stderr().is_terminal(),
+    )
+}
+
+/// One redirected stream is enough to hold a reader: `$o = proofline ...`
+/// captures only stdout while stderr stays on the console.
+const fn detachable(windows: bool, stdout_is_console: bool, stderr_is_console: bool) -> bool {
+    !windows || (stdout_is_console && stderr_is_console)
 }
 
 fn checker_command(executable: &Path) -> Command {

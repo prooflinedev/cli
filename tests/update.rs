@@ -16,6 +16,8 @@ fn captured_windows_invocation_leaves_discovery_to_a_console_run() {
         .output()
         .unwrap();
     assert!(version.status.success());
+    // The lock proves the decision ran; the missing cache proves it said no.
+    assert!(directory.path().join("proofline/update.lock").exists());
     assert!(!directory.path().join("proofline/update.json").exists());
 }
 

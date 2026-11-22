@@ -102,6 +102,18 @@ fn installer_directory_and_bounded_cache() {
 }
 
 #[test]
+fn windows_detaches_only_when_both_output_streams_are_consoles() {
+    // `$o = proofline ...` pipes stdout while stderr stays on the console.
+    assert!(!detachable(true, false, true));
+    assert!(!detachable(true, true, false));
+    assert!(!detachable(true, false, false));
+    assert!(detachable(true, true, true));
+    for (stdout, stderr) in [(false, false), (false, true), (true, false), (true, true)] {
+        assert!(detachable(false, stdout, stderr));
+    }
+}
+
+#[test]
 fn an_invocation_that_cannot_detach_leaves_discovery_to_the_next_one() {
     let directory = tempfile::tempdir().unwrap();
     let cache = directory.path().join("update.json");
