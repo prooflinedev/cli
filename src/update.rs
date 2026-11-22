@@ -99,7 +99,7 @@ pub fn on_invocation() {
         return;
     };
     let interactive = std::io::stderr().is_terminal() && std::io::stdout().is_terminal();
-    if let Ok(Some(notice)) = prepare_check(&path, &args, interactive, start_check) {
+    if let Ok(Some(notice)) = prepare_check(&path, &args, interactive, may_detach(), start_check) {
         crate::say(&notice);
     } else {
         // Missing or failed advisory discovery never changes the command result.
@@ -150,6 +150,7 @@ fn prepare_check(
     path: &Path,
     args: &[std::ffi::OsString],
     interactive: bool,
+    detach: bool,
     launch: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<Option<String>> {
     let directory = path.parent().context("update cache has no directory")?;
@@ -171,7 +172,8 @@ fn prepare_check(
         latest: None,
     });
     let notice = suggestion(&cache, args, interactive);
-    if cache.checked <= now() && now().saturating_sub(cache.checked) < DAY {
+    // Without a detachable child, leave the attempt to a later invocation.
+    if !detach || (cache.checked <= now() && now().saturating_sub(cache.checked) < DAY) {
         return Ok(notice);
     }
     // Record the attempt first, so an offline machine does not fork on every command.
@@ -186,6 +188,16 @@ fn prepare_check(
         // Keep any known notice if optional discovery cannot start.
     }
     Ok(notice)
+}
+
+/// Whether a discovery child can outlive this invocation unnoticed. A Windows
+/// child inherits every inheritable handle (rust-lang/rust#54760), including
+/// this process's redirected stdout and stderr, so whoever reads the output
+/// (`$(...)`, a pipe, a CI runner, an MCP host) would wait for the checker to
+/// exit. Std limits inheritance only through unstable or unsafe APIs, so on
+/// Windows discovery waits for an invocation whose output is a console.
+fn may_detach() -> bool {
+    !cfg!(windows) || (std::io::stdout().is_terminal() && std::io::stderr().is_terminal())
 }
 
 fn checker_command(executable: &Path) -> Command {
