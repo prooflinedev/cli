@@ -434,6 +434,10 @@ pub struct CommitDeploy {
     /// task ran a commit merged into the branch after this one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rollback: Option<CommitDeployRollback>,
+    /// Whether the deploy's newest check found its service serving an earlier
+    /// deploy again. Absent from older servers, which read as false.
+    #[serde(default)]
+    pub rolled_back: bool,
 }
 
 /// The deploy a rollback restores, when the read names one, and the deploys

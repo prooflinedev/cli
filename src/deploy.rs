@@ -365,15 +365,8 @@ fn count(deploys: usize) -> String {
     }
 }
 
-/// One line for each check of `deploy` through `until`: the deploy, the
-/// checkpoint, its result and gap codes, and the deploy's page. A rollback
-/// first gets one line naming the page of the deploy it restores, when the
-/// read names one, and of each deploy it rolls back. It changes no result.
-fn write_lines(
-    out: &mut impl std::io::Write,
-    deploy: &CommitDeploy,
-    until: Until,
-) -> std::io::Result<()> {
+/// The deploy's environment, task, run and attempts, as its lines start.
+fn label(deploy: &CommitDeploy) -> String {
     let mut label = vec![
         deploy
             .github_environment
@@ -394,16 +387,49 @@ fn write_lines(
             .collect();
         label.push(format!("attempt {}", attempts.join(",")));
     }
+    label.join(" ")
+}
+
+/// The later checkpoints than `until` that recorded `REGRESSED`. Any of them
+/// already decides the wait, so the lines and the ending name them.
+fn later_regressions(deploy: &CommitDeploy, until: Until) -> impl Iterator<Item = Until> + '_ {
+    Until::ALL.into_iter().filter(move |checkpoint| {
+        *checkpoint > until && result_and_gaps(deploy, *checkpoint).0 == Some("REGRESSED")
+    })
+}
+
+/// One line for each check of `deploy` through `until`, and for each later
+/// check that recorded `REGRESSED`: the deploy, the checkpoint, its result and
+/// gap codes, and the deploy's page. A rollback first gets one line naming the
+/// page of the deploy it restores, when the read names one, and of each deploy
+/// it rolls back. A deploy whose newest check found an earlier deploy serving
+/// again first gets a `rolled back` line. Neither changes a result.
+fn write_lines(
+    out: &mut impl std::io::Write,
+    deploy: &CommitDeploy,
+    until: Until,
+) -> std::io::Result<()> {
+    let label = label(deploy);
     let page = deploy
         .deploy_url
         .as_deref()
         .map_or_else(String::new, |url| format!("; {}", text::one_line(url)));
     let state = text::one_line(&deploy.state);
     if let Some(rollback) = &deploy.rollback {
-        writeln!(out, "{}: {}", label.join(" "), rollback_line(rollback))?;
+        writeln!(out, "{label}: {}", rollback_line(rollback))?;
     }
-    for checkpoint in Until::ALL.iter().filter(|checkpoint| **checkpoint <= until) {
-        let (result, gaps) = result_and_gaps(deploy, *checkpoint);
+    if deploy.rolled_back {
+        writeln!(
+            out,
+            "{label}: rolled back; the newest check found an earlier deploy serving again"
+        )?;
+    }
+    let printed = Until::ALL
+        .into_iter()
+        .filter(|checkpoint| *checkpoint <= until)
+        .chain(later_regressions(deploy, until));
+    for checkpoint in printed {
+        let (result, gaps) = result_and_gaps(deploy, checkpoint);
         let result = result.map_or_else(|| "NOT_RECORDED".to_owned(), text::one_line);
         let gaps = if gaps.is_empty() {
             "none".to_owned()
@@ -415,8 +441,7 @@ fn write_lines(
         };
         writeln!(
             out,
-            "{}: {} {result}; state {state}; gaps {gaps}{page}",
-            label.join(" "),
+            "{label}: {} {result}; state {state}; gaps {gaps}{page}",
             checkpoint.api_name(),
         )?;
     }
@@ -459,9 +484,10 @@ fn ending(
     let readings: Vec<Reading> = judged.iter().map(|(_, reading)| *reading).collect();
     match verdict {
         Verdict::Done => format!("No regression observed at {checkpoint}."),
-        Verdict::Regressed => {
-            format!("A deploy of {name} at {commit} failed or recorded REGRESSED.")
-        }
+        Verdict::Regressed => format!(
+            "A deploy of {name} at {commit} failed or recorded REGRESSED: {}.",
+            causes(judged)
+        ),
         _ if readings.is_empty() && recorded > 0 => format!(
             "Proofline recorded {} of {name} at {commit}, and none matches --environment, --task, --run or --attempt after {minutes} minutes. The result is not established.",
             count(recorded)
@@ -486,6 +512,33 @@ fn ending(
             "A check through {checkpoint} did not record HEALTHY, or a deploy names a gap. The result is not established."
         ),
     }
+}
+
+/// Each regressed deploy and what decided it: its failure, and every
+/// checkpoint that recorded `REGRESSED`, the later ones than `--until` too,
+/// so a reader finds the cause without opening each deploy's page.
+fn causes(judged: &[(&CommitDeploy, Reading)]) -> String {
+    judged
+        .iter()
+        .filter(|(_, reading)| *reading == Reading::Regressed)
+        .map(|(deploy, _)| {
+            let regressed: Vec<&str> = Until::ALL
+                .into_iter()
+                .filter(|checkpoint| result_and_gaps(deploy, *checkpoint).0 == Some("REGRESSED"))
+                .map(Until::api_name)
+                .collect();
+            let cause = match (deploy.state == "FAILED", regressed.is_empty()) {
+                (true, true) => "failed".to_owned(),
+                (true, false) => {
+                    format!("failed and recorded REGRESSED at {}", regressed.join(", "))
+                }
+                (false, false) => format!("recorded REGRESSED at {}", regressed.join(", ")),
+                (false, true) => "recorded REGRESSED".to_owned(),
+            };
+            format!("{} {cause}", label(deploy))
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Whether every reading that is not `NoRegression` is `reason`.
@@ -807,7 +860,7 @@ mod tests {
         let mut printed = Vec::new();
         write_lines(
             &mut printed,
-            &serde_json::from_value(rollback).unwrap(),
+            &serde_json::from_value(rollback.clone()).unwrap(),
             Until::Landing,
         )
         .unwrap();
@@ -822,6 +875,40 @@ mod tests {
             "{printed}"
         );
         assert_eq!(printed.lines().count(), 2, "{printed}");
+        // A deploy whose newest check found an earlier deploy serving again
+        // says so on its own line, beside a rollback's when both apply, and
+        // still exits on its checks. A later check that found none clears
+        // it, and a response from before the field existed reads as none.
+        let mut observed = deploy("deploy", &[1], &["HEALTHY", "REGRESSED"], &[]);
+        observed["rolled_back"] = json!(true);
+        observed["rollback"] = rollback["rollback"].clone();
+        let (verdict, ..) = run(None, &[], vec![recorded(std::slice::from_ref(&observed))]).await;
+        assert_eq!(verdict.unwrap(), Verdict::Regressed);
+        let lines = |deploy: &Value| {
+            let mut printed = Vec::new();
+            write_lines(
+                &mut printed,
+                &serde_json::from_value(deploy.clone()).unwrap(),
+                Until::Landing,
+            )
+            .unwrap();
+            String::from_utf8(printed).unwrap()
+        };
+        let printed = lines(&observed);
+        let printed: Vec<&str> = printed.lines().collect();
+        // The rollback, rolled-back, landing and later regressed lines.
+        assert_eq!(printed.len(), 4, "{printed:?}");
+        assert!(printed[0].contains(": rollback; restores"), "{printed:?}");
+        assert_eq!(
+            printed[1],
+            "production deploy run 7 attempt 1: rolled back; \
+             the newest check found an earlier deploy serving again"
+        );
+        observed["rolled_back"] = json!(false);
+        assert!(!lines(&observed).contains("rolled back;"));
+        let older = deploy("deploy", &[1], &["HEALTHY"], &[]);
+        assert!(older.get("rolled_back").is_none());
+        assert_eq!(lines(&older).lines().count(), 1);
         for (status, exit_four) in [(401, false), (403, false), (503, true)] {
             let (verdict, ..) = run(None, &[], vec![(status, json!({ "detail": "no" }))]).await;
             let error = verdict.unwrap_err();
@@ -902,6 +989,52 @@ mod tests {
             let (verdict, ..) = run(None, flags, vec![tasks.clone()]).await;
             assert_eq!(verdict.unwrap(), ended, "{flags:?}");
         }
+
+        // Both deploys landed healthy and only the api deploy regressed at
+        // its hour check: a landing read exits 3 and its lines and ending
+        // name that deploy, the hour check and its page, each once.
+        let mut api = deploy(
+            "deploy:api",
+            &[1],
+            &["HEALTHY", "HEALTHY", "REGRESSED"],
+            &[],
+        );
+        api["deploy_url"] = json!("https://console.proofline.example/deploys/2");
+        let later = recorded(&[
+            deploy("deploy:web", &[1], &["HEALTHY", "HEALTHY", "HEALTHY"], &[]),
+            api.clone(),
+        ]);
+        for (flags, ended) in [
+            (&[][..], Verdict::Regressed),
+            (&["--task", "deploy:web"][..], Verdict::Done),
+        ] {
+            let (verdict, ..) = run(None, flags, vec![later.clone()]).await;
+            assert_eq!(verdict.unwrap(), ended, "{flags:?}");
+        }
+        let api: CommitDeploy = serde_json::from_value(api).unwrap();
+        let mut printed = Vec::new();
+        write_lines(&mut printed, &api, Until::Landing).unwrap();
+        let printed = String::from_utf8(printed).unwrap();
+        let regressed: Vec<&str> = printed
+            .lines()
+            .filter(|line| line.contains("REGRESSED"))
+            .collect();
+        assert_eq!(regressed.len(), 1, "{printed}");
+        assert!(regressed[0].contains("HOUR_1"), "{printed}");
+        assert!(regressed[0].ends_with("deploys/2"), "{printed}");
+        let ended = ending(
+            Verdict::Regressed,
+            &[(&api, judge(&api, Until::Landing))],
+            2,
+            "acme/app",
+            COMMIT,
+            "LANDING",
+            30,
+        );
+        assert!(
+            ended.contains("deploy:api") && ended.contains("HOUR_1"),
+            "{ended}"
+        );
 
         let attempts = recorded(&[
             deploy("deploy", &[1, 2], &["REGRESSED"], &[]),

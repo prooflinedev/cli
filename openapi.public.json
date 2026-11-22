@@ -856,6 +856,11 @@
             ],
             "description": "Present when the deploy is a rollback: the previous deploy of the same\n task ran a commit that a recorded merge into this commit's branch made\n after this commit, as the deploy's console page reads it. Absent for a\n forward deploy and when either merge is unrecorded."
           },
+          "rolled_back": {
+            "default": false,
+            "description": "Whether the deploy's newest recorded check found its service serving\n an earlier deploy again, as its console page reads it. A later check\n that finds none clears it, while `regressed` keeps an earlier\n regression. Older responses omit it, which reads as false.",
+            "type": "boolean"
+          },
           "state": {
             "allOf": [
               {
@@ -3754,6 +3759,34 @@
         ],
         "type": "object"
       },
+      "FindingRuleIncidentView": {
+        "description": "The incident behind a cited prevention rule, as the finding's assessment\n pinned it.",
+        "properties": {
+          "check": {
+            "description": "What the assessment's pinned Kian view showed of that condition.",
+            "type": "string"
+          },
+          "commit_sha": {
+            "description": "The commit the incident's confirmed cause names.",
+            "type": "string"
+          },
+          "condition": {
+            "description": "What the incident needed in the environment.",
+            "type": "string"
+          },
+          "investigation_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "investigation_id",
+          "commit_sha",
+          "condition",
+          "check"
+        ],
+        "type": "object"
+      },
       "FindingRuleRefView": {
         "description": "One review rule a finding cites. It carries no rule text and no scope\n identifier; the review rules page shows those to its readers.",
         "properties": {
@@ -3777,6 +3810,17 @@
       },
       "FindingRuleRevisionView": {
         "properties": {
+          "incident": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FindingRuleIncidentView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The incident a prevention rule came from. Absent for every other rule."
+          },
           "revision": {
             "description": "The console revision. Null for a configuration-file or implicit rule.",
             "format": "int32",
@@ -7143,7 +7187,7 @@
   },
   "info": {
     "title": "Proofline Review API",
-    "version": "7.3.0"
+    "version": "7.4.0"
   },
   "openapi": "3.1.0",
   "paths": {

@@ -1202,44 +1202,46 @@ const DEPARTED_HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
 
 /// A console where `acme/old` has left the installation but keeps an
 /// authorized review: `/repository-names` omits it, the review collection
-/// still names it.
-async fn departed() -> Origin {
+/// still names it. It records each review list and pull-request route read.
+async fn departed() -> (Origin, Arc<Mutex<Vec<String>>>) {
+    let page = || async {
+        Json(json!({
+            // A newer audit at the same head, which no head
+            // selection takes: its findings are in its report.
+            "items": [{
+                "id": "0190f3a0-0000-7000-8000-0000000000ab",
+                "kind": "REVISION_SCAN",
+                "audit_mode": "CODE_ONLY",
+                "status": "COMPLETED",
+                "created_at": "2026-10-02T00:00:00Z",
+                "head_commit_sha": DEPARTED_HEAD,
+                "pull_request_number": null,
+                "repository_id": DEPARTED_REPOSITORY,
+                "run_number": 1,
+            }, {
+                "id": "0190f3a0-0000-7000-8000-0000000000aa",
+                "kind": "PULL_REQUEST",
+                "status": "COMPLETED",
+                "created_at": "2026-10-01T00:00:00Z",
+                "head_commit_sha": DEPARTED_HEAD,
+                "pull_request_number": 9,
+                "repository_id": DEPARTED_REPOSITORY,
+                "run_number": 1,
+            }],
+            "next_cursor": null,
+            "truncated": false,
+            "filters": {
+                "repositories": [{ "id": DEPARTED_REPOSITORY, "name": "acme/old" }],
+                "environments": [],
+                "authors": [],
+            },
+        }))
+    };
     let app = Router::new()
+        .route(&format!("/api/v1/organizations/{ORG}/reviews"), get(page))
         .route(
-            &format!("/api/v1/organizations/{ORG}/reviews"),
-            get(|| async {
-                Json(json!({
-                    // A newer audit at the same head, which no head
-                    // selection takes: its findings are in its report.
-                    "items": [{
-                        "id": "0190f3a0-0000-7000-8000-0000000000ab",
-                        "kind": "REVISION_SCAN",
-                        "audit_mode": "CODE_ONLY",
-                        "status": "COMPLETED",
-                        "created_at": "2026-10-02T00:00:00Z",
-                        "head_commit_sha": DEPARTED_HEAD,
-                        "pull_request_number": null,
-                        "repository_id": DEPARTED_REPOSITORY,
-                        "run_number": 1,
-                    }, {
-                        "id": "0190f3a0-0000-7000-8000-0000000000aa",
-                        "kind": "PULL_REQUEST",
-                        "status": "COMPLETED",
-                        "created_at": "2026-10-01T00:00:00Z",
-                        "head_commit_sha": DEPARTED_HEAD,
-                        "pull_request_number": 9,
-                        "repository_id": DEPARTED_REPOSITORY,
-                        "run_number": 1,
-                    }],
-                    "next_cursor": null,
-                    "truncated": false,
-                    "filters": {
-                        "repositories": [{ "id": DEPARTED_REPOSITORY, "name": "acme/old" }],
-                        "environments": [],
-                        "authors": [],
-                    },
-                }))
-            }),
+            &format!("/api/v1/organizations/{ORG}/reviews/pr/{{repository}}/{{number}}"),
+            get(page),
         )
         .route(
             &format!("/api/v1/organizations/{ORG}/repository-names"),
@@ -1250,15 +1252,30 @@ async fn departed() -> Origin {
             get(review),
         )
         .with_state(Fake::default());
+    let reads = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&reads);
+    let app = app.layer(axum::middleware::from_fn(
+        move |request: axum::extract::Request, next: axum::middleware::Next| {
+            let observed = Arc::clone(&observed);
+            async move {
+                let uri = request.uri();
+                if uri.path().ends_with("/reviews") || uri.path().contains("/reviews/pr/") {
+                    observed.lock().unwrap().push(uri.to_string());
+                }
+                next.run(request).await
+            }
+        },
+    ));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    Origin::parse(&format!("http://{address}")).unwrap()
+    (Origin::parse(&format!("http://{address}")).unwrap(), reads)
 }
 
 #[tokio::test]
 async fn findings_of_a_departed_repository_still_resolve_through_its_reviews() {
-    let origin = departed().await.to_string();
+    let (origin, reads) = departed().await;
+    let origin = origin.to_string();
     let run = |selector: [&'static str; 2], command: &'static str| {
         let origin = origin.clone();
         async move {
@@ -1276,12 +1293,26 @@ async fn findings_of_a_departed_repository_still_resolve_through_its_reviews() {
     // command that found it reads NotComplete rather than failing. The
     // detail route serves only the pull-request review, so a head selection
     // that took the newer audit fails as a wrong review.
-    for selector in [["--pr", "9"], ["--head", DEPARTED_HEAD]] {
+    // A pull request is found through its own route, with no page of the
+    // organization's review list (#34229).
+    let head_search =
+        format!("/reviews?limit=50&repository={DEPARTED_REPOSITORY}&search={DEPARTED_HEAD}");
+    for (selector, sent) in [
+        (["--pr", "9"], vec!["/reviews/pr/Old/9"]),
+        (
+            ["--head", DEPARTED_HEAD],
+            vec!["/reviews?limit=1", &head_search],
+        ),
+    ] {
         assert_eq!(
             run(selector, "findings").await.unwrap(),
             proofline_cli::Verdict::NotComplete,
             "{selector:?}"
         );
+        let prefix = format!("/api/v1/organizations/{ORG}");
+        let sent: Vec<String> = sent.iter().map(|read| format!("{prefix}{read}")).collect();
+        assert_eq!(*reads.lock().unwrap(), sent, "{selector:?}");
+        reads.lock().unwrap().clear();
     }
     let cli = <proofline_cli::Cli as clap::Parser>::try_parse_from([
         "proofline",
@@ -2619,9 +2650,10 @@ async fn native_tools_keep_tenant_paths_and_reruns_make_one_attempt() {
 }
 
 /// The pull-request review routes take the repository's name without its
-/// owner. The CLI takes `owner/name` and sends the name only after the review
-/// collection confirms that full name, so another owner's repository with the
-/// same name is never read.
+/// owner. The CLI takes `owner/name`, sends the name, and uses the runs only
+/// when the response's filters confirm that full name, so another owner's
+/// repository with the same name is never shown. Neither command reads the
+/// organization's review list (#34229).
 #[tokio::test]
 async fn history_and_run_send_the_matched_name_without_its_owner() {
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -2633,18 +2665,14 @@ async fn history_and_run_send_the_matched_name_without_its_owner() {
         async move {
             let path = request.uri().path().to_owned();
             seen.lock().unwrap().push(path.clone());
-            if path == format!("{prefix}/reviews") {
+            // The server matches the name ignoring case.
+            if path.eq_ignore_ascii_case(&format!("{prefix}/reviews/pr/Repo/7")) {
                 return Json(json!({
-                    "items": [],
-                    "next_cursor": null,
-                    "truncated": false,
+                    "items": [{"run_number": 2}],
                     "filters": {"repositories": [{"id": REPOSITORY, "name": "Owner/Repo"}]},
                 }));
             }
-            if path == format!("{prefix}/reviews/pr/Repo/7") {
-                return Json(json!({"items": [{"run_number": 2}]}));
-            }
-            if path == format!("{prefix}/reviews/pr/Repo/7/runs/2") {
+            if path.eq_ignore_ascii_case(&format!("{prefix}/reviews/pr/Repo/7/runs/2")) {
                 return Json(json!({"run_number": 2}));
             }
             Json(json!({}))
@@ -2675,22 +2703,26 @@ async fn history_and_run_send_the_matched_name_without_its_owner() {
             .lock()
             .unwrap()
             .drain(..)
-            .filter(|path| path.contains("/reviews/pr/"))
+            .filter(|path| path.contains("/reviews"))
             .collect::<Vec<_>>()
     };
-    for (args, read) in [
+    // The runs read carries the name as given; the run read, the name the
+    // filters confirmed.
+    let runs = format!("/api/v1/organizations/{ORG}/reviews/pr/repo/7");
+    let run = format!("/api/v1/organizations/{ORG}/reviews/pr/Repo/7/runs/2");
+    for (args, sent) in [
         (
             vec!["history", "--repo", "owner/repo", "--pr", "7"],
-            "reviews/pr/Repo/7",
+            vec![runs.clone()],
         ),
-        (vec!["history", "--pr", "7"], "reviews/pr/Repo/7"),
+        (vec!["history", "--pr", "7"], vec![runs.clone()]),
         (
             vec!["run", "--repo", "owner/repo", "--pr", "7", "--run", "2"],
-            "reviews/pr/Repo/7/runs/2",
+            vec![runs.clone(), run.clone()],
         ),
         (
             vec!["run", "--pr", "7", "--run", "2"],
-            "reviews/pr/Repo/7/runs/2",
+            vec![runs.clone(), run.clone()],
         ),
     ] {
         let output = cli_with_git(&origin, &args, checkout.path()).await;
@@ -2700,11 +2732,7 @@ async fn history_and_run_send_the_matched_name_without_its_owner() {
             String::from_utf8_lossy(&output.stdout).contains("\"run_number\": 2"),
             "{args:?}"
         );
-        assert_eq!(
-            reads(&requests),
-            [format!("/api/v1/organizations/{ORG}/{read}")],
-            "{args:?}"
-        );
+        assert_eq!(reads(&requests), sent, "{args:?}");
     }
     for args in [
         vec!["history", "--repo", "other/repo", "--pr", "7"],
@@ -2717,7 +2745,7 @@ async fn history_and_run_send_the_matched_name_without_its_owner() {
             "{args:?}"
         );
         assert!(output.stdout.is_empty(), "{args:?}");
-        assert!(reads(&requests).is_empty(), "{args:?}");
+        assert_eq!(reads(&requests), std::slice::from_ref(&runs), "{args:?}");
     }
     server.abort();
 }

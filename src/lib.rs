@@ -44,7 +44,7 @@ mod tools;
 
 use crate::model::{
     CodeAssessment, CommitReviewRequest, FileReviewRequest, OpenItems, PatchReviewRequest,
-    RepositoryNames, ReviewDetail, ReviewSummary,
+    RepositoryNames, ReviewDetail, ReviewFilters, ReviewSummary,
 };
 use crate::origin::{DEFAULT_ORIGIN, Origin};
 use crate::outcome::Outcome;
@@ -504,10 +504,10 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
         }
         Command::Run(args) => {
             let api = connect(Http::new(origin)?, token, cli.org).await?;
-            let (full_name, _) = reviewed_repository(&api, &args.repository).await?;
+            let runs = pull_request_runs(&api, &args.repository, args.pr).await?;
             tools::json(
                 &api.get(api.url_get_pull_request_review(
-                    route_name(&full_name),
+                    route_name(&runs.full_name),
                     &args.pr.to_string(),
                     &args.run.to_string(),
                 ))
@@ -557,8 +557,11 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
         }
         Command::History(args) => {
             let api = connect(Http::new(origin)?, token, cli.org).await?;
-            let (full_name, _) = reviewed_repository(&api, &args.repository).await?;
-            tools::json(&api.history(route_name(&full_name), args.pr).await?)
+            tools::json(
+                &pull_request_runs(&api, &args.repository, args.pr)
+                    .await?
+                    .raw,
+            )
         }
         Command::Guidance(args) => {
             let api = connect(Http::new(origin)?, token, cli.org).await?;
@@ -784,7 +787,7 @@ async fn status(http: Http, token: Option<SecretString>, org: Option<Uuid>) -> a
         )
     } else {
         (
-            api.reviews(None, None, None).await.map(drop),
+            api.review_filters().await.map(drop),
             "server: accepted the token for reviews",
         )
     };
@@ -888,13 +891,16 @@ fn connected(api: &Api, name: String, names: RepositoryNames) -> anyhow::Result<
 /// the connected ones.
 async fn reviewed_repository(api: &Api, args: &RepositoryArgs) -> anyhow::Result<(String, Uuid)> {
     let name = repository_name(args).await?;
-    let page = api.reviews(None, None, None).await?;
-    let candidates = page
-        .filters
+    reviewed(api, &name, api.review_filters().await?)
+}
+
+/// The repository named `name` among the review collection's filter choices.
+fn reviewed(api: &Api, name: &str, filters: ReviewFilters) -> anyhow::Result<(String, Uuid)> {
+    let candidates = filters
         .repositories
         .into_iter()
         .map(|choice| (choice.id, choice.name));
-    let (id, full_name) = unique(api, &name, candidates, || {
+    let (id, full_name) = unique(api, name, candidates, || {
         anyhow::anyhow!(
             "{name} has no reviews in organization {} that this token can read; check the repository name and the token's repositories",
             api.organization_id()
@@ -903,9 +909,58 @@ async fn reviewed_repository(api: &Api, args: &RepositoryArgs) -> anyhow::Result
     Ok((full_name, id))
 }
 
+/// Pull request `number`'s runs as the server sent them, and the repository
+/// they belong to as its full name and ID.
+struct PullRequestRuns {
+    full_name: String,
+    repository_id: Uuid,
+    raw: serde_json::Value,
+}
+
+/// Reads pull request `number`'s runs through its own route rather than the
+/// organization's review list (#34229). The route matches the name without
+/// its owner, so the response's filters must name the repository under its
+/// full name before anything it returned is used.
+async fn pull_request_runs(
+    api: &Api,
+    args: &RepositoryArgs,
+    number: u64,
+) -> anyhow::Result<PullRequestRuns> {
+    let name = repository_name(args).await?;
+    let (raw, filters) = api.pull_request_reviews(route_name(&name), number).await?;
+    let (full_name, repository_id) = reviewed(api, &name, filters)?;
+    Ok(PullRequestRuns {
+        full_name,
+        repository_id,
+        raw,
+    })
+}
+
+/// The newest review of pull request `number`, counting only runs of the
+/// repository whose full name matched.
+async fn pull_request_review(
+    api: &Api,
+    args: &RepositoryArgs,
+    number: u64,
+) -> anyhow::Result<Uuid> {
+    let runs = pull_request_runs(api, args, number).await?;
+    let page = serde_json::from_value::<model::ReviewPage>(runs.raw)
+        .with_context(|| format!("{} returned an unreadable review list", api.origin()))?;
+    page.items
+        .iter()
+        .find(|item| {
+            item.kind == "PULL_REQUEST"
+                && item.repository_id == Some(runs.repository_id)
+                && item.pull_request_number == i64::try_from(number).ok()
+        })
+        .map(|item| item.id)
+        .with_context(|| format!("{} #{number} has no review", runs.full_name))
+}
+
 /// The `{repository}` segment of the pull-request review routes: the name
-/// without its owner. Callers pass a full name already matched against the
-/// organization's repositories, so the owner it drops is the organization's.
+/// without its owner. The route cannot check the owner, so callers check the
+/// full name against the organization's reviewed repositories before they
+/// use what it returns.
 fn route_name(full_name: &str) -> &str {
     full_name
         .rsplit_once('/')
@@ -1119,15 +1174,7 @@ async fn finish(api: &Api, review_id: Uuid, args: &ReviewArgs) -> anyhow::Result
 async fn findings(api: &Api, args: &FindingsArgs) -> anyhow::Result<Verdict> {
     let review_id = match (&args.selector.review, args.selector.pr) {
         (Some(id), _) => *id,
-        (None, Some(number)) => {
-            let (name, repository_id) = reviewed_repository(api, &args.repository).await?;
-            latest(api, repository_id, &number.to_string(), |item| {
-                item.kind == "PULL_REQUEST"
-                    && item.pull_request_number == i64::try_from(number).ok()
-            })
-            .await?
-            .with_context(|| format!("{name} #{number} has no review"))?
-        }
+        (None, Some(number)) => pull_request_review(api, &args.repository, number).await?,
         (None, None) => {
             let sha = match &args.selector.head {
                 Some(raw) => git::commit_sha(raw)?,

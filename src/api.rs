@@ -15,8 +15,8 @@ use crate::github_actions::Renewal;
 use crate::model::{
     CommitDeployVerifications, CommitReviewRequest, CommitReviewResponse, CoverageUploadRequest,
     CoverageUploadResponse, FileReviewRequest, FileReviewResponse, PatchReviewRequest,
-    PatchReviewResponse, RepositoryNames, ReviewDetail, ReviewPage, RunNowMode, RunNowRequest,
-    RunNowResponse, ScanRequest, ScanResponse, StopResponse,
+    PatchReviewResponse, RepositoryNames, ReviewDetail, ReviewFilters, ReviewPage, RunNowMode,
+    RunNowRequest, RunNowResponse, ScanRequest, ScanResponse, StopResponse,
 };
 use crate::origin::Origin;
 use crate::text::terminal_safe;
@@ -494,6 +494,32 @@ impl Api {
     ) -> Result<serde_json::Value, ApiError> {
         self.get(self.url_list_pull_request_reviews(repository, &number.to_string()))
             .await
+    }
+
+    /// One pull request's review runs as received, with the review
+    /// collection's filter choices read from them. The route matches the
+    /// name without its owner.
+    pub(crate) async fn pull_request_reviews(
+        &self,
+        repository: &str,
+        number: u64,
+    ) -> Result<(serde_json::Value, ReviewFilters), ApiError> {
+        let raw = self.history(repository, number).await?;
+        let filters = ReviewFilters::deserialize(&raw["filters"])
+            .map_err(|error| self.http.protocol(error.to_string()))?;
+        Ok((raw, filters))
+    }
+
+    /// The review collection's filter choices, which name every repository
+    /// with a review the token can read. They do not depend on the page, so
+    /// this asks for one review.
+    pub(crate) async fn review_filters(&self) -> Result<ReviewFilters, ApiError> {
+        let mut url = self.url_list_reviews();
+        url.query_pairs_mut().append_pair("limit", "1");
+        let raw = self.get(url).await?;
+        serde_json::from_value::<ReviewPage>(raw)
+            .map(|page| page.filters)
+            .map_err(|error| self.http.protocol(error.to_string()))
     }
 
     pub(crate) async fn guidance(&self, repository: Uuid) -> Result<serde_json::Value, ApiError> {
