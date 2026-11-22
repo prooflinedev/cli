@@ -1024,7 +1024,7 @@
             "$ref": "#/components/schemas/CreditRefusalCause"
           }
         ],
-        "description": "What a review is counted under: the cause its assessments recorded, or\n `OUT_OF_CREDITS` where an assessment recorded the credit refusal. An\n assessment's detail names that refusal by the rule `public_reason_codes`\n applies; no other detail is read into the summary."
+        "description": "What a review is counted under: the cause its assessments recorded,\n `SPEND_LIMIT_REACHED` where an assessment recorded a spend limit's code, or\n `OUT_OF_CREDITS` where an assessment recorded the credit refusal. An\n assessment's detail names that refusal by the rule `public_reason_codes`\n applies; no other detail is read into the summary."
       },
       "CoverageRefused": {
         "description": "An upload refused for its content: a symbolic or unknown commit, or a\n report that cannot be read. Nothing is stored.",
@@ -1121,11 +1121,16 @@
         "type": "object"
       },
       "CreditRefusalCause": {
-        "description": "The credit refusal, named apart from the `NOT_CONFIGURED` it records.",
+        "description": "A funding refusal Billing repairs, named apart from the `NOT_CONFIGURED`\n it records. The public contract keeps the name it had when credits were\n its only refusal.",
         "oneOf": [
           {
             "const": "OUT_OF_CREDITS",
             "description": "The organization had no credits left, so the code lane refused to\n run its model.",
+            "type": "string"
+          },
+          {
+            "const": "SPEND_LIMIT_REACHED",
+            "description": "A monthly spend limit of the organization, a repository or a team was\n reached, so the assessment refused to start.",
             "type": "string"
           }
         ]
@@ -1982,7 +1987,7 @@
             ]
           },
           "counted_incomplete_causes": {
-            "description": "`incomplete_causes` as the Inbox and the reviews `cause:` search\n count them: `OUT_OF_CREDITS` in place of the `NOT_CONFIGURED` an\n assessment records when credits refused it. Present exactly when\n `incomplete_causes` is.",
+            "description": "`incomplete_causes` as the Inbox and the reviews `cause:` search\n count them: `OUT_OF_CREDITS` or `SPEND_LIMIT_REACHED` in place of the\n `NOT_CONFIGURED` an assessment records when credits or a monthly spend\n limit refused it. Present exactly when\n `incomplete_causes` is.",
             "items": {
               "$ref": "#/components/schemas/CountedCause"
             },
@@ -5731,7 +5736,7 @@
             ]
           },
           "counted_incomplete_causes": {
-            "description": "`incomplete_causes` as the Inbox and the reviews `cause:` search\n count them: `OUT_OF_CREDITS` in place of the `NOT_CONFIGURED` an\n assessment records when credits refused it. Present exactly when\n `incomplete_causes` is.",
+            "description": "`incomplete_causes` as the Inbox and the reviews `cause:` search\n count them: `OUT_OF_CREDITS` or `SPEND_LIMIT_REACHED` in place of the\n `NOT_CONFIGURED` an assessment records when credits or a monthly spend\n limit refused it. Present exactly when\n `incomplete_causes` is.",
             "items": {
               "$ref": "#/components/schemas/CountedCause"
             },
@@ -7187,7 +7192,7 @@
   },
   "info": {
     "title": "Proofline Review API",
-    "version": "7.5.0"
+    "version": "8.0.0"
   },
   "openapi": "3.1.0",
   "paths": {
