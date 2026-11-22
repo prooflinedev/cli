@@ -114,7 +114,8 @@ fn an_invocation_that_cannot_detach_leaves_discovery_to_the_next_one() {
     // No attempt is recorded, so the next invocation that can detach still checks.
     assert!(read_cache(&cache).is_err());
     let mut launched = false;
-    prepare_check(&cache, &["status".into()], true, true, || {
+    // Only `detach` decides: a redirected (non-interactive) run still checks.
+    prepare_check(&cache, &["status".into()], false, true, || {
         launched = true;
         Ok(())
     })
