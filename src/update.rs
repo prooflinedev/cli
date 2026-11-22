@@ -81,7 +81,9 @@ fn write_cache(path: &Path, cache: &Cache) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Reads only local state; discovery continues in a child with closed streams.
+/// Reads only local state. A due check continues in a child with closed
+/// streams only when `may_detach` allows it: on Windows both stdout and stderr
+/// must be consoles, so a redirected run leaves the check to a later one.
 /// Call before starting the runtime, including for help and version invocations.
 pub fn on_invocation() {
     if std::env::var_os("PROOFLINE_NO_UPDATE_CHECK").is_some_and(|value| value == "1") {
