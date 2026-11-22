@@ -4169,6 +4169,11 @@
             "const": "INVESTIGATION",
             "description": "The environment investigation found it ([`kian_investigation`]).",
             "type": "string"
+          },
+          {
+            "const": "SHARED_IDENTITY",
+            "description": "A workload loses access when a change removes or narrows a grant\n on its shared identity.",
+            "type": "string"
           }
         ]
       },
@@ -5410,7 +5415,7 @@
                 "type": "null"
               }
             ],
-            "description": "What published the finding: a confirmed gate requirement its\n delivery target's services violate, or the environment investigation.\n Every listed finding carries it."
+            "description": "What published the finding: a confirmed gate requirement its\n delivery target's services violate, the environment investigation, or\n a workload that loses an access because the change narrows the grants\n of an identity it shares. Every listed finding carries it."
           },
           "title": {
             "description": "Model text with protected values withheld. Render it as plain text.",
@@ -7192,7 +7197,7 @@
   },
   "info": {
     "title": "Proofline Review API",
-    "version": "8.0.0"
+    "version": "9.0.0"
   },
   "openapi": "3.1.0",
   "paths": {
