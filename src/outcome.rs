@@ -282,8 +282,9 @@ enum FindingStatus {
 /// persistent, and new regressions.
 ///
 /// Findings are correlated primarily by their semantic `finding_fingerprint`.
-/// If fingerprints are missing or mismatched across server versions, it falls
-/// back to matching on the risk domain, claim, and primary evidence location.
+/// If at least one finding lacks a fingerprint (such as on legacy server versions),
+/// it falls back to composite matching on risk domain, claim, and primary evidence location.
+/// Differing present fingerprints are treated as distinct findings and never paired by fallback.
 pub fn diff_findings<'a>(previous: &'a [Finding], current: &'a [Finding]) -> FindingDiff<'a> {
     let mut diff = FindingDiff::default();
     let mut prev_matched = vec![false; previous.len()];

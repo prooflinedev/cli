@@ -3625,9 +3625,20 @@ async fn diff_categorizes_findings_and_honors_fail_on_regression() {
     let run1_id = "0190f3a0-0000-7000-8000-000000000001";
     let run2_id = "0190f3a0-0000-7000-8000-000000000002";
     let run3_id = "0190f3a0-0000-7000-8000-000000000003";
+    let run_incomplete_id = "0190f3a0-0000-7000-8000-000000000004";
 
     let finding_persist = json!({
         "id": "0190f3a0-0000-7000-8000-000000000010",
+        "severity": "MEDIUM",
+        "risk_domain": "input_validation",
+        "claim": "missing length check",
+        "impact": "potential buffer overflow",
+        "lifecycle_state": "NEW",
+        "finding_fingerprint": "fp_persist",
+        "evidence_refs": []
+    });
+    let finding_persist_run2 = json!({
+        "id": "0190f3a0-0000-7000-8000-000000000020",
         "severity": "MEDIUM",
         "risk_domain": "input_validation",
         "claim": "missing length check",
@@ -3670,6 +3681,7 @@ async fn diff_categorizes_findings_and_honors_fail_on_regression() {
     let app = Router::new().fallback(move |request: axum::extract::Request| {
         let prefix = prefix.clone();
         let finding_persist = finding_persist.clone();
+        let finding_persist_run2 = finding_persist_run2.clone();
         let finding_resolved = finding_resolved.clone();
         let finding_regression = finding_regression.clone();
         let finding_run3 = finding_run3.clone();
@@ -3690,6 +3702,8 @@ async fn diff_categorizes_findings_and_honors_fail_on_regression() {
                             "run_number": 1,
                             "id": run1_id,
                             "kind": "PULL_REQUEST",
+                            "repository_id": REPOSITORY,
+                            "pull_request_number": 7,
                             "status": "COMPLETED",
                             "created_at": "2026-01-01T00:00:00Z"
                         },
@@ -3697,6 +3711,8 @@ async fn diff_categorizes_findings_and_honors_fail_on_regression() {
                             "run_number": 2,
                             "id": run2_id,
                             "kind": "PULL_REQUEST",
+                            "repository_id": REPOSITORY,
+                            "pull_request_number": 7,
                             "status": "COMPLETED",
                             "created_at": "2026-01-02T00:00:00Z"
                         },
@@ -3704,6 +3720,8 @@ async fn diff_categorizes_findings_and_honors_fail_on_regression() {
                             "run_number": 3,
                             "id": run3_id,
                             "kind": "PULL_REQUEST",
+                            "repository_id": REPOSITORY,
+                            "pull_request_number": 7,
                             "status": "COMPLETED",
                             "created_at": "2026-01-03T00:00:00Z"
                         }
@@ -3744,7 +3762,7 @@ async fn diff_categorizes_findings_and_honors_fail_on_regression() {
                         "head_commit_sha": "89abcdef0123456789abcdef0123456789abcdef",
                         "base_commit_sha": "0123456789abcdef0123456789abcdef01234567",
                         "status": "COMPLETED",
-                        "findings": [finding_persist, finding_regression]
+                        "findings": [finding_persist_run2, finding_regression]
                     },
                     "pull_request_number": 7,
                     "run_number": 2,
@@ -3767,6 +3785,19 @@ async fn diff_categorizes_findings_and_honors_fail_on_regression() {
                     },
                     "pull_request_number": 7,
                     "run_number": 3,
+                    "repository_full_name": "owner/repo"
+                }));
+            }
+            if path == format!("{prefix}/reviews/{run_incomplete_id}") {
+                return Json(json!({
+                    "id": run_incomplete_id,
+                    "kind": "PULL_REQUEST",
+                    "status": "IN_PROGRESS",
+                    "assessment_count": 0,
+                    "assessments": [],
+                    "code_assessment": null,
+                    "pull_request_number": 7,
+                    "run_number": 4,
                     "repository_full_name": "owner/repo"
                 }));
             }
@@ -3844,6 +3875,34 @@ async fn diff_categorizes_findings_and_honors_fail_on_regression() {
         "fp_regression"
     );
     assert_eq!(parsed["resolved"][0]["finding_fingerprint"], "fp_resolved");
+    assert_eq!(
+        parsed["persistent"][0]["id"],
+        "0190f3a0-0000-7000-8000-000000000020"
+    );
+
+    // Verify explicit --base-run 1 is honored when comparing against run 3
+    let output_run3 = cli(
+        &origin,
+        &[
+            "diff",
+            "--repo",
+            "owner/repo",
+            "--pr",
+            "7",
+            "--base-run",
+            "1",
+            "--target-run",
+            "3",
+            "--json",
+        ],
+    )
+    .await;
+    assert!(output_run3.status.success());
+    let parsed_run3: Value = serde_json::from_slice(&output_run3.stdout).unwrap();
+    assert_eq!(
+        parsed_run3["resolved"][0]["finding_fingerprint"],
+        "fp_resolved"
+    );
 
     // 3. Fail on regression exits code 3 (Verdict::Regressed)
     let output_fail = cli(
@@ -3887,6 +3946,55 @@ async fn diff_categorizes_findings_and_honors_fail_on_regression() {
         direct_parsed["regressions"][0]["finding_fingerprint"],
         "fp_regression"
     );
+
+    // 5. Fail on regression exits 0 when there are no regressions
+    let output_no_reg = cli(
+        &origin,
+        &[
+            "diff",
+            "--base-review",
+            run1_id,
+            "--target-review",
+            run1_id,
+            "--fail-on-regression",
+            "--json",
+        ],
+    )
+    .await;
+    assert!(output_no_reg.status.success());
+    assert_eq!(output_no_reg.status.code(), Some(0));
+    let parsed_no_reg: Value = serde_json::from_slice(&output_no_reg.stdout).unwrap();
+    assert!(parsed_no_reg["regressions"].as_array().unwrap().is_empty());
+
+    // 6. Fail on regression returns Verdict::NotComplete (exit 2) if target review is not completed
+    let output_incomplete = cli(
+        &origin,
+        &[
+            "diff",
+            "--base-review",
+            run1_id,
+            "--target-review",
+            run_incomplete_id,
+            "--fail-on-regression",
+        ],
+    )
+    .await;
+    assert_eq!(output_incomplete.status.code(), Some(2));
+
+    // 7. Fail on regression returns Verdict::NotComplete (exit 2) if baseline review is not completed
+    let output_incomplete_base = cli(
+        &origin,
+        &[
+            "diff",
+            "--base-review",
+            run_incomplete_id,
+            "--target-review",
+            run1_id,
+            "--fail-on-regression",
+        ],
+    )
+    .await;
+    assert_eq!(output_incomplete_base.status.code(), Some(2));
 
     server.abort();
 }

@@ -1007,7 +1007,7 @@ async fn pull_request_review(
     number: u64,
 ) -> anyhow::Result<Uuid> {
     let runs = pull_request_runs(api, args, number).await?;
-    let page = serde_json::from_value::<model::ReviewPage>(runs.raw)
+    let page = serde_json::from_value::<ReviewPage>(runs.raw)
         .with_context(|| format!("{} returned an unreadable review list", api.origin()))?;
     page.items
         .iter()
@@ -1282,12 +1282,13 @@ async fn diff(api: &Api, args: &DiffArgs) -> anyhow::Result<Verdict> {
                 let sha = git::head().await?;
                 let review_id = latest(api, repository_id, &sha, |item| {
                     item.audit_mode.is_none()
+                        && item.pull_request_number.is_some()
                         && item.head_commit_sha.as_deref() == Some(sha.as_str())
                 })
                 .await?
                 .with_context(|| {
                     format!(
-                        "no review of {full_name} has head commit {sha}; push it and open a pull request, or name one with --pr"
+                        "no pull request review of {full_name} has head commit {sha}; push it and open a pull request, or name one with --pr"
                     )
                 })?;
                 let (_, detail) = api.review(review_id).await?;
@@ -1301,16 +1302,37 @@ async fn diff(api: &Api, args: &DiffArgs) -> anyhow::Result<Verdict> {
 
             let mut runs: Vec<(i64, Uuid)> = Vec::new();
             let mut cursor: Option<String> = None;
-            for _ in 0..SEARCH_PAGES {
+            let mut page_count = 0;
+            loop {
                 let history_raw = api
                     .history_page(route_name(&full_name), pr, cursor.as_deref())
                     .await?;
                 let history_page: ReviewPage = serde_json::from_value(history_raw)
                     .context("could not parse pull request history")?;
                 for item in history_page.items {
-                    if let Some(num) = item.run_number {
+                    if item.kind == "PULL_REQUEST"
+                        && item.repository_id == Some(repository_id)
+                        && item.pull_request_number == i64::try_from(pr).ok()
+                        && let Some(num) = item.run_number
+                    {
                         runs.push((num, item.id));
                     }
+                }
+                page_count += 1;
+                let found_requested = match (args.base_run, args.target_run) {
+                    (Some(b), Some(t)) => {
+                        let (b_i, t_i) = (b as i64, t as i64);
+                        runs.iter().any(|&(n, _)| n == b_i) && runs.iter().any(|&(n, _)| n == t_i)
+                    }
+                    (Some(b), None) => runs.iter().any(|&(n, _)| n == b as i64),
+                    (None, Some(t)) => {
+                        let t_i = t as i64;
+                        runs.iter().any(|&(n, _)| n == t_i) && runs.iter().any(|&(n, _)| n < t_i)
+                    }
+                    (None, None) => page_count >= SEARCH_PAGES && runs.len() >= 2,
+                };
+                if found_requested {
+                    break;
                 }
                 match history_page.next_cursor {
                     Some(next) if cursor.as_ref() != Some(&next) => cursor = Some(next),
@@ -1387,8 +1409,17 @@ async fn diff(api: &Api, args: &DiffArgs) -> anyhow::Result<Verdict> {
         )?;
     }
 
-    if args.fail_on_regression && !diff_result.regressions.is_empty() {
-        return Ok(Verdict::Regressed);
+    if args.fail_on_regression {
+        if target_detail.status != "COMPLETED"
+            || base_detail
+                .as_ref()
+                .is_some_and(|b| b.status != "COMPLETED")
+        {
+            return Ok(Verdict::NotComplete);
+        }
+        if !diff_result.regressions.is_empty() {
+            return Ok(Verdict::Regressed);
+        }
     }
     Ok(Verdict::Done)
 }
