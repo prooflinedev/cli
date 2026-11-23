@@ -1,11 +1,6 @@
 [advisories]
 yanked = "deny"
-ignore = [
-    # Marvin timing side-channel in RSA *decryption* (unfixed upstream since
-    # 2023). We use the rsa crate only to sign GitHub App JWTs with our own
-    # key; the app performs no RSA decryption an attacker could time.
-    "RUSTSEC-2023-0071",
-]
+ignore = []
 
 [licenses]
 # Our own crates are unpublished and proprietary; skip them, check dependencies.
