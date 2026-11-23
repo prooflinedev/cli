@@ -399,8 +399,13 @@ pub async fn pushed_branch_base(
         .as_deref()
         .and_then(|target| target.strip_prefix(&format!("refs/remotes/{remote}/")))
         .is_some_and(|name| remote_ref.strip_prefix("refs/heads/") == Some(name));
-    if known && (to_default || !remote_ref.starts_with("refs/heads/")) {
-        return Ok(remote_sha);
+    if to_default || !remote_ref.starts_with("refs/heads/") {
+        // Only the remote's commit is a base for these destinations.
+        return if known {
+            Ok(remote_sha)
+        } else {
+            Err(GitError::UnknownRevision(remote_sha))
+        };
     }
     let fork_point = if line_in(dir, &["rev-parse", "--verify", "--quiet", &default])
         .await

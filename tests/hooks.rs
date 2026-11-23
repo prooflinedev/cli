@@ -697,19 +697,24 @@ async fn a_pushed_commit_the_tracking_ref_holds_is_reviewed_against_the_commit_t
     let restored = checkout
         .commit("orders.rs", "fn main() { restored() }\n")
         .await;
+    // A further local commit on top: its merge-base with the tracking ref is
+    // the restored commit, which the destination checks alone must skip.
+    let extended = checkout.commit("extra.rs", "fn extra() {}\n").await;
     checkout
         .git(&["update-ref", "refs/remotes/origin/main", &restored])
         .await;
-    // (the pushed local ref, the destination ref)
+    // (the pushed local ref, the pushed commit, the destination ref)
     let pushes = [
         // The default branch, pushed from a differently named branch.
-        ("refs/heads/restore", "refs/heads/main"),
+        ("refs/heads/restore", &restored, "refs/heads/main"),
+        ("refs/heads/restore", &extended, "refs/heads/main"),
         // Another branch the remote also had at the base.
-        ("refs/heads/feature", "refs/heads/feature"),
+        ("refs/heads/feature", &restored, "refs/heads/feature"),
         // A destination that is not a branch.
-        ("refs/heads/main", "refs/for/main"),
+        ("refs/heads/main", &restored, "refs/for/main"),
+        ("refs/heads/main", &extended, "refs/for/main"),
     ];
-    for (local_ref, remote_ref) in pushes {
+    for (local_ref, pushed, remote_ref) in pushes {
         uploads.lock().unwrap().clear();
         let output = checkout
             .proofline(
@@ -721,10 +726,10 @@ async fn a_pushed_commit_the_tracking_ref_holds_is_reviewed_against_the_commit_t
                     "origin",
                     "https://github.com/acme/web.git",
                 ],
-                &format!("{local_ref} {restored} {remote_ref} {}\n", checkout.base),
+                &format!("{local_ref} {pushed} {remote_ref} {}\n", checkout.base),
             )
             .await;
-        let case = format!("{local_ref} to {remote_ref}");
+        let case = format!("{local_ref} at {pushed} to {remote_ref}");
         assert_eq!(output.status.code(), Some(0), "{case}: {}", stderr(&output));
         let uploads = uploads.lock().unwrap();
         assert_eq!(uploads.len(), 1, "{case}: {}", stderr(&output));
@@ -747,6 +752,7 @@ async fn a_push_is_not_reviewed_as_empty_when_the_remote_commit_is_missing() {
     let restored = checkout
         .commit("orders.rs", "fn main() { restored() }\n")
         .await;
+    let extended = checkout.commit("extra.rs", "fn extra() {}\n").await;
     checkout
         .git(&["update-ref", "refs/remotes/origin/main", &restored])
         .await;
@@ -754,24 +760,49 @@ async fn a_push_is_not_reviewed_as_empty_when_the_remote_commit_is_missing() {
         .git(&["config", "proofline.hook.pre-push.onIncomplete", "block"])
         .await;
     let missing = "1".repeat(40);
-    let output = checkout
-        .proofline(
-            &origin,
-            &[
-                "hook",
-                "run",
-                "pre-push",
-                "origin",
-                "https://github.com/acme/web.git",
-            ],
-            &format!("refs/heads/feature {restored} refs/heads/feature {missing}\n"),
-        )
-        .await;
-    let text = stderr(&output);
-    assert!(uploads.lock().unwrap().is_empty(), "{text}");
-    assert!(!text.contains("nothing to review"), "{text}");
-    assert!(text.contains("could not review feature"), "{text}");
-    assert_eq!(output.status.code(), Some(1), "{text}");
+    // (the pushed local ref, the pushed commit, the destination ref). Only a
+    // branch other than the default may fall back to the tracking ref, and
+    // not when that would compare the pushed commit with itself.
+    let pushes = [
+        (
+            "refs/heads/feature",
+            &restored,
+            "refs/heads/feature",
+            "feature",
+        ),
+        (
+            "refs/heads/restore",
+            &extended,
+            "refs/heads/main",
+            "restore",
+        ),
+        ("refs/heads/main", &extended, "refs/for/main", "main"),
+    ];
+    for (local_ref, pushed, remote_ref, label) in pushes {
+        uploads.lock().unwrap().clear();
+        let output = checkout
+            .proofline(
+                &origin,
+                &[
+                    "hook",
+                    "run",
+                    "pre-push",
+                    "origin",
+                    "https://github.com/acme/web.git",
+                ],
+                &format!("{local_ref} {pushed} {remote_ref} {missing}\n"),
+            )
+            .await;
+        let text = stderr(&output);
+        let case = format!("{local_ref} to {remote_ref}: {text}");
+        assert!(uploads.lock().unwrap().is_empty(), "{case}");
+        assert!(!text.contains("nothing to review"), "{case}");
+        assert!(
+            text.contains(&format!("could not review {label}")),
+            "{case}"
+        );
+        assert_eq!(output.status.code(), Some(1), "{case}");
+    }
 }
 
 #[tokio::test]
