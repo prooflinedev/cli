@@ -341,6 +341,30 @@ try {
         Require (-not [IO.File]::Exists($pendingPath + '.postcheck.bak')) 'Backup was not cleaned after recovery.'
         Require (-not [IO.File]::Exists($pendingPath)) 'Restored journal was not cleared.'
     }
+    Check 'backup deletion lock does not block rollback from validated canonical journal' {
+        $dir = PrepareOld 'locked-journal-backup'
+        [void](MakePending $dir)
+        $journal = Pending 'locked-journal-backup'
+        Set-ProoflinePendingPostcheck $journal 'checking'
+        # The redundant backup can be held by an antivirus/reader. Recovery
+        # must restore the verified previous executable before cleanup retries.
+        [IO.File]::Copy($journal, $journal + '.postcheck.bak', $false)
+        [IO.File]::WriteAllBytes((Active 'locked-journal-backup'), (Get-ProoflineTarExecutable $script:newArchive))
+        $handle = [IO.File]::Open($journal + '.postcheck.bak', [IO.FileMode]::Open,
+            [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        try {
+            # Cleanup may fail because backup is locked, but rollback must
+            # already have restored the correct previous bytes.
+            try { Invoke-ProoflinePendingRepair $dir } catch { }
+            Require ((Get-ProoflineSha256 (Active 'locked-journal-backup')) -ceq $script:oldHash) 'Backup lock prevented rollback.'
+            Assert-ProoflineRecord (Receipt 'locked-journal-backup') '0.5.1' $script:oldHash
+            Require ([IO.File]::Exists($journal)) 'Locked backup cleanup discarded the canonical recovery record.'
+        }
+        finally { $handle.Dispose() }
+        Invoke-ProoflinePendingRepair $dir
+        Require (-not [IO.File]::Exists($journal)) 'Unlocked backup cleanup did not complete.'
+        Require (-not [IO.File]::Exists($journal + '.postcheck.bak')) 'Unlocked backup remains.'
+    }
     Check 'pre-switch repair does not rewrite matching locked old receipt' {
         $dir = PrepareOld 'pre-switch-matching-receipt'
         [void](MakePending $dir)

@@ -48,22 +48,40 @@ if ($Mode -eq 'Hold') {
     finally {
         if ($validatedClaim -and [IO.File]::Exists($claimed)) { [IO.File]::Delete($claimed) }
     }
-    $lock = Join-Path $folder '.proofline-install.lock'
-    $ready = Join-Path $folder '.holder-ready'
-    $release = Join-Path $folder '.holder-release'
-    $stream = [IO.File]::Open($lock, [IO.FileMode]::OpenOrCreate,
-        [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
-    try {
-        [IO.File]::WriteAllText($ready, 'LOCK_HELD')
-        $expires = [DateTime]::UtcNow.AddSeconds(25)
-        while ([DateTime]::UtcNow -lt $expires -and -not [IO.File]::Exists($release)) {
-            Start-Sleep -Milliseconds 100
-        }
-        if (-not [IO.File]::Exists($release)) {
-            throw 'Holder timed out waiting for parent release signal.'
+    # Hold the *production* installer lock, not a separately manufactured
+    # FileShare.None handle. Otherwise the test passes even if the installer
+    # accidentally weakens its own lock sharing policy.
+    $driver = Split-Path -Parent $folder
+    if ([IO.Path]::GetDirectoryName($driver) -ine [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([char]'\') -or
+        [IO.Path]::GetFileName($driver) -cnotmatch '\Aproofline-concurrent-[0-9a-f]{32}\z' -or
+        [IO.Path]::GetFileName($folder) -cne 'bin') {
+        throw 'Holder refused a directory outside the disposable test sandbox.'
+    }
+    foreach ($path in @($driver, $folder)) {
+        if (([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Holder refused a reparse-point test directory.'
         }
     }
-    finally { $stream.Dispose() }
+    . (Join-Path (Split-Path -Parent $PSScriptRoot) 'install.ps1')
+    $script:holderOriginalReceipt = (Get-Item Function:\Read-ProoflineReceipt).ScriptBlock
+    $script:holderReady = Join-Path $folder '.holder-ready'
+    $script:holderRelease = Join-Path $folder '.holder-release'
+    function Read-ProoflineReceipt([string]$Path) {
+        # Install-ProoflineArchive reaches this function only after opening
+        # the production lock, so parent contention exercises that lock.
+        [IO.File]::WriteAllText($script:holderReady, 'LOCK_HELD')
+        $expires = [DateTime]::UtcNow.AddSeconds(25)
+        while ([DateTime]::UtcNow -lt $expires -and -not [IO.File]::Exists($script:holderRelease)) {
+            Start-Sleep -Milliseconds 100
+        }
+        if (-not [IO.File]::Exists($script:holderRelease)) {
+            throw 'Holder timed out waiting for parent release signal.'
+        }
+        return (& $script:holderOriginalReceipt $Path)
+    }
+    $archive = [IO.File]::ReadAllBytes((Join-Path $driver 'valid.tar.gz'))
+    $sums = [IO.File]::ReadAllBytes((Join-Path $driver 'SHA256SUMS'))
+    [void](Install-ProoflineArchive $archive $sums '0.5.1' $folder)
     exit 0
 }
 
