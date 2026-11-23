@@ -2885,7 +2885,11 @@
                 "type": "null"
               }
             ],
-            "description": "Why the environment was not checked or does not apply. Null when it\n was checked or its check is still running."
+            "description": "Why the environment was not checked or does not apply. Null when it\n was checked, its check is still running, or\n `reason_unrecorded` is true."
+          },
+          "reason_unrecorded": {
+            "description": "True when the review checked nothing in the environment but predates\n Proofline's record of the links its repository had when it was\n created: its repository links the environment by a link made before\n the review, and whether that link then asked for pull request reviews\n is unknown. Absent otherwise.",
+            "type": "boolean"
           },
           "state": {
             "allOf": [
@@ -2894,6 +2898,10 @@
               }
             ],
             "description": "Whether this review checked the environment."
+          },
+          "unfinished_inventory_incomplete": {
+            "description": "True when `reason` is `UNFINISHED` because the assessment's Kian pin\n lacked required inventory evidence, so the environment was not\n checked. Absent otherwise, including when the assessment recorded no\n cause.",
+            "type": "boolean"
           }
         },
         "required": [
@@ -7197,7 +7205,7 @@
   },
   "info": {
     "title": "Proofline Review API",
-    "version": "9.1.0"
+    "version": "9.2.0"
   },
   "openapi": "3.1.0",
   "paths": {
