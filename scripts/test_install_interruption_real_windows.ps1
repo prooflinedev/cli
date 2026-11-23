@@ -174,7 +174,11 @@ if ($Mode -eq 'Worker' -or $Mode -eq 'Recover') {
         -not [IO.File]::Exists($InstallerCopy)) {
         throw 'Child requires its installer file.'
     }
-    . $InstallerCopy
+    $validatedCopy = [IO.Path]::GetFullPath($InstallerCopy)
+    if (([IO.File]::GetAttributes($validatedCopy) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Refusing to dot-source an installer copy that is a reparse point.'
+    }
+    . $validatedCopy
     if ($Mode -eq 'Recover') {
         Invoke-ProoflinePendingRepair $CaseDir
         Write-Output 'RECOVERY_COMPLETED'
@@ -403,7 +407,7 @@ try {
         $journal = Join-Path $directory '.proofline-install.pending.json'
         Require ([IO.File]::Exists($journal)) "No pending journal existed after forced termination at $checkpoint."
         $onDiskJournal = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($journal))
-        if ($checkpoint -in @('after-switch', 'corrupt-after-switch')) {
+        if ($checkpoint -in @('after-switch', 'corrupt-after-switch', 'fresh-after-move')) {
             Require ($onDiskJournal.postcheck -ceq 'checking') 'Switch happened without durable checking state.'
         }
         if ($checkpoint -in @('after-upgrade-passed', 'fresh-after-passed')) {

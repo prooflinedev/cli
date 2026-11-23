@@ -341,6 +341,65 @@ try {
         Require (-not [IO.File]::Exists($pendingPath + '.postcheck.bak')) 'Backup was not cleaned after recovery.'
         Require (-not [IO.File]::Exists($pendingPath)) 'Restored journal was not cleared.'
     }
+    Check 'pre-switch repair does not rewrite matching locked old receipt' {
+        $dir = PrepareOld 'pre-switch-matching-receipt'
+        [void](MakePending $dir)
+        $realWrite = (Get-Item Function:\Write-ProoflineReceipt).ScriptBlock
+        try {
+            Set-Item Function:\Write-ProoflineReceipt -Value { throw 'Simulated locked old receipt.' }
+            Invoke-ProoflinePendingRepair $dir
+        }
+        finally { Set-Item Function:\Write-ProoflineReceipt -Value $realWrite }
+        Require ((Get-ProoflineSha256 (Active 'pre-switch-matching-receipt')) -ceq $script:oldHash) 'Pre-switch repair changed the old image.'
+        Assert-ProoflineRecord (Receipt 'pre-switch-matching-receipt') '0.5.1' $script:oldHash
+        Require (-not [IO.File]::Exists((Pending 'pre-switch-matching-receipt'))) 'Pre-switch repair left journal.'
+    }
+    Check 'rollback preserves matching locked old receipt' {
+        $dir = PrepareOld 'rollback-matching-receipt'
+        [void](MakePending $dir)
+        Set-ProoflinePendingPostcheck (Pending 'rollback-matching-receipt') 'checking'
+        [IO.File]::WriteAllBytes((Active 'rollback-matching-receipt'), (Get-ProoflineTarExecutable $script:newArchive))
+        $realWrite = (Get-Item Function:\Write-ProoflineReceipt).ScriptBlock
+        try {
+            Set-Item Function:\Write-ProoflineReceipt -Value { throw 'Simulated locked old receipt.' }
+            Invoke-ProoflinePendingRepair $dir
+        }
+        finally { Set-Item Function:\Write-ProoflineReceipt -Value $realWrite }
+        Require ((Get-ProoflineSha256 (Active 'rollback-matching-receipt')) -ceq $script:oldHash) 'Rollback did not restore old image.'
+        Assert-ProoflineRecord (Receipt 'rollback-matching-receipt') '0.5.1' $script:oldHash
+        Require (-not [IO.File]::Exists((Pending 'rollback-matching-receipt'))) 'Rollback left journal.'
+    }
+    Check 'pre-download installer repairs interrupted upgrade despite download outage' {
+        $dir = PrepareOld 'predownload-outage'
+        [void](MakePending $dir)
+        Set-ProoflinePendingPostcheck (Pending 'predownload-outage') 'checking'
+        [IO.File]::WriteAllBytes((Active 'predownload-outage'), (Get-ProoflineTarExecutable $script:newArchive))
+        $realDownload = (Get-Item Function:\Get-ProoflineOfficialBytes).ScriptBlock
+        try {
+            Set-Item Function:\Get-ProoflineOfficialBytes -Value {
+                param([string]$RelativePath, [int]$MaximumLength)
+                throw 'INTENTIONAL_DOWNLOAD_UNAVAILABLE'
+            }
+            Must-Throw { Invoke-ProoflineInstaller '0.5.2' $dir $false }
+        }
+        finally { Set-Item Function:\Get-ProoflineOfficialBytes -Value $realDownload }
+        Require ((Get-ProoflineSha256 (Active 'predownload-outage')) -ceq $script:oldHash) 'Installer did not roll back before failing download.'
+        Assert-ProoflineRecord (Receipt 'predownload-outage') '0.5.1' $script:oldHash
+        Require (-not [IO.File]::Exists((Pending 'predownload-outage'))) 'Installer left pre-download journal.'
+    }
+    Check 'orphaned checking-state backup conservatively restores old release' {
+        $dir = PrepareOld 'orphan-checking'
+        [void](MakePending $dir)
+        $journal = Pending 'orphan-checking'
+        Set-ProoflinePendingPostcheck $journal 'checking'
+        [IO.File]::Move($journal, $journal + '.postcheck.bak')
+        [IO.File]::WriteAllBytes((Active 'orphan-checking'), (Get-ProoflineTarExecutable $script:newArchive))
+        Invoke-ProoflinePendingRepair $dir
+        Require ((Get-ProoflineSha256 (Active 'orphan-checking')) -ceq $script:oldHash) 'Interrupted checking journal was accepted as passed.'
+        Assert-ProoflineRecord (Receipt 'orphan-checking') '0.5.1' $script:oldHash
+        Require (-not [IO.File]::Exists($journal + '.postcheck.bak')) 'Orphaned backup remains.'
+        Require (-not [IO.File]::Exists($journal)) 'Recovered checking journal remains.'
+    }
     Check 'matching receipt is not rewritten when retrying completed upgrade cleanup' {
         $dir = PrepareOld 'matched-locked-receipt'
         [void](MakePending $dir)

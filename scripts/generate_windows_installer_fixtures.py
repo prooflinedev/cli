@@ -80,7 +80,7 @@ def main(destination: Path) -> None:
         f"{other}  proofline-x86_64-unknown-linux-musl.tar.gz\n", encoding="ascii"
     )
     (destination / "SHA256SUMS-malformed").write_text(
-        f"{sha}  {name}\nnot-a-hash  another-release.tar.gz\n", encoding="ascii"
+        f"{sha}  {name}\nnot-a-hash  proofline-x86_64-unknown-linux-musl.tar.gz\n", encoding="ascii"
     )
     # The release's archive format is deterministic; assert our fixture name,
     # tar type and content are correct before it reaches PowerShell tests.

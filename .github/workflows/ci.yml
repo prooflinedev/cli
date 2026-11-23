@@ -39,6 +39,13 @@ jobs:
       - run: python scripts/archive.py x86_64-pc-windows-msvc
       - shell: pwsh
         run: |
+          # Reject a packaged archive that the proposed installer cannot read.
+          # The normal tar smoke test alone does not reject extra members.
+          . ./install.ps1
+          $archivePath = 'artifacts/proofline-x86_64-pc-windows-msvc.tar.gz'
+          $binary = Get-ProoflineTarExecutable ([IO.File]::ReadAllBytes((Resolve-Path $archivePath).Path))
+          if ($binary.Length -le 0) { throw 'PR-built Windows archive contains no supported Proofline executable.' }
+          Write-Host "Installer-compatible PR-built Windows archive validated ($($binary.Length) bytes)."
           tar -xzf artifacts/proofline-x86_64-pc-windows-msvc.tar.gz -C artifacts
           & ./artifacts/proofline.exe --version
           if ($LASTEXITCODE -ne 0) { throw "Windows executable failed" }

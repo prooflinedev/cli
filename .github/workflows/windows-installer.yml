@@ -6,6 +6,11 @@ on:
       - 'install.ps1'
       - 'scripts/test_install*windows.ps1'
       - 'scripts/generate_windows_installer_fixtures.py'
+      - 'scripts/archive.py'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+      - '.github/workflows/ci.yml'
       - '.github/workflows/windows-installer.yml'
   workflow_dispatch:
 
@@ -70,7 +75,7 @@ jobs:
           & $env:TEST_ENGINE -NoProfile -NonInteractive -File scripts/test_install_upgrade_real_windows.ps1
           if ($LASTEXITCODE -ne 0) { throw "Real Windows upgrade test failed: $LASTEXITCODE" }
 
-      - name: Recover from ten real process-termination checkpoints
+      - name: Recover from twelve real process-termination checkpoints
         shell: pwsh
         env:
           TEST_ENGINE: ${{ matrix.engine }}

@@ -276,7 +276,11 @@ function Get-ProoflineUpdatedUserPath(
     $normalized = $Directory.TrimEnd([char[]]@('\', '/'))
     foreach ($entry in ($Current -split ';')) {
         $candidate = $entry.Trim()
-        if ($Kind -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) {
+        # A variable-containing entry can expand to the install directory
+        # today but move when the variable changes. Do not treat it as a
+        # durable duplicate of the literal installed directory.
+        if ($Kind -eq [Microsoft.Win32.RegistryValueKind]::ExpandString -and
+            $candidate -notmatch '%[^%]+%') {
             $candidate = [Environment]::ExpandEnvironmentVariables($candidate)
         }
         if ($candidate.TrimEnd([char[]]@('\', '/')) -ieq $normalized) {
@@ -334,26 +338,50 @@ public static class ProoflineEnvironmentNotifier {
 }
 
 function Add-ProoflineUserPath([string]$Directory) {
-    $previous = Get-ProoflineUserPathRecord
-    $result = Get-ProoflineUpdatedUserPath $previous.value $Directory $previous.kind
-    if ($null -eq $result) {
-        Write-Host 'User PATH already contains the Proofline directory.'
-        return
-    }
-    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+    # Serialize cooperating installer processes for the same Windows user.
+    # Other PATH editors are not obligated to acquire this mutex; their edits
+    # can still race with RegistryKey.SetValue (no registry compare-and-swap).
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $mutexName = 'Local\Proofline-UserPath-' + $sid
+    $mutex = [Threading.Mutex]::new($false, $mutexName)
+    $locked = $false
+    $changed = $false
     try {
-        # Avoid an obvious lost update if another process changed PATH since
-        # our read. This is not a cross-process atomic registry compare/swap.
-        $fresh = Get-ProoflineUserPathRecord
-        if ($fresh.value -cne $previous.value -or
-            $fresh.kind -ne $previous.kind -or $fresh.exists -ne $previous.exists) {
-            throw 'User PATH changed concurrently; retry the installer or add the directory manually.'
+        try {
+            $locked = $mutex.WaitOne(30000)
         }
-        $key.SetValue('Path', $result, $previous.kind)
+        catch [Threading.AbandonedMutexException] {
+            $locked = $true
+        }
+        if (-not $locked) { throw 'Another Proofline installer is updating user PATH; retry after it completes.' }
+        $previous = Get-ProoflineUserPathRecord
+        $result = Get-ProoflineUpdatedUserPath $previous.value $Directory $previous.kind
+        if ($null -eq $result) {
+            Write-Host 'User PATH already contains the Proofline directory.'
+            return
+        }
+        $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+        try {
+            # Detect external changes before writing where possible. This
+            # check cannot make unrelated registry editors atomic.
+            $fresh = Get-ProoflineUserPathRecord
+            if ($fresh.value -cne $previous.value -or
+                $fresh.kind -ne $previous.kind -or $fresh.exists -ne $previous.exists) {
+                throw 'User PATH changed concurrently; retry the installer or add the directory manually.'
+            }
+            $key.SetValue('Path', $result, $previous.kind)
+            $changed = $true
+        }
+        finally { $key.Dispose() }
     }
-    finally { $key.Dispose() }
-    Send-ProoflineEnvironmentChange
-    Write-Host 'Added Proofline to your user PATH. Open a new terminal to use it.'
+    finally {
+        if ($locked) { $mutex.ReleaseMutex() }
+        $mutex.Dispose()
+    }
+    if ($changed) {
+        Send-ProoflineEnvironmentChange
+        Write-Host 'Added Proofline to your user PATH. Open a new terminal to use it.'
+    }
 }
 
 
@@ -437,6 +465,16 @@ function Assert-ProoflineRecord([string]$Path, [string]$ExpectedVersion, [string
     if ($record.version -cne $ExpectedVersion -or $record.sha256 -cne $ExpectedHash) {
         throw "An existing Proofline installation record does not match this release: $Path"
     }
+}
+
+function Ensure-ProoflineReceipt([string]$Path, [string]$Version, [string]$Hash) {
+    # A matching receipt may be held open without delete sharing. No need
+    # to replace it just to complete cleanup of an already verified release.
+    if ([IO.File]::Exists($Path)) {
+        $current = Read-ProoflineReceipt $Path
+        if ($current.version -ceq $Version -and $current.sha256 -ceq $Hash) { return }
+    }
+    Write-ProoflineReceipt $Path $Version $Hash
 }
 
 function Read-ProoflineReceipt([string]$Path) {
@@ -774,7 +812,7 @@ function Recover-ProoflinePending([string]$Directory) {
     }
 
     if ($activeHash -ceq $record.oldSha256) {
-        Write-ProoflineReceipt $receipt $record.oldVersion $record.oldSha256
+        Ensure-ProoflineReceipt $receipt $record.oldVersion $record.oldSha256
         try { Clear-ProoflineUpgradeFiles $paths $pending $record.newSha256 -PreserveIncompleteStage }
         catch { Write-Warning "Verified previous installation retained; cleanup will be retried: $($_.Exception.Message)" }
         Write-Host "Previous Proofline $($record.oldVersion) installation remains usable."
@@ -818,7 +856,7 @@ function Recover-ProoflinePending([string]$Directory) {
         }
         # Recovery copy was checked against the recorded hash; do not execute
         # a pre-existing local image during repair.
-        Write-ProoflineReceipt $receipt $record.oldVersion $record.oldSha256
+        Ensure-ProoflineReceipt $receipt $record.oldVersion $record.oldSha256
         Clear-ProoflineUpgradeFiles $paths $pending $record.newSha256
         Write-Host "Restored verified Proofline $($record.oldVersion) after interrupted upgrade."
     }

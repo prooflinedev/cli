@@ -115,8 +115,13 @@ try {
             $token = '%' + $variable + '%\bin'
             $literal = Get-ProoflineUpdatedUserPath $token $directory ([Microsoft.Win32.RegistryValueKind]::String)
             if ($literal -cne ($token + ';' + $directory)) { throw 'REG_SZ token incorrectly treated as expanded directory.' }
+            # An expandable entry can move when the variable changes.
+            # Preserve the literal installed directory even when the token
+            # happens to expand to it at this moment.
             $expanded = Get-ProoflineUpdatedUserPath $token $directory ([Microsoft.Win32.RegistryValueKind]::ExpandString)
-            if ($null -ne $expanded) { throw 'REG_EXPAND_SZ duplicate token was not recognized.' }
+            if ($expanded -cne ($token + ';' + $directory)) {
+                throw 'Variable-dependent PATH entry incorrectly suppressed stable installed directory.'
+            }
         }
         finally { [Environment]::SetEnvironmentVariable($variable, $previous, 'Process') }
     }
