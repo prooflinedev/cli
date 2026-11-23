@@ -45,7 +45,7 @@ function Assert-Sandbox([string]$Directory) {
 function Assert-Installed(
     [string]$Directory,
     [string]$Version,
-    [bool]$ExpectDamagedEvidence = $false,
+    [ValidateSet('none', 'corrupt', 'unchecked')][string]$DamagedEvidence = 'none',
     [bool]$ExpectIncompleteStageEvidence = $false
 ) {
     $exe = Join-Path $Directory 'proofline.exe'
@@ -83,9 +83,14 @@ function Assert-Installed(
     # to make this test green; verify exactly what was preserved.
     $damaged = @(Get-ChildItem -LiteralPath $Directory -Force |
         Where-Object { $_.Name -match '\A\.proofline-damaged-[0-9a-f]{32}\.exe\z' })
-    if ($ExpectDamagedEvidence) {
-        Require ($damaged.Count -eq 1) 'Expected one quarantined corrupted executable.'
-        Require ([IO.File]::ReadAllText($damaged[0].FullName) -ceq 'INTENTIONALLY_CORRUPTED') 'Quarantined contents differ from injected corruption.'
+    if ($DamagedEvidence -cne 'none') {
+        Require ($damaged.Count -eq 1) 'Expected one quarantined failed or unverified executable.'
+        if ($DamagedEvidence -ceq 'corrupt') {
+            Require ([IO.File]::ReadAllText($damaged[0].FullName) -ceq 'INTENTIONALLY_CORRUPTED') 'Quarantined contents differ from injected corruption.'
+        }
+        else {
+            Require ((Get-FileHash -LiteralPath $damaged[0].FullName -Algorithm SHA256).Hash -cne $hash) 'Rejected new release was not quarantined.'
+        }
     }
     else {
         Require ($damaged.Count -eq 0) 'Unexpected damaged executable remains.'
@@ -232,7 +237,7 @@ $scenarios = @(
 $expected = @{
     'after-journal' = '0.5.1'
     'upgrade-partial-stage' = '0.5.1'
-    'after-switch' = '0.5.2'
+    'after-switch' = '0.5.1'
     'corrupt-after-switch' = '0.5.1'
     'after-receipt' = '0.5.2'
     'fresh-after-journal' = 'absent'
@@ -346,8 +351,11 @@ try {
             Write-Host "PASS $checkpoint; fresh process removed interrupted first-install files."
         }
         else {
+            $damagedMode = 'none'
+            if ($checkpoint -eq 'corrupt-after-switch') { $damagedMode = 'corrupt' }
+            elseif ($checkpoint -eq 'after-switch') { $damagedMode = 'unchecked' }
             $digest = Assert-Installed $directory $expected[$checkpoint] `
-                ($checkpoint -eq 'corrupt-after-switch') `
+                $damagedMode `
                 ($checkpoint -eq 'upgrade-partial-stage')
             if ($isFresh) {
                 Require ($null -ne $digest) 'First-install recovery failed to finalize new executable.'

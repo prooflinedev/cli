@@ -95,8 +95,15 @@ try {
     # Test-only shadow function: fake PE fixtures are not runnable and must
     # NEVER be started. Production installer calls the original version checker.
     $script:smokeCount = 0
+    $script:failInstalledPostcheckPath = $null
     function Assert-ProoflineExeVersion([string]$Path, [string]$Version) {
         $script:smokeCount++
+        if ($null -ne $script:failInstalledPostcheckPath -and
+            $Path -ieq $script:failInstalledPostcheckPath -and
+            $Version -ceq '0.5.2') {
+            # Only the installed copy fails, never the staged verified image.
+            throw 'Simulated installed executable postcheck failure.'
+        }
         $digest = Get-ProoflineSha256 $Path
         $expected = switch ($Version) {
             '0.5.1' { $script:oldHash; break }
@@ -164,6 +171,61 @@ try {
         Assert-ProoflineRecord (Receipt 'normal') '0.5.2' $script:newHash
         Require (-not [IO.File]::Exists((Pending 'normal'))) 'Upgrade journal remains after success.'
         Require (@(Get-ChildItem -LiteralPath $dir -Force -Filter '.proofline-recovery*').Count -eq 0) 'Old backup not cleaned.'
+    }
+    Check 'failed installed-executable postcheck restores verified old release' {
+        $dir = PrepareOld 'failed-postcheck'
+        $script:failInstalledPostcheckPath = Active 'failed-postcheck'
+        try {
+            Must-Throw { [void](Install-ProoflineArchive $script:newArchive $script:newSums '0.5.2' $dir) }
+        }
+        finally { $script:failInstalledPostcheckPath = $null }
+        Require ((Get-ProoflineSha256 (Active 'failed-postcheck')) -ceq $script:oldHash) 'Failed postcheck left the rejected new image active.'
+        Assert-ProoflineRecord (Receipt 'failed-postcheck') '0.5.1' $script:oldHash
+        Require (-not [IO.File]::Exists((Pending 'failed-postcheck'))) 'Successful rollback did not clear its journal.'
+        $damaged = @(Get-ChildItem -LiteralPath $dir -Force |
+            Where-Object { $_.Name -match '\A\.proofline-damaged-[0-9a-f]{32}\.exe\z' })
+        Require ($damaged.Count -eq 1) 'Failed replacement was not quarantined.'
+        Require ((Get-ProoflineSha256 $damaged[0].FullName) -ceq $script:newHash) 'Quarantined bytes do not match rejected release.'
+        $debris = @(Get-ChildItem -LiteralPath $dir -Force |
+            Where-Object { $_.Name -match '\A\.proofline-(recovery|api-backup|staged)-' })
+        Require ($debris.Count -eq 0) 'Successful rollback left executable transaction files.'
+        [void](Install-ProoflineArchive $script:newArchive $script:newSums '0.5.2' $dir)
+        Assert-ProoflineRecord (Receipt 'failed-postcheck') '0.5.2' $script:newHash
+    }
+    Check 'interrupted in-progress postcheck restores old release' {
+        $dir = PrepareOld 'checking-interrupted'
+        [void](MakePending $dir)
+        Set-ProoflineUpgradePostcheck (Pending 'checking-interrupted') 'checking'
+        [IO.File]::WriteAllBytes((Active 'checking-interrupted'), (Get-ProoflineTarExecutable $script:newArchive))
+        Invoke-ProoflinePendingRepair $dir
+        Require ((Get-ProoflineSha256 (Active 'checking-interrupted')) -ceq $script:oldHash) 'Interrupted postcheck was incorrectly treated as verified.'
+        Assert-ProoflineRecord (Receipt 'checking-interrupted') '0.5.1' $script:oldHash
+        Require (-not [IO.File]::Exists((Pending 'checking-interrupted'))) 'Interrupted postcheck rollback left its journal.'
+    }
+    Check 'missing rollback backup never silently adopts rejected executable' {
+        $dir = PrepareOld 'failed-postcheck-no-backup'
+        $paths = MakePending $dir
+        Set-ProoflineUpgradePostcheck (Pending 'failed-postcheck-no-backup') 'checking'
+        [IO.File]::WriteAllBytes((Active 'failed-postcheck-no-backup'), (Get-ProoflineTarExecutable $script:newArchive))
+        [IO.File]::Delete($paths.old)
+        Must-Throw { Invoke-ProoflinePendingRepair $dir }
+        Must-Throw { Invoke-ProoflinePendingRepair $dir }
+        Require ([IO.File]::Exists((Pending 'failed-postcheck-no-backup'))) 'Missing-backup failure lost its pending journal.'
+        $record = Read-ProoflinePending (Pending 'failed-postcheck-no-backup')
+        Require ($record.postcheck -ceq 'checking') 'A failed postcheck lost its durable rejection marker.'
+        Assert-ProoflineRecord (Receipt 'failed-postcheck-no-backup') '0.5.1' $script:oldHash
+        Require ((Get-ProoflineSha256 (Active 'failed-postcheck-no-backup')) -ceq $script:newHash) 'Recovery modified a file without a verified rollback source.'
+    }
+    Check 'completed postcheck permits interrupted receipt finalization' {
+        $dir = PrepareOld 'passed-before-receipt'
+        [void](MakePending $dir)
+        Set-ProoflineUpgradePostcheck (Pending 'passed-before-receipt') 'checking'
+        [IO.File]::WriteAllBytes((Active 'passed-before-receipt'), (Get-ProoflineTarExecutable $script:newArchive))
+        Set-ProoflineUpgradePostcheck (Pending 'passed-before-receipt') 'passed'
+        Invoke-ProoflinePendingRepair $dir
+        Require ((Get-ProoflineSha256 (Active 'passed-before-receipt')) -ceq $script:newHash) 'Recovery rolled back an explicitly passed postcheck.'
+        Assert-ProoflineRecord (Receipt 'passed-before-receipt') '0.5.2' $script:newHash
+        Require (-not [IO.File]::Exists((Pending 'passed-before-receipt'))) 'Passed-postcheck recovery left its journal.'
     }
     Check 'receipt replacement preserves and cleans up its backup' {
         $dir = PrepareOld 'receipt-backup'

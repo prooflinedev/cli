@@ -502,7 +502,58 @@ function Read-ProoflinePending([string]$Path) {
     if ($record.oldSha256 -ceq $record.newSha256) {
         throw 'Pending upgrade has identical old and new digests.'
     }
+    $postcheck = $record.PSObject.Properties['postcheck']
+    if ($null -ne $postcheck -and $postcheck.Value -cnotin @('checking', 'passed')) {
+        throw 'Pending upgrade postcheck state is invalid.'
+    }
     return $record
+}
+
+function Set-ProoflineUpgradePostcheck([string]$Pending, [ValidateSet('checking', 'passed')][string]$State) {
+    # Record the post-replacement validation phase durably before switching.
+    # A failed or interrupted postcheck must never be finalized by hash alone.
+    $record = Read-ProoflinePending $Pending
+    if ($null -eq $record -or $record.schema -ne 2) {
+        throw 'Cannot update postcheck state without a valid upgrade journal.'
+    }
+    $currentProperty = $record.PSObject.Properties['postcheck']
+    $current = if ($null -eq $currentProperty) { $null } else { $currentProperty.Value }
+    if (($State -ceq 'checking' -and $null -ne $current) -or
+        ($State -ceq 'passed' -and $current -cne 'checking')) {
+        throw 'Invalid upgrade postcheck state transition.'
+    }
+    $record | Add-Member -NotePropertyName postcheck -NotePropertyValue $State -Force
+    $temporary = $Pending + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    $backup = $Pending + '.' + [guid]::NewGuid().ToString('N') + '.bak'
+    foreach ($path in @($Pending, $temporary, $backup)) { Assert-ProoflineNoReparse $path }
+    $verified = $false
+    try {
+        $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew,
+            [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try {
+            $json = ConvertTo-Json -Compress -InputObject $record
+            $bytes = [Text.Encoding]::UTF8.GetBytes($json)
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+        }
+        finally { $stream.Dispose() }
+        [IO.File]::Replace($temporary, $Pending, $backup)
+        $updated = Read-ProoflinePending $Pending
+        if ($updated.id -cne $record.id -or $updated.postcheck -cne $State) {
+            throw 'Could not verify the persisted upgrade postcheck state.'
+        }
+        $verified = $true
+    }
+    finally {
+        if ([IO.File]::Exists($temporary)) {
+            try { [IO.File]::Delete($temporary) }
+            catch { Write-Warning "Postcheck journal staging file remains at $temporary" }
+        }
+        if ($verified -and [IO.File]::Exists($backup)) {
+            try { [IO.File]::Delete($backup) }
+            catch { Write-Warning "Previous postcheck journal copy remains at $backup" }
+        }
+    }
 }
 
 function Get-ProoflineTransactionPaths([string]$Directory, [string]$Id) {
@@ -613,7 +664,12 @@ function Recover-ProoflinePending([string]$Directory) {
     $activeHash = $null
     if ([IO.File]::Exists($destination)) { $activeHash = Get-ProoflineSha256 $destination }
 
-    if ($activeHash -ceq $record.newSha256) {
+    # If post-replacement validation was in progress at interruption, or
+    # explicitly failed, keep the previous verified version. A matching SHA
+    # does not establish that the new executable can start successfully.
+    $postcheck = $record.PSObject.Properties['postcheck']
+    $postcheckUnverified = ($null -ne $postcheck -and $postcheck.Value -ceq 'checking')
+    if ($activeHash -ceq $record.newSha256 -and -not $postcheckUnverified) {
         $finalized = $false
         try {
             # A local journal hash is not sufficient authority to execute
@@ -861,11 +917,16 @@ function Install-ProoflineArchive(
                 throw 'Could not preserve a verified previous executable; upgrade aborted.'
             }
             try {
+                # Mark validation in-progress BEFORE switching the image.
+                # A crash after switch but before postcheck will conservatively
+                # restore the previous executable instead of adopting untested bytes.
+                Set-ProoflineUpgradePostcheck $pending 'checking'
                 Invoke-ProoflineReplaceWithRetry $stage $destination $paths.api $hash $oldReceipt.sha256
                 if ((Get-ProoflineSha256 $destination) -cne $hash) {
                     throw 'Upgraded executable digest differs from verified candidate.'
                 }
                 Assert-ProoflineExeVersion $destination $ReleaseVersion
+                Set-ProoflineUpgradePostcheck $pending 'passed'
                 Write-ProoflineReceipt $receipt $ReleaseVersion $hash
                 try { Clear-ProoflineUpgradeFiles $paths $pending $hash }
                 catch { Write-Warning "Verified upgrade retained; cleanup will be retried: $($_.Exception.Message)" }
