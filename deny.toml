@@ -1,11 +1,5 @@
 [advisories]
 yanked = "deny"
-ignore = [
-    # Marvin timing side-channel in RSA *decryption* (unfixed upstream since
-    # 2023). We use the rsa crate only to sign GitHub App JWTs with our own
-    # key; the app performs no RSA decryption an attacker could time.
-    "RUSTSEC-2023-0071",
-]
 
 [licenses]
 # Our own crates are unpublished and proprietary; skip them, check dependencies.
@@ -14,7 +8,6 @@ allow = [
     "CDLA-Permissive-2.0",   # webpki-roots CA certificate data
     "MIT",
     "Apache-2.0",
-    "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
     "Zlib",
@@ -23,6 +16,12 @@ allow = [
 
 [bans]
 wildcards = "deny"
+# Admit only the reviewed webpki-roots 1.0.12. RUSTSEC-2026-0381 lists 1.0.10
+# as patched, and a later version's root data is unreviewed.
+deny = [
+    { name = "webpki-roots", version = "<1.0.12" },
+    { name = "webpki-roots", version = ">1.0.12" },
+]
 
 [sources]
 unknown-registry = "deny"
