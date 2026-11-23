@@ -373,10 +373,13 @@ pub async fn new_branch_base(dir: &Path, remote: &str, head: &str) -> Result<Str
 /// branch is compared with its merge-base with the default branch, as a new
 /// branch is. So is a branch whose remote commit this checkout does not have.
 /// A branch with no default branch to compare with, or no history in common
-/// with it, keeps the remote's commit as its base.
+/// with it, keeps the remote's commit as its base. So does a push to the
+/// default branch itself, as `remote_ref`: its default-branch commits are
+/// what it sends, and this checkout's tracking ref for it can be stale.
 pub async fn pushed_branch_base(
     dir: &Path,
     remote: &str,
+    remote_ref: &str,
     remote_sha: &str,
     head: &str,
 ) -> Result<String, GitError> {
@@ -387,6 +390,14 @@ pub async fn pushed_branch_base(
         Err(error) => return Err(error),
     };
     let default = format!("refs/remotes/{remote}/HEAD");
+    let default_branch = answer_in(dir, &["symbolic-ref", "--quiet", &default]).await?;
+    let to_default = default_branch
+        .as_deref()
+        .and_then(|target| target.strip_prefix(&format!("refs/remotes/{remote}/")))
+        .is_some_and(|name| remote_ref.strip_prefix("refs/heads/") == Some(name));
+    if known && to_default {
+        return Ok(remote_sha);
+    }
     let fork_point = if line_in(dir, &["rev-parse", "--verify", "--quiet", &default])
         .await
         .is_ok()

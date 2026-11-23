@@ -317,6 +317,7 @@ async fn settings(dir: &Path, hook: Hook) -> anyhow::Result<Settings> {
 struct PushedRef {
     local_ref: String,
     local_sha: String,
+    remote_ref: String,
     remote_sha: String,
 }
 
@@ -330,7 +331,7 @@ fn pushed_refs(input: &str) -> anyhow::Result<Vec<PushedRef>> {
     let mut refs = Vec::new();
     for line in input.lines().filter(|line| !line.trim().is_empty()) {
         let fields: Vec<&str> = line.split(' ').collect();
-        let [local_ref, local_sha, _, remote_sha] = fields.as_slice() else {
+        let [local_ref, local_sha, remote_ref, remote_sha] = fields.as_slice() else {
             bail!(
                 "Git's pre-push input has a line Proofline cannot read: {:?}",
                 one_line(line)
@@ -342,6 +343,7 @@ fn pushed_refs(input: &str) -> anyhow::Result<Vec<PushedRef>> {
         refs.push(PushedRef {
             local_ref: (*local_ref).to_owned(),
             local_sha: (*local_sha).to_owned(),
+            remote_ref: (*remote_ref).to_owned(),
             remote_sha: (*remote_sha).to_owned(),
         });
     }
@@ -394,8 +396,14 @@ async fn subjects(hook: Hook, here: &Path, remote: &str) -> anyhow::Result<(Vec<
                 let base = if is_zero(&pushed.remote_sha) {
                     git::new_branch_base(here, remote, &pushed.local_sha).await
                 } else {
-                    git::pushed_branch_base(here, remote, &pushed.remote_sha, &pushed.local_sha)
-                        .await
+                    git::pushed_branch_base(
+                        here,
+                        remote,
+                        &pushed.remote_ref,
+                        &pushed.remote_sha,
+                        &pushed.local_sha,
+                    )
+                    .await
                 };
                 let changes = match base {
                     Ok(base) => git::range_changes(here, &base, &pushed.local_sha).await,
@@ -844,11 +852,13 @@ mod tests {
                 PushedRef {
                     local_ref: "refs/heads/new".to_owned(),
                     local_sha: a.clone(),
+                    remote_ref: "refs/heads/new".to_owned(),
                     remote_sha: zero,
                 },
                 PushedRef {
                     local_ref: "refs/heads/main".to_owned(),
                     local_sha: b,
+                    remote_ref: "refs/heads/main".to_owned(),
                     remote_sha: a,
                 },
             ]

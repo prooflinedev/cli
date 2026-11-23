@@ -652,6 +652,9 @@ async fn a_pushed_branch_is_not_reviewed_with_commits_from_the_default_branch() 
         let head = checkout
             .commit("feature.rs", "fn feature() { pushed() }\n")
             .await;
+        // Push the branch without it checked out, so a base read from HEAD
+        // instead of the pushed commit fails the amend cases.
+        checkout.git(&["checkout", "-q", "main"]).await;
         uploads.lock().unwrap().clear();
         let output = checkout
             .proofline(
@@ -685,15 +688,53 @@ async fn a_pushed_branch_is_not_reviewed_with_commits_from_the_default_branch() 
 }
 
 #[tokio::test]
+async fn a_push_to_the_default_branch_is_reviewed_against_the_commit_the_remote_has() {
+    let checkout = Checkout::new().await;
+    let uploads = Uploads::default();
+    let origin = serve(uploads.clone(), "SERIOUS", false).await;
+    // The remote's main was rewound to the base, but this checkout's
+    // tracking ref still holds the commit the push now restores.
+    let restored = checkout
+        .commit("orders.rs", "fn main() { restored() }\n")
+        .await;
+    checkout
+        .git(&["update-ref", "refs/remotes/origin/main", &restored])
+        .await;
+    let output = checkout
+        .proofline(
+            &origin,
+            &[
+                "hook",
+                "run",
+                "pre-push",
+                "origin",
+                "https://github.com/acme/web.git",
+            ],
+            &format!(
+                "refs/heads/main {restored} refs/heads/main {}\n",
+                checkout.base
+            ),
+        )
+        .await;
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let uploads = uploads.lock().unwrap();
+    assert_eq!(uploads.len(), 1, "{}", stderr(&output));
+    assert_eq!(uploads[0]["base_commit_sha"], checkout.base);
+    let patch = uploads[0]["patch"].as_str().unwrap();
+    assert!(patch.contains("+fn main() { restored() }"), "{patch}");
+}
+
+#[tokio::test]
 async fn a_branch_without_history_in_common_with_the_default_branch_keeps_the_remote_commit() {
     let checkout = Checkout::new().await;
     let uploads = Uploads::default();
     let origin = serve(uploads.clone(), "SERIOUS", false).await;
     // A site branch such as gh-pages starts from no commit of main.
     checkout.git(&["checkout", "-q", "--orphan", "pages"]).await;
-    checkout.git(&["rm", "-q", "-r", "--cached", "."]).await;
+    checkout.git(&["rm", "-q", "-r", "-f", "."]).await;
     let pushed = checkout.commit("index.html", "<p>old</p>\n").await;
     let head = checkout.commit("index.html", "<p>new</p>\n").await;
+    checkout.git(&["checkout", "-q", "main"]).await;
     let output = checkout
         .proofline(
             &origin,
