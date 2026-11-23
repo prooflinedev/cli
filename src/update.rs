@@ -162,8 +162,11 @@ fn windows_steps(executable: Option<&Path>, latest: Option<&str>) -> String {
     const ARCHIVE: &str = "proofline-x86_64-pc-windows-msvc.tar.gz";
     let download = latest.map_or_else(
         || {
+            // No newer version is known, so this may already be the newest one.
             format!(
-                "{ARCHIVE} and SHA256SUMS from https://github.com/prooflinedev/cli/releases/latest"
+                "{ARCHIVE} and SHA256SUMS from https://github.com/prooflinedev/cli/releases/latest \
+                 (stop if that release is not newer than this proofline {})",
+                env!("CARGO_PKG_VERSION")
             )
         },
         |version| {
@@ -180,8 +183,9 @@ fn windows_steps(executable: Option<&Path>, latest: Option<&str>) -> String {
          1. Close every running Proofline process.\n  \
          2. Download {download}\n  \
          3. Run 'Get-FileHash -Algorithm SHA256 {ARCHIVE}' and check that the hash matches the archive's line in SHA256SUMS.\n  \
-         4. Extract it into a new folder: 'mkdir proofline-new; tar -xzf {ARCHIVE} -C proofline-new'.\n  \
-         5. Only if that succeeded, replace {executable} with proofline-new\\proofline.exe."
+         4. Create an empty folder with 'mkdir proofline-new' (choose another name if it already exists).\n  \
+         5. Extract into it with 'tar -xzf {ARCHIVE} -C proofline-new'.\n  \
+         6. Only if that succeeded, replace {executable} with proofline-new\\proofline.exe."
     )
 }
 

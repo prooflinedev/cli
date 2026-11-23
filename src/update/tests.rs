@@ -225,7 +225,8 @@ fn windows_notices_point_to_the_manual_steps() {
         "https://proofline.sh/cli/download/9.0.0/proofline-x86_64-pc-windows-msvc.tar.gz",
         "https://proofline.sh/cli/download/9.0.0/SHA256SUMS",
         "Get-FileHash -Algorithm SHA256 proofline-x86_64-pc-windows-msvc.tar.gz",
-        "mkdir proofline-new; tar -xzf proofline-x86_64-pc-windows-msvc.tar.gz -C proofline-new",
+        "mkdir proofline-new",
+        "tar -xzf proofline-x86_64-pc-windows-msvc.tar.gz -C proofline-new",
         r"replace C:\tools\proofline.exe with proofline-new\proofline.exe",
     ] {
         assert!(
@@ -237,6 +238,7 @@ fn windows_notices_point_to_the_manual_steps() {
     for expected in [
         "from https://github.com/prooflinedev/cli/releases/latest",
         "(Get-Command proofline).Source",
+        concat!("not newer than this proofline ", env!("CARGO_PKG_VERSION")),
     ] {
         assert!(
             unknown.contains(expected),
@@ -344,7 +346,7 @@ async fn detached_discovery_is_serialized_and_notices_arrive_on_the_next_invocat
         assert!(
             !String::from_utf8(output.stdout)
                 .unwrap()
-                .contains("proofline 9.0.0 is available;")
+                .contains(" is available;")
         );
     }
     tokio::time::timeout(Duration::from_secs(5), async {
