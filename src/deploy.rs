@@ -15,7 +15,7 @@ use crate::github_actions::ProducingRun;
 use crate::model::{CommitDeploy, CommitDeployRollback, RollbackDeploy};
 use crate::{
     FIRST_POLL_SECONDS, LONGEST_POLL_SECONDS, RepositoryArgs, Verdict, connected_repository,
-    poll_deadline, say, text,
+    poll_deadline, polled, say, text,
 };
 
 const SAME_RUN: &str = "Proofline records the landing of a run's deploy only after the run completes. Read it from a separate workflow: https://proofline.sh/docs/ci/#read-the-checks-from-a-separate-workflow";
@@ -263,9 +263,10 @@ pub(crate) async fn wait(
     let checkpoint = args.until.api_name();
     let mut delay = FIRST_POLL_SECONDS;
     loop {
-        let (raw, read) = api
-            .commit_deploy_verifications(repository_id, commit)
-            .await?;
+        let read = api.commit_deploy_verifications(repository_id, commit).await;
+        let Some((raw, read)) = polled(read, Some(deadline), &mut delay).await? else {
+            continue;
+        };
         let selected: Vec<&CommitDeploy> = read
             .deploys
             .iter()
@@ -914,6 +915,51 @@ mod tests {
             let error = verdict.unwrap_err();
             assert_eq!(unavailable(&error), exit_four, "{status}: {error:#}");
         }
+    }
+
+    /// A read that fails on Proofline's side mid-wait is read again at the
+    /// next poll, so one bad gateway does not end an hour-long deploy wait.
+    /// A refusal still ends it at once.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_read_is_read_again_and_a_refusal_ends_the_wait() {
+        let waiting = recorded(&[deploy("deploy", &[1], &[], &[])]);
+        let landed = recorded(&[deploy("deploy", &[1], &["HEALTHY"], &[])]);
+        for status in [500, 502, 503, 504, 429] {
+            let failed = (status, json!({ "detail": "unavailable" }));
+            let (verdict, reads, _) = run(
+                None,
+                &["--until", "landing", "--timeout", "30"],
+                vec![waiting.clone(), failed, landed.clone()],
+            )
+            .await;
+            assert_eq!(verdict.unwrap(), Verdict::Done, "{status}");
+            assert_eq!(reads, 3, "{status}");
+        }
+        let refused = (403, json!({ "detail": "no" }));
+        let (verdict, reads, _) = run(
+            None,
+            &["--until", "landing", "--timeout", "30"],
+            vec![waiting, refused, landed],
+        )
+        .await;
+        assert!(!unavailable(&verdict.unwrap_err()));
+        assert_eq!(reads, 2);
+    }
+
+    /// A console that keeps failing ends the wait at `--timeout` as
+    /// unavailable, not after its first failure and not long past the deadline.
+    #[tokio::test(start_paused = true)]
+    async fn a_console_that_keeps_failing_ends_the_wait_at_the_timeout() {
+        let (verdict, reads, took) = run(
+            None,
+            &["--until", "landing", "--timeout", "5"],
+            vec![(502, json!({ "detail": "bad gateway" }))],
+        )
+        .await;
+        assert!(unavailable(&verdict.unwrap_err()));
+        assert!(reads > 2, "{reads}");
+        assert!(took >= Duration::from_secs(300), "{took:?}");
+        assert!(took < Duration::from_secs(360), "{took:?}");
     }
 
     /// The wait reads until the named check is recorded, and a check or a
