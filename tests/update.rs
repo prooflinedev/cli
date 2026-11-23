@@ -62,7 +62,38 @@ fn windows_update_explains_the_manual_steps() {
     std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
     std::fs::copy(env!("CARGO_BIN_EXE_proofline"), &installed).unwrap();
     let before = std::fs::read(&installed).unwrap();
-    for home in [None, Some(directory.path())] {
+    let cache = directory.path().join("proofline").join("update.json");
+    std::fs::create_dir_all(cache.parent().unwrap()).unwrap();
+    let checked = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    // Without a cached newer version the steps name the GitHub page; with
+    // one they pin the downloads to the version the notice announced.
+    for (home, cached, download) in [
+        (
+            None,
+            false,
+            "https://github.com/prooflinedev/cli/releases/latest",
+        ),
+        (
+            Some(directory.path()),
+            false,
+            "https://github.com/prooflinedev/cli/releases/latest",
+        ),
+        (
+            None,
+            true,
+            "https://proofline.sh/cli/download/9.0.0/proofline-x86_64-pc-windows-msvc.tar.gz",
+        ),
+    ] {
+        if cached {
+            std::fs::write(
+                &cache,
+                format!("{{\"checked\":{checked},\"latest\":\"9.0.0\"}}"),
+            )
+            .unwrap();
+        }
         let mut command = Command::new(&installed);
         command
             .arg("update")
@@ -78,10 +109,11 @@ fn windows_update_explains_the_manual_steps() {
         assert!(update.stdout.is_empty());
         let stderr = String::from_utf8(update.stderr).unwrap();
         for expected in [
-            "https://github.com/prooflinedev/cli/releases/latest",
+            download,
             "proofline-x86_64-pc-windows-msvc.tar.gz",
             "SHA256SUMS",
             "Get-FileHash -Algorithm SHA256",
+            "-C proofline-new",
             &installed.display().to_string(),
         ] {
             assert!(
@@ -89,7 +121,10 @@ fn windows_update_explains_the_manual_steps() {
                 "{expected:?} missing from {stderr}"
             );
         }
-        assert!(!stderr.contains("HOME"), "{stderr}");
+        assert!(
+            !stderr.contains("set HOME or PROOFLINE_INSTALL_DIR"),
+            "{stderr}"
+        );
         assert!(
             !stderr.contains("outside the installer directory"),
             "{stderr}"

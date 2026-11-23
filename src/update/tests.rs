@@ -210,22 +210,39 @@ fn windows_notices_point_to_the_manual_steps() {
         windows.contains("'proofline update' shows how"),
         "{windows}"
     );
-    let steps = windows_steps(Some(Path::new(r"C:\tools\proofline.exe")));
+    // `suggestion` itself must pick the wording of the platform it runs on.
+    let cache = Cache {
+        checked: now(),
+        latest: Some("9.0.0".to_owned()),
+    };
+    assert_eq!(
+        suggestion(&cache, &["status".into()], true).unwrap(),
+        notice("9.0.0", cfg!(target_os = "windows"))
+    );
+    let steps = windows_steps(Some(Path::new(r"C:\tools\proofline.exe")), Some("9.0.0"));
     for expected in [
         "Close every running Proofline process",
-        "https://github.com/prooflinedev/cli/releases/latest",
-        "proofline-x86_64-pc-windows-msvc.tar.gz",
-        "SHA256SUMS",
-        "Get-FileHash -Algorithm SHA256",
-        "tar -xzf",
-        r"C:\tools\proofline.exe",
+        "https://proofline.sh/cli/download/9.0.0/proofline-x86_64-pc-windows-msvc.tar.gz",
+        "https://proofline.sh/cli/download/9.0.0/SHA256SUMS",
+        "Get-FileHash -Algorithm SHA256 proofline-x86_64-pc-windows-msvc.tar.gz",
+        "mkdir proofline-new; tar -xzf proofline-x86_64-pc-windows-msvc.tar.gz -C proofline-new",
+        r"replace C:\tools\proofline.exe with proofline-new\proofline.exe",
     ] {
         assert!(
             steps.contains(expected),
             "{expected:?} missing from {steps}"
         );
     }
-    assert!(windows_steps(None).contains("proofline.exe"));
+    let unknown = windows_steps(None, None);
+    for expected in [
+        "from https://github.com/prooflinedev/cli/releases/latest",
+        "(Get-Command proofline).Source",
+    ] {
+        assert!(
+            unknown.contains(expected),
+            "{expected:?} missing from {unknown}"
+        );
+    }
 }
 
 // This same test executable supplies a real child fixture. All endpoint and
@@ -327,7 +344,7 @@ async fn detached_discovery_is_serialized_and_notices_arrive_on_the_next_invocat
         assert!(
             !String::from_utf8(output.stdout)
                 .unwrap()
-                .contains("run 'proofline update'")
+                .contains("proofline 9.0.0 is available;")
         );
     }
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -355,7 +372,7 @@ async fn detached_discovery_is_serialized_and_notices_arrive_on_the_next_invocat
     assert!(
         String::from_utf8(output.stdout)
             .unwrap()
-            .contains("run 'proofline update'")
+            .contains(&notice("9.0.0", cfg!(target_os = "windows")))
     );
     assert_eq!(received.load(Ordering::SeqCst), 1);
     server.abort();
