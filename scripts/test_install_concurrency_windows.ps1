@@ -26,14 +26,21 @@ if ($Mode -eq 'Hold') {
     if ([string]::IsNullOrWhiteSpace($CaseDir)) { throw 'Holder needs CaseDir.' }
     $folder = [IO.Path]::GetFullPath($CaseDir)
     $marker = Join-Path $folder '.proofline-test-only'
-    if ($HoldToken -cnotmatch '\A[0-9a-f]{32}\z' -or
-        -not [IO.File]::Exists($marker) -or
-        [IO.File]::ReadAllText($marker) -cne "DISPOSABLE_LOCK_TEST:$HoldToken") {
-        throw 'Refusing to hold lock without fresh matching test token.'
+    if ($HoldToken -cnotmatch '\A[0-9a-f]{32}\z') {
+        throw 'Refusing to hold lock without a valid test token.'
     }
-    # Consume the unique challenge before opening the lock. A retained marker
-    # cannot authorize another unrelated invocation later.
-    [IO.File]::Delete($marker)
+    # The rename is an atomic, exclusive claim: only one competing holder
+    # can move this single-use marker. Validate after claiming it.
+    $claimed = Join-Path $folder ('.proofline-test-claimed-' + $HoldToken)
+    if ([IO.File]::Exists($claimed)) { throw 'Test marker was already claimed.' }
+    try { [IO.File]::Move($marker, $claimed) }
+    catch { throw 'Refusing to hold lock: fresh disposable test marker is unavailable or already claimed.' }
+    try {
+        if ([IO.File]::ReadAllText($claimed) -cne "DISPOSABLE_LOCK_TEST:$HoldToken") {
+            throw 'Refusing to hold lock: claimed marker has unexpected contents.'
+        }
+    }
+    finally { [IO.File]::Delete($claimed) }
     $lock = Join-Path $folder '.proofline-install.lock'
     $ready = Join-Path $folder '.holder-ready'
     $release = Join-Path $folder '.holder-release'

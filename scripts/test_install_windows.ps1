@@ -84,6 +84,18 @@ try {
             else { Must-Throw { Get-ProoflineTarExecutable $archive } }
         }
     }
+    Test-Case 'invalid PE signature is rejected at a valid offset' {
+        $badSignature = Bytes 'bad-pe-signature.tar.gz'
+        $specificRejection = $false
+        try { [void](Get-ProoflineTarExecutable $badSignature) }
+        catch {
+            if ($_.Exception.Message -notlike '*no valid PE signature*') {
+                throw "Invalid PE signature rejected for wrong reason: $($_.Exception.Message)"
+            }
+            $specificRejection = $true
+        }
+        if (-not $specificRejection) { throw 'Corrupt PE signature was accepted.' }
+    }
     Test-Case 'checksum rejects modified archive bytes' {
         $modified = Bytes 'bad-digest.tar.gz'
         Must-Throw { Assert-ProoflineChecksum $modified $sums }
@@ -93,6 +105,20 @@ try {
         Must-Throw { Assert-ProoflineVersion '../1.2.3' }
         Must-Throw { Assert-ProoflineVersion '01.2.3' }
         Must-Throw { Assert-ProoflineVersion '1.2.3-rc1' }
+    }
+    Test-Case 'literal REG_SZ PATH tokens are not expanded during duplicate detection' {
+        $variable = 'PROOFLINE_DUPLICATE_KIND_TEST'
+        $previous = [Environment]::GetEnvironmentVariable($variable, 'Process')
+        $directory = 'C:\ProoflineTest\bin'
+        [Environment]::SetEnvironmentVariable($variable, 'C:\ProoflineTest', 'Process')
+        try {
+            $token = '%' + $variable + '%\bin'
+            $literal = Get-ProoflineUpdatedUserPath $token $directory ([Microsoft.Win32.RegistryValueKind]::String)
+            if ($literal -cne ($token + ';' + $directory)) { throw 'REG_SZ token incorrectly treated as expanded directory.' }
+            $expanded = Get-ProoflineUpdatedUserPath $token $directory ([Microsoft.Win32.RegistryValueKind]::ExpandString)
+            if ($null -ne $expanded) { throw 'REG_EXPAND_SZ duplicate token was not recognized.' }
+        }
+        finally { [Environment]::SetEnvironmentVariable($variable, $previous, 'Process') }
     }
     Test-Case 'PATH change is idempotent' {
         $directory = 'C:\Users\tester\AppData\Local\Programs\Proofline\bin'

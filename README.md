@@ -18,7 +18,7 @@ On **Windows x64**, run the PowerShell installer from a checked-out copy of this
 powershell.exe -NoProfile -File .\install.ps1
 ```
 
-It downloads the official release and `SHA256SUMS` from `https://proofline.sh`, validates the archive, verifies `proofline.exe --version`, and installs for the **current user** in `%LOCALAPPDATA%\Programs\Proofline\bin` without administrator rights. By default it appends that directory to the user PATH while preserving expandable registry entries. Open a new terminal and run `Get-Command proofline -All` to check which executable has precedence. If an older copy is found first, run the new executable using its absolute path (for example, `& "$env:LOCALAPPDATA\Programs\Proofline\bin\proofline.exe" login`) or correct the stale PATH entry. The installer does not handle login or credentials.
+It downloads the official release and `SHA256SUMS` from `https://proofline.sh`, validates the archive, verifies `proofline.exe --version`, and installs for the **current user** in `%LOCALAPPDATA%\Programs\Proofline\bin` without administrator rights. By default it attempts to append that directory to the user PATH while preserving expandable registry entries; this is best-effort and may warn if registry permissions or concurrent changes prevent an update. If warned, open **Windows Environment Variables → User variables → Path → Edit → New** and add `%LOCALAPPDATA%\Programs\Proofline\bin` manually (or your custom `-InstallDir`). Open a new terminal and run `Get-Command proofline -All` to check which executable has precedence. If an older copy is found first, run the new executable using its absolute path (for example, `& "$env:LOCALAPPDATA\Programs\Proofline\bin\proofline.exe" login`) or correct the stale PATH entry. The installer does not handle login or credentials.
 
 To pin a version or install in a disposable folder without updating PATH:
 
@@ -44,7 +44,7 @@ powershell.exe -NoProfile -File .\scripts\test_install_upgrade_real_windows.ps1
 powershell.exe -NoProfile -File .\scripts\test_install_interruption_real_windows.ps1
 ```
 
-Run the same commands with `pwsh.exe` to verify PowerShell 7. The interruption test additionally covers hard termination during partially written stages. The last two tests download pinned official releases; all test installations use disposable paths and do not modify User PATH. The separate `scripts/test_install_user_path_ci_windows.ps1` test intentionally runs **only on GitHub Actions Windows runners**, where it verifies registry persistence and restores the original User PATH value.
+Run the same commands with `pwsh.exe` to verify PowerShell 7. The interruption test covers 12 hard-termination checkpoints, including checkpoints before receipt publication. The last two tests download pinned official releases; their installations use disposable directories and do not modify User PATH. The separate `scripts/test_install_user_path_ci_windows.ps1` test intentionally runs **only on disposable GitHub-hosted Windows runners** in its own isolated CI job, where it exercises the default PATH update and restores the prior raw registry value in `finally`.
 
 On Linux, coding agents that omit `DBUS_SESSION_BUS_ADDRESS` and `XDG_RUNTIME_DIR`
 can still use the stored sign-in when the standard `/run/user/<uid>/bus` socket

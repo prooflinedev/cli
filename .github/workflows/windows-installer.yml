@@ -48,13 +48,6 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw "$script failed with exit code $LASTEXITCODE" }
           }
 
-      - name: Verify User PATH persistence on disposable CI runner
-        shell: pwsh
-        env:
-          TEST_ENGINE: ${{ matrix.engine }}
-        run: |
-          & $env:TEST_ENGINE -NoProfile -NonInteractive -File scripts/test_install_user_path_ci_windows.ps1
-          if ($LASTEXITCODE -ne 0) { throw "User PATH persistence test failed: $LASTEXITCODE" }
 
   real-release-integration:
     name: Real Windows install and interruption recovery (${{ matrix.engine }})
@@ -84,3 +77,26 @@ jobs:
         run: |
           & $env:TEST_ENGINE -NoProfile -NonInteractive -File scripts/test_install_interruption_real_windows.ps1
           if ($LASTEXITCODE -ne 0) { throw "Real interruption recovery failed: $LASTEXITCODE" }
+
+  isolated-user-path:
+    name: Default installer PATH persistence (${{ matrix.engine }})
+    # A separate GitHub-hosted VM provides a disposable Windows user profile.
+    # No other job or test in this workflow shares its HKCU registry hive.
+    runs-on: windows-2025
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: ['powershell.exe', 'pwsh.exe']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check full installer default user PATH integration in isolated profile
+        shell: pwsh
+        env:
+          TEST_ENGINE: ${{ matrix.engine }}
+        run: |
+          & $env:TEST_ENGINE -NoProfile -NonInteractive -File scripts/test_install_user_path_ci_windows.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Isolated installer PATH test failed: $LASTEXITCODE" }

@@ -26,12 +26,54 @@ $bin = Join-Path $root 'bin'
 $oldUserPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 $script:TestEngine = (Get-Process -Id $PID).Path  # Test whichever PowerShell edition invoked this script.
 $passed = $false
+# Stable official Windows x64 executable digests recorded from previously
+# checksum-validated real-release integration runs. These are intentionally
+# independent of the installer receipt and newly downloaded manifest.
+$script:TrustedReleaseDigests = @{
+    '0.5.1' = '442D14583870A4E44291BD0AD118DFC536AA9D1096FA6E669BCD01B29BCEF379'
+    '0.5.2' = '7B93F8FE807AAB90133FF19908921079E5A91A51A705118BC3063DC74BD9CCB5'
+}
+
+function Invoke-TestChild([string]$FileName, [string]$Arguments, [string]$Purpose, [int]$TimeoutMs) {
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $FileName
+    $start.Arguments = $Arguments
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $child = [Diagnostics.Process]::new()
+    $child.StartInfo = $start
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        if (-not $child.Start()) { throw "Could not start $Purpose." }
+        $stdout = $child.StandardOutput.ReadToEndAsync()
+        $stderr = $child.StandardError.ReadToEndAsync()
+        if (-not $child.WaitForExit($TimeoutMs)) {
+            try { $child.Kill() } catch { }
+            [void]$child.WaitForExit(5000)
+            throw "$Purpose exceeded its $TimeoutMs ms process deadline."
+        }
+        $remaining = [int][Math]::Max(0, $TimeoutMs - $clock.ElapsedMilliseconds)
+        if (-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($stdout, $stderr), $remaining)) {
+            throw "$Purpose exited but its redirected output streams did not close before the deadline."
+        }
+        return [pscustomobject]@{
+            ExitCode = $child.ExitCode
+            Output = $stdout.GetAwaiter().GetResult()
+            ErrorOutput = $stderr.GetAwaiter().GetResult()
+        }
+    }
+    finally { $child.Dispose() }
+}
 
 function Install-Release([string]$Version) {
     Write-Host "Installing official Proofline $Version..."
-    & $script:TestEngine -NoProfile -NonInteractive -File $installer -Version $Version -InstallDir $bin -NoModifyPath
-    if ($LASTEXITCODE -ne 0) {
-        throw "Installer $Version exited with code $LASTEXITCODE."
+    $args = '-NoProfile -NonInteractive -File "' + $installer + '" -Version ' + $Version +
+        ' -InstallDir "' + $bin + '" -NoModifyPath'
+    $result = Invoke-TestChild $script:TestEngine $args "Installer $Version" 120000
+    if ($result.ExitCode -ne 0) {
+        throw "Installer $Version exited $($result.ExitCode); stdout: $($result.Output); stderr: $($result.ErrorOutput)"
     }
 }
 function Check-Release([string]$Version) {
@@ -42,6 +84,9 @@ function Check-Release([string]$Version) {
         throw "Managed installation missing executable or receipt for $Version."
     }
     $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
+    if ($hash -cne $script:TrustedReleaseDigests[$Version]) {
+        throw "Installed $Version executable does not match the pinned official release digest."
+    }
     $receiptHash = (Get-FileHash -LiteralPath $receipt -Algorithm SHA256).Hash
     $record = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($receipt))
     if ($record.schema -ne 1 -or $record.version -cne $Version -or $record.sha256 -cne $hash) {
@@ -56,32 +101,12 @@ function Check-Release([string]$Version) {
     if ($debris.Count -ne 0) {
         throw "Unexpected staged or recovery artifacts remain after $Version."
     }
-    # Always bound real executable execution, including stalled version probes.
-    $start = [Diagnostics.ProcessStartInfo]::new()
-    $start.FileName = $exe
-    $start.Arguments = '--version'
-    $start.UseShellExecute = $false
-    $start.CreateNoWindow = $true
-    $start.RedirectStandardOutput = $true
-    $start.RedirectStandardError = $true
-    $child = [Diagnostics.Process]::new()
-    $child.StartInfo = $start
-    try {
-        if (-not $child.Start()) { throw "Could not launch official Proofline $Version." }
-        $outTask = $child.StandardOutput.ReadToEndAsync()
-        $errTask = $child.StandardError.ReadToEndAsync()
-        if (-not $child.WaitForExit(15000)) {
-            try { $child.Kill() } catch { }
-            [void]$child.WaitForExit(5000)
-            throw "Executable version check timed out for $Version after 15 seconds."
-        }
-        $output = $outTask.GetAwaiter().GetResult().Trim()
-        $errors = $errTask.GetAwaiter().GetResult().Trim()
-        if ($child.ExitCode -ne 0 -or $output -cne "proofline $Version" -or $errors -ne '') {
-            throw "Executable version check failed for $Version (exit $($child.ExitCode), output '$output', stderr '$errors')."
-        }
+    # Apply one deadline to process exit AND both redirected output reads.
+    $probe = Invoke-TestChild $exe '--version' "Version check $Version" 15000
+    if ($probe.ExitCode -ne 0 -or $probe.Output.Trim() -cne "proofline $Version" -or
+        $probe.ErrorOutput.Trim() -ne '') {
+        throw "Executable version check failed for $Version (exit $($probe.ExitCode), output '$($probe.Output)', stderr '$($probe.ErrorOutput)')."
     }
-    finally { $child.Dispose() }
     return [pscustomobject]@{
         BinarySha256 = $hash
         ReceiptSha256 = $receiptHash

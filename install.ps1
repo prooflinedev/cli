@@ -268,12 +268,18 @@ function Assert-ProoflineNoReparse([string]$Path) {
     }
 }
 
-function Get-ProoflineUpdatedUserPath([string]$Current, [string]$Directory) {
+function Get-ProoflineUpdatedUserPath(
+    [string]$Current, [string]$Directory,
+    [Microsoft.Win32.RegistryValueKind]$Kind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+) {
     if ($null -eq $Current) { $Current = '' }
     $normalized = $Directory.TrimEnd([char[]]@('\', '/'))
     foreach ($entry in ($Current -split ';')) {
-        $expanded = [Environment]::ExpandEnvironmentVariables($entry.Trim())
-        if ($expanded.TrimEnd([char[]]@('\', '/')) -ieq $normalized) {
+        $candidate = $entry.Trim()
+        if ($Kind -eq [Microsoft.Win32.RegistryValueKind]::ExpandString) {
+            $candidate = [Environment]::ExpandEnvironmentVariables($candidate)
+        }
+        if ($candidate.TrimEnd([char[]]@('\', '/')) -ieq $normalized) {
             return $null # already present; no registry write needed
         }
     }
@@ -329,7 +335,7 @@ public static class ProoflineEnvironmentNotifier {
 
 function Add-ProoflineUserPath([string]$Directory) {
     $previous = Get-ProoflineUserPathRecord
-    $result = Get-ProoflineUpdatedUserPath $previous.value $Directory
+    $result = Get-ProoflineUpdatedUserPath $previous.value $Directory $previous.kind
     if ($null -eq $result) {
         Write-Host 'User PATH already contains the Proofline directory.'
         return
@@ -368,9 +374,19 @@ function Get-ProoflineSha256([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
 }
 
+function Assert-ProoflineVersionResult(
+    [int]$ExitCode, [string]$Stdout, [string]$Stderr, [string]$Version
+) {
+    $actual = $Stdout.Trim()
+    $errors = $Stderr.Trim()
+    if ($ExitCode -ne 0 -or $actual -cne "proofline $Version" -or $errors -ne '') {
+        throw "Executable version check failed (expected 'proofline $Version', exit $ExitCode, got '$actual' '$errors')."
+    }
+}
+
 function Assert-ProoflineExeVersion([string]$Path, [string]$Version) {
-    # Run only a checksum-verified release, never a raw unverified download.
-    # Process isolation and timeout avoid hanging this installer indefinitely.
+    # Run only checksum-verified images; bound both process termination
+    # and redirected output collection so descendants cannot hang the check.
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $Path
     $startInfo.Arguments = '--version'
@@ -380,17 +396,21 @@ function Assert-ProoflineExeVersion([string]$Path, [string]$Version) {
     $startInfo.RedirectStandardError = $true
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = $startInfo
+    $clock = [Diagnostics.Stopwatch]::StartNew()
     try {
         if (-not $process.Start()) { throw 'Candidate executable did not start.' }
+        $outTask = $process.StandardOutput.ReadToEndAsync()
+        $errTask = $process.StandardError.ReadToEndAsync()
         if (-not $process.WaitForExit(15000)) {
             try { $process.Kill() } catch { }
+            [void]$process.WaitForExit(5000)
             throw 'Candidate executable did not exit within 15 seconds.'
         }
-        $actual = $process.StandardOutput.ReadToEnd().Trim()
-        $stderr = $process.StandardError.ReadToEnd().Trim()
-        if ($process.ExitCode -ne 0 -or $actual -cne "proofline $Version" -or $stderr -ne '') {
-            throw "Executable version check failed (expected 'proofline $Version', exit $($process.ExitCode), got '$actual' '$stderr')."
+        $remaining = [int][Math]::Max(0, 15000 - $clock.ElapsedMilliseconds)
+        if (-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($outTask, $errTask), $remaining)) {
+            throw 'Candidate version check exited but output streams remained open beyond 15 seconds.'
         }
+        Assert-ProoflineVersionResult $process.ExitCode ($outTask.GetAwaiter().GetResult()) ($errTask.GetAwaiter().GetResult()) $Version
     }
     finally { $process.Dispose() }
 }
@@ -530,8 +550,9 @@ function Set-ProoflinePendingPostcheck([string]$Pending, [ValidateSet('checking'
     }
     $record | Add-Member -NotePropertyName postcheck -NotePropertyValue $State -Force
     $temporary = $Pending + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
-    $backup = $Pending + '.' + [guid]::NewGuid().ToString('N') + '.bak'
+    $backup = $Pending + '.postcheck.bak'
     foreach ($path in @($Pending, $temporary, $backup)) { Assert-ProoflineNoReparse $path }
+    if ([IO.File]::Exists($backup)) { throw 'A previous postcheck journal backup needs recovery before another update.' }
     $verified = $false
     try {
         $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew,
@@ -560,6 +581,28 @@ function Set-ProoflinePendingPostcheck([string]$Pending, [ValidateSet('checking'
             catch { Write-Warning "Previous postcheck journal copy remains at $backup" }
         }
     }
+}
+
+function Restore-ProoflinePendingBackup([string]$Pending) {
+    # Caller holds the installer lock. File.Replace may have moved the only
+    # readable journal into its backup when the process was interrupted.
+    $backup = $Pending + '.postcheck.bak'
+    foreach ($path in @($Pending, $backup)) { Assert-ProoflineNoReparse $path }
+    if (-not [IO.File]::Exists($backup)) { return }
+    if ([IO.File]::Exists($Pending)) {
+        [void](Read-ProoflinePending $Pending)
+        [IO.File]::Delete($backup)
+    }
+    else {
+        [void](Read-ProoflinePending $backup)
+        [IO.File]::Move($backup, $Pending)
+    }
+}
+
+function Clear-ProoflineJournalBackup([string]$Pending) {
+    $backup = $Pending + '.postcheck.bak'
+    Assert-ProoflineNoReparse $backup
+    if ([IO.File]::Exists($backup)) { [IO.File]::Delete($backup) }
 }
 
 function Get-ProoflineTransactionPaths([string]$Directory, [string]$Id) {
@@ -599,6 +642,7 @@ function Clear-ProoflineUpgradeFiles(
     foreach ($key in @('old', 'api', 'stage')) {
         if ([IO.File]::Exists($Paths[$key])) { [IO.File]::Delete($Paths[$key]) }
     }
+    Clear-ProoflineJournalBackup $Pending
     [IO.File]::Delete($Pending) # delete journal LAST
 }
 
@@ -607,6 +651,7 @@ function Recover-ProoflinePending([string]$Directory) {
     $destination = [IO.Path]::Combine($Directory, 'proofline.exe')
     $receipt = [IO.Path]::Combine($Directory, '.proofline-install.receipt.json')
     $pending = [IO.Path]::Combine($Directory, '.proofline-install.pending.json')
+    Restore-ProoflinePendingBackup $pending
     $record = Read-ProoflinePending $pending
     if ($null -eq $record) { return }
     foreach ($path in @($destination, $receipt, $pending)) {
@@ -641,6 +686,7 @@ function Recover-ProoflinePending([string]$Directory) {
                 }
                 else { [IO.File]::Delete($stage) }
             }
+            Clear-ProoflineJournalBackup $pending
             [IO.File]::Delete($pending)
             return
         }
@@ -673,6 +719,7 @@ function Recover-ProoflinePending([string]$Directory) {
             if ([IO.File]::Exists($evidence)) { throw 'First-install quarantine path exists; preserving recovery journal.' }
             [IO.File]::Move($destination, $evidence)
             if ($null -ne $stage -and [IO.File]::Exists($stage)) { [IO.File]::Delete($stage) }
+            Clear-ProoflineJournalBackup $pending
             [IO.File]::Delete($pending)
             Write-Warning "Unverified first-install executable quarantined at $evidence; retry installation."
             return
@@ -684,6 +731,7 @@ function Recover-ProoflinePending([string]$Directory) {
         if ($null -ne $stage -and [IO.File]::Exists($stage)) {
             [IO.File]::Delete($stage)
         }
+        Clear-ProoflineJournalBackup $pending
         [IO.File]::Delete($pending)
         Write-Host 'Recovered verified first installation.'
         return
@@ -700,24 +748,29 @@ function Recover-ProoflinePending([string]$Directory) {
     $postcheck = $record.PSObject.Properties['postcheck']
     $postcheckVerified = ($null -ne $postcheck -and $postcheck.Value -ceq 'passed')
     if ($activeHash -ceq $record.newSha256 -and $postcheckVerified) {
-        $finalized = $false
+        # A passed postcheck is a commit decision. If receipt replacement is
+        # blocked, retain the new executable and journal; NEVER fall through
+        # to the old-version rollback path.
         try {
-            # A local journal hash is not sufficient authority to execute
-            # an existing image. Validate bytes and write the matching receipt.
-            Write-ProoflineReceipt $receipt $record.newVersion $record.newSha256
-            $finalized = $true
+            if ([IO.File]::Exists($receipt)) {
+                $current = Read-ProoflineReceipt $receipt
+                if ($current.version -cne $record.newVersion -or
+                    $current.sha256 -cne $record.newSha256) {
+                    Write-ProoflineReceipt $receipt $record.newVersion $record.newSha256
+                }
+            }
+            else { Write-ProoflineReceipt $receipt $record.newVersion $record.newSha256 }
+            Assert-ProoflineRecord $receipt $record.newVersion $record.newSha256
         }
         catch {
-            Write-Warning "New executable is present but cannot be finalized: $($_.Exception.Message)"
+            throw "Postcheck passed but the receipt cannot be finalized; new executable and journal retained: $($_.Exception.Message)"
         }
-        if ($finalized) {
-            # Cleaning old files is not part of the successful version switch.
-            # Preserve the new executable and journal if cleanup must be retried.
-            try { Clear-ProoflineUpgradeFiles $paths $pending $record.newSha256 }
-            catch { Write-Warning "Upgrade finalized; cleanup will be retried: $($_.Exception.Message)" }
-            Write-Host "Finalized interrupted Proofline $($record.newVersion) upgrade."
-            return
-        }
+        # A matching receipt may already be open with deny-delete sharing:
+        # do not attempt to replace it again merely to retry cleanup.
+        try { Clear-ProoflineUpgradeFiles $paths $pending $record.newSha256 }
+        catch { Write-Warning "Upgrade finalized; cleanup will be retried: $($_.Exception.Message)" }
+        Write-Host "Finalized interrupted Proofline $($record.newVersion) upgrade."
+        return
     }
 
     if ($activeHash -ceq $record.oldSha256) {
@@ -783,7 +836,8 @@ function Invoke-ProoflinePendingRepair([string]$Directory) {
     Assert-ProoflinePathTree $directory
     if (-not [IO.Directory]::Exists($directory)) { return }
     $pending = [IO.Path]::Combine($directory, '.proofline-install.pending.json')
-    if (-not [IO.File]::Exists($pending)) { return }
+    if (-not [IO.File]::Exists($pending) -and
+        -not [IO.File]::Exists($pending + '.postcheck.bak')) { return }
     $lock = [IO.Path]::Combine($directory, '.proofline-install.lock')
     Assert-ProoflineNoReparse $lock
     $handle = [IO.File]::Open($lock, [IO.FileMode]::OpenOrCreate,
@@ -875,7 +929,7 @@ function Install-ProoflineArchive(
     catch { throw "Another installer may be running, or the lock file is unavailable: $($_.Exception.Message)" }
     try {
         # Handle a concurrent previous installer that stopped during download.
-        if ([IO.File]::Exists($pending)) {
+        if ([IO.File]::Exists($pending) -or [IO.File]::Exists($pending + '.postcheck.bak')) {
             Recover-ProoflinePending $directory
         }
         $hasDestination = [IO.File]::Exists($destination)
@@ -893,7 +947,7 @@ function Install-ProoflineArchive(
             # receipt contains a matching hash. Only verified downloads run.
             if ($oldReceipt.version -ceq $ReleaseVersion -and
                 $oldReceipt.sha256 -ceq $hash) {
-                Write-Host "Proofline $ReleaseVersion is already installed; nothing was changed."
+                Write-Host "Proofline $ReleaseVersion executable and receipt already match; PATH handling still follows this invocation's options."
                 return $destination
             }
         }
@@ -940,11 +994,20 @@ function Install-ProoflineArchive(
                 if ((Get-ProoflineSha256 $destination) -cne $hash) {
                     throw 'Installed executable digest differs after relocation.'
                 }
-                Assert-ProoflineExeVersion $destination $ReleaseVersion
-                Set-ProoflinePendingPostcheck $pending 'passed'
-                Write-ProoflineReceipt $receipt $ReleaseVersion $hash
-                [IO.File]::Delete($pending)
-                return $destination
+                try {
+                    Assert-ProoflineExeVersion $destination $ReleaseVersion
+                    Set-ProoflinePendingPostcheck $pending 'passed'
+                    Write-ProoflineReceipt $receipt $ReleaseVersion $hash
+                    Clear-ProoflineJournalBackup $pending
+                    [IO.File]::Delete($pending)
+                    return $destination
+                }
+                catch {
+                    $originalError = $_.Exception.Message
+                    try { Recover-ProoflinePending $directory }
+                    catch { throw "First-install validation failed ($originalError); recovery failed: $($_.Exception.Message)" }
+                    throw "First installation failed ($originalError); recovery completed or retained evidence."
+                }
             }
 
             # Upgrade: independently preserve the previous verified executable.

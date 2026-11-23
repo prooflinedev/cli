@@ -15,8 +15,10 @@ $ErrorActionPreference = 'Stop'
 if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
     throw 'Windows CI runner required.'
 }
-if ($env:GITHUB_ACTIONS -cne 'true' -or [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
-    throw 'Refusing PATH registry test outside GitHub Actions Windows runner.'
+if ($env:GITHUB_ACTIONS -cne 'true' -or
+    $env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or
+    [string]::IsNullOrWhiteSpace($env:RUNNER_TEMP)) {
+    throw 'Refusing PATH mutation outside a disposable GitHub-hosted Windows runner profile.'
 }
 
 function Get-RawUserPath {
@@ -45,6 +47,8 @@ if ($Mode -eq 'ReadUserPath') {
 $original = Get-RawUserPath
 $directory = Join-Path $env:RUNNER_TEMP ('proofline-path-ci-' + [guid]::NewGuid().ToString('N'))
 $token = '%PROOFLINE_CI_TEST_ROOT%\bin'
+$originalToken = [Environment]::GetEnvironmentVariable('PROOFLINE_CI_TEST_ROOT', 'Process')
+[Environment]::SetEnvironmentVariable('PROOFLINE_CI_TEST_ROOT', (Join-Path $env:RUNNER_TEMP 'proofline-expanded-token'), 'Process')
 $seed = if ([string]::IsNullOrEmpty($original.value)) { $token }
 else { $original.value.TrimEnd(';') + ';' + $token }
 # Independent oracle: do not use the same helper under test to construct
@@ -64,7 +68,27 @@ try {
     }
     finally { $key.Dispose() }
 
-    Add-ProoflineUserPath $directory
+    # Exercise the default installer entrypoint without -NoModifyPath, not
+    # merely its PATH helper. The disposable runner owns this user profile.
+    $installer = Join-Path (Split-Path -Parent $PSScriptRoot) 'install.ps1'
+    $engine = (Get-Process -Id $PID).Path
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $engine
+    $start.Arguments = '-NoProfile -NonInteractive -File "' + $installer + '" -Version 0.5.1 -InstallDir "' + $directory + '"'
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $child = [Diagnostics.Process]::new()
+    $child.StartInfo = $start
+    try {
+        if (-not $child.Start()) { throw 'Could not start full installer for User PATH test.' }
+        if (-not $child.WaitForExit(120000)) {
+            try { $child.Kill() } catch { }
+            [void]$child.WaitForExit(5000)
+            throw 'Full installer exceeded the 120-second PATH integration deadline.'
+        }
+        if ($child.ExitCode -ne 0) { throw "Default installer exited $($child.ExitCode)." }
+    }
+    finally { $child.Dispose() }
     $after = Get-RawUserPath
     if ($after.value -cne $expected -or $after.kind -cne 'ExpandString') {
         throw 'Installer did not preserve expandable PATH entry and its type.'
@@ -103,7 +127,7 @@ finally {
         $current = Get-RawUserPath
         # Restore only the exact test values; do not overwrite other edits.
         if ($current.kind -in @('ExpandString', 'String') -and
-            $current.value -in @($seed, $expected)) {
+            $current.value -cin @($seed, $expected)) {
             # Even if a registry-kind regression occurred, restore the exact
             # seeded text instead of leaving the disposable PATH entries behind.
             $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
@@ -122,6 +146,7 @@ finally {
         }
         else { Write-Warning 'User PATH changed concurrently; refusing to overwrite it.' }
     }
+    [Environment]::SetEnvironmentVariable('PROOFLINE_CI_TEST_ROOT', $originalToken, 'Process')
     Remove-Item -LiteralPath $directory -Recurse -Force -ErrorAction SilentlyContinue
 }
 if (-not $ok -or -not $restored) {

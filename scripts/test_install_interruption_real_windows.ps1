@@ -18,6 +18,8 @@ param(
     [string]$CaseDir,
     [string]$InstallerCopy,
     [string]$FixtureDir,
+    [string]$DriverRoot,
+    [string]$TestToken,
     [switch]$KeepFiles
 )
 
@@ -34,12 +36,39 @@ function Require([bool]$Ok, [string]$Message) {
 function Get-TestBytes([string]$Directory, [string]$Name) {
     return ,([IO.File]::ReadAllBytes((Join-Path $Directory $Name)))
 }
-function Assert-Sandbox([string]$Directory) {
-    if ([string]::IsNullOrWhiteSpace($Directory)) { throw 'Missing test directory.' }
-    $marker = Join-Path ([IO.Path]::GetFullPath($Directory)) '.proofline-test-only'
-    if (-not [IO.File]::Exists($marker) -or
-        [IO.File]::ReadAllText($marker) -cne 'DISPOSABLE_REAL_UPGRADE_TEST') {
-        throw 'Missing disposable test marker; refusing to touch a real installation.'
+function Assert-Sandbox([string]$Directory, [string]$RunRoot, [string]$Token) {
+    if ([string]::IsNullOrWhiteSpace($Directory) -or
+        [string]::IsNullOrWhiteSpace($RunRoot) -or
+        $Token -cnotmatch '\A[0-9a-f]{32}\z') {
+        throw 'Missing validated interruption-test sandbox identity.'
+    }
+    $temp = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([char]'\')
+    $root = [IO.Path]::GetFullPath($RunRoot).TrimEnd([char]'\')
+    $case = [IO.Path]::GetFullPath($Directory).TrimEnd([char]'\')
+    if ([IO.Path]::GetDirectoryName($root) -ine $temp -or
+        [IO.Path]::GetFileName($root) -cnotmatch '\Aproofline-real-interruption-[0-9a-f]{32}\z' -or
+        [IO.Path]::GetDirectoryName($case) -ine $root -or
+        [IO.Path]::GetFileName($case) -notin @(
+            'after-journal', 'upgrade-partial-stage', 'after-switch', 'corrupt-after-switch',
+            'after-upgrade-passed', 'after-receipt', 'fresh-after-journal',
+            'fresh-partial-stage', 'fresh-after-stage', 'fresh-after-move',
+            'fresh-after-passed', 'fresh-after-receipt'
+        )) {
+        throw 'Interruption test child refused a directory outside the driver-created TEMP sandbox.'
+    }
+    foreach ($path in @($root, $case)) {
+        if (-not [IO.Directory]::Exists($path) -or
+            (([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+            throw 'Interruption test sandbox directory does not exist or is a reparse point.'
+        }
+    }
+    $runMarker = Join-Path $root '.proofline-run-token'
+    $caseMarker = Join-Path $case '.proofline-test-only'
+    if (-not [IO.File]::Exists($runMarker) -or
+        [IO.File]::ReadAllText($runMarker) -cne $Token -or
+        -not [IO.File]::Exists($caseMarker) -or
+        [IO.File]::ReadAllText($caseMarker) -cne "DISPOSABLE_REAL_UPGRADE_TEST:$Token") {
+        throw 'Interruption test driver identity does not match the disposable sandbox.'
     }
 }
 function Assert-TestExecutableVersion([string]$Exe, [string]$Version) {
@@ -56,10 +85,15 @@ function Assert-TestExecutableVersion([string]$Exe, [string]$Version) {
         if (-not $child.Start()) { throw "Could not start recovered version $Version." }
         $stdout = $child.StandardOutput.ReadToEndAsync()
         $stderr = $child.StandardError.ReadToEndAsync()
+        $clock = [Diagnostics.Stopwatch]::StartNew()
         if (-not $child.WaitForExit(15000)) {
             try { $child.Kill() } catch { }
             [void]$child.WaitForExit(5000)
             throw "Version check timed out for recovered $Version."
+        }
+        $remaining = [int][Math]::Max(0, 15000 - $clock.ElapsedMilliseconds)
+        if (-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($stdout, $stderr), $remaining)) {
+            throw "Recovered $Version version probe exited but output pipes remained open after deadline."
         }
         Require ($child.ExitCode -eq 0 -and $stdout.GetAwaiter().GetResult().Trim() -ceq "proofline $Version" -and
             $stderr.GetAwaiter().GetResult().Trim() -eq '') "Executable version check failed for $Version."
@@ -122,7 +156,20 @@ function Assert-Installed(
 }
 
 if ($Mode -eq 'Worker' -or $Mode -eq 'Recover') {
-    Assert-Sandbox $CaseDir
+    Assert-Sandbox $CaseDir $DriverRoot $TestToken
+    if ($Mode -eq 'Worker') {
+        if ([IO.Path]::GetFullPath($FixtureDir) -ine ([IO.Path]::Combine([IO.Path]::GetFullPath($DriverRoot), 'cache'))) {
+            throw 'Worker fixture directory is not inside its driver sandbox.'
+        }
+        $expectedCopy = [IO.Path]::Combine([IO.Path]::GetFullPath($DriverRoot),
+            ('instrumented-' + [IO.Path]::GetFileName([IO.Path]::GetFullPath($CaseDir)) + '.ps1'))
+        if ([IO.Path]::GetFullPath($InstallerCopy) -ine $expectedCopy) {
+            throw 'Worker installer copy does not match driver-owned instrumented file.'
+        }
+    }
+    elseif ([IO.Path]::GetFullPath($InstallerCopy) -ine [IO.Path]::GetFullPath($originalInstaller)) {
+        throw 'Recovery worker must use the unmodified repository installer.'
+    }
     if ([string]::IsNullOrWhiteSpace($InstallerCopy) -or
         -not [IO.File]::Exists($InstallerCopy)) {
         throw 'Child requires its installer file.'
@@ -164,12 +211,16 @@ function Invoke-HiddenPowerShell([string]$Arguments, [string]$Purpose) {
         # when a child writes enough data to fill a redirected pipe.
         $outTask = $child.StandardOutput.ReadToEndAsync()
         $errTask = $child.StandardError.ReadToEndAsync()
+        $clock = [Diagnostics.Stopwatch]::StartNew()
         if (-not $child.WaitForExit(90000)) {
             try { $child.Kill() } catch { }
             [void]$child.WaitForExit(5000)
             throw "$Purpose did not exit within 90 seconds."
         }
-        $child.WaitForExit()
+        $remaining = [int][Math]::Max(0, 90000 - $clock.ElapsedMilliseconds)
+        if (-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($outTask, $errTask), $remaining)) {
+            throw "$Purpose exited but output pipes remained open after the 90-second deadline."
+        }
         return [pscustomobject]@{
             ExitCode = $child.ExitCode
             Output = $outTask.GetAwaiter().GetResult()
@@ -211,6 +262,20 @@ function Make-InstrumentedInstaller([string]$Source, [string]$Destination, [stri
         $replacement = '                Invoke-ProoflineReplaceWithRetry $stage $destination $paths.api $hash $oldReceipt.sha256' +
             "`n" + $damage + '                ' + $abort + "`n" + '                if ('
     }
+    elseif ($Checkpoint -eq 'after-upgrade-passed') {
+        $target = "                Set-ProoflinePendingPostcheck "+'$pending '+ "'passed'" +
+            "`n" + '                Write-ProoflineReceipt $receipt $ReleaseVersion $hash'
+        $replacement = "                Set-ProoflinePendingPostcheck "+'$pending '+ "'passed'" +
+            "`n" + '                ' + $abort +
+            "`n" + '                Write-ProoflineReceipt $receipt $ReleaseVersion $hash'
+    }
+    elseif ($Checkpoint -eq 'fresh-after-passed') {
+        $target = "                    Set-ProoflinePendingPostcheck "+'$pending '+ "'passed'" +
+            "`n" + '                    Write-ProoflineReceipt $receipt $ReleaseVersion $hash'
+        $replacement = "                    Set-ProoflinePendingPostcheck "+'$pending '+ "'passed'" +
+            "`n" + '                    ' + $abort +
+            "`n" + '                    Write-ProoflineReceipt $receipt $ReleaseVersion $hash'
+    }
     elseif ($Checkpoint -eq 'after-receipt') {
         $target = '                Write-ProoflineReceipt $receipt $ReleaseVersion $hash' +
             "`n" + '                try { Clear-ProoflineUpgradeFiles $paths $pending $hash }'
@@ -237,10 +302,10 @@ function Make-InstrumentedInstaller([string]$Source, [string]$Destination, [stri
             "`n" + '                ' + $abort + "`n" + '                if ('
     }
     elseif ($Checkpoint -eq 'fresh-after-receipt') {
-        $target = '                Write-ProoflineReceipt $receipt $ReleaseVersion $hash' +
-            "`n" + '                [IO.File]::Delete($pending)'
-        $replacement = '                Write-ProoflineReceipt $receipt $ReleaseVersion $hash' +
-            "`n" + '                ' + $abort + "`n" + '                [IO.File]::Delete($pending)'
+        $target = '                    Write-ProoflineReceipt $receipt $ReleaseVersion $hash' +
+            "`n" + '                    Clear-ProoflineJournalBackup $pending'
+        $replacement = '                    Write-ProoflineReceipt $receipt $ReleaseVersion $hash' +
+            "`n" + '                    ' + $abort + "`n" + '                    Clear-ProoflineJournalBackup $pending'
     }
     else { throw "Unsupported injection checkpoint $Checkpoint." }
     Require ($text.Contains($target)) "Production installer checkpoint '$Checkpoint' changed."
@@ -254,22 +319,28 @@ $root = Join-Path ([IO.Path]::GetTempPath()) ('proofline-real-interruption-' + [
 $cache = Join-Path $root 'cache'
 [IO.Directory]::CreateDirectory($cache) | Out-Null
 $scenarios = @(
-    'after-journal', 'upgrade-partial-stage', 'after-switch', 'corrupt-after-switch', 'after-receipt',
-    'fresh-after-journal', 'fresh-partial-stage', 'fresh-after-stage', 'fresh-after-move', 'fresh-after-receipt'
+    'after-journal', 'upgrade-partial-stage', 'after-switch', 'corrupt-after-switch',
+    'after-upgrade-passed', 'after-receipt',
+    'fresh-after-journal', 'fresh-partial-stage', 'fresh-after-stage', 'fresh-after-move',
+    'fresh-after-passed', 'fresh-after-receipt'
 )
 $expected = @{
     'after-journal' = '0.5.1'
     'upgrade-partial-stage' = '0.5.1'
     'after-switch' = '0.5.1'
     'corrupt-after-switch' = '0.5.1'
+    'after-upgrade-passed' = '0.5.2'
     'after-receipt' = '0.5.2'
     'fresh-after-journal' = 'absent'
     'fresh-partial-stage' = 'absent'
     'fresh-after-stage' = 'absent'
     'fresh-after-move' = 'absent'
+    'fresh-after-passed' = '0.5.1'
     'fresh-after-receipt' = '0.5.1'
 }
 $engine = (Get-Process -Id $PID).Path
+$testToken = [guid]::NewGuid().ToString('N')
+[IO.File]::WriteAllText((Join-Path $root '.proofline-run-token'), $testToken)
 $pathBefore = [Environment]::GetEnvironmentVariable('Path', 'User')
 $results = @()
 $passed = $false
@@ -299,7 +370,7 @@ try {
     foreach ($checkpoint in $scenarios) {
         $directory = Join-Path $root $checkpoint
         [IO.Directory]::CreateDirectory($directory) | Out-Null
-        [IO.File]::WriteAllText((Join-Path $directory '.proofline-test-only'), 'DISPOSABLE_REAL_UPGRADE_TEST')
+        [IO.File]::WriteAllText((Join-Path $directory '.proofline-test-only'), "DISPOSABLE_REAL_UPGRADE_TEST:$testToken")
         $isFresh = $checkpoint -like 'fresh-*'
         $oldDigest = $null
         if ($isFresh) {
@@ -318,7 +389,8 @@ try {
         $stderr = Join-Path $root ("worker-$checkpoint.stderr.txt")
         $arguments = '-NoProfile -NonInteractive -File "' + $PSCommandPath +
             '" -Mode Worker -CaseDir "' + $directory +
-            '" -FixtureDir "' + $cache + '" -InstallerCopy "' + $copy + '"'
+            '" -FixtureDir "' + $cache + '" -InstallerCopy "' + $copy +
+            '" -DriverRoot "' + $root + '" -TestToken ' + $testToken
         $worker = Invoke-HiddenPowerShell $arguments "upgrade worker ($checkpoint)"
         $workerExit = $worker.ExitCode
         [IO.File]::WriteAllText($stdout, $worker.Output)
@@ -330,6 +402,21 @@ try {
         Require ($workerExit -eq -1) "Worker did not terminate as expected at $checkpoint; exit $workerExit; output: $workerOutput"
         $journal = Join-Path $directory '.proofline-install.pending.json'
         Require ([IO.File]::Exists($journal)) "No pending journal existed after forced termination at $checkpoint."
+        $onDiskJournal = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($journal))
+        if ($checkpoint -in @('after-switch', 'corrupt-after-switch')) {
+            Require ($onDiskJournal.postcheck -ceq 'checking') 'Switch happened without durable checking state.'
+        }
+        if ($checkpoint -in @('after-upgrade-passed', 'fresh-after-passed')) {
+            Require ($onDiskJournal.postcheck -ceq 'passed') 'Passed checkpoint did not persist postcheck before receipt.'
+            $receiptBefore = Join-Path $directory '.proofline-install.receipt.json'
+            if ($checkpoint -eq 'fresh-after-passed') {
+                Require (-not [IO.File]::Exists($receiptBefore)) 'First-install receipt was prematurely published before persisted passed checkpoint.'
+            }
+            else {
+                $oldReceipt = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($receiptBefore))
+                Require ($oldReceipt.version -ceq '0.5.1') 'Upgrade receipt was prematurely published before persisted passed checkpoint.'
+            }
+        }
         $activeFile = Join-Path $directory 'proofline.exe'
         $activeDigest = $null
         if ([IO.File]::Exists($activeFile)) {
@@ -338,7 +425,7 @@ try {
         if ($checkpoint -in @('fresh-after-journal', 'fresh-partial-stage', 'fresh-after-stage')) {
             Require ($null -eq $activeDigest) 'Fresh install published executable before intended checkpoint.'
         }
-        elseif ($checkpoint -in @('fresh-after-move', 'fresh-after-receipt')) {
+        elseif ($checkpoint -in @('fresh-after-move', 'fresh-after-passed', 'fresh-after-receipt')) {
             Require ($activeDigest -ceq $script:pinnedExeHashes['0.5.1']) 'Fresh install did not publish the pinned executable before checkpoint.'
         }
         elseif ($checkpoint -in @('after-journal', 'upgrade-partial-stage')) {
@@ -355,7 +442,8 @@ try {
         $recoverStderr = Join-Path $root ("recovery-$checkpoint.stderr.txt")
         $recoverArgs = '-NoProfile -NonInteractive -File "' + $PSCommandPath +
             '" -Mode Recover -CaseDir "' + $directory +
-            '" -InstallerCopy "' + $originalInstaller + '"'
+            '" -InstallerCopy "' + $originalInstaller +
+            '" -DriverRoot "' + $root + '" -TestToken ' + $testToken
         $recovery = Invoke-HiddenPowerShell $recoverArgs "recovery worker ($checkpoint)"
         $recoverExit = $recovery.ExitCode
         [IO.File]::WriteAllText($recoverStdout, $recovery.Output)

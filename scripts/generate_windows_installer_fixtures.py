@@ -58,6 +58,11 @@ def main(destination: Path) -> None:
     (destination / "not-pe.tar.gz").write_bytes(
         pack(("proofline.exe", b"not a PE" * 128, tarfile.REGTYPE))
     )
+    wrong_signature = bytearray(binary)
+    wrong_signature[0x80:0x84] = b"NOPE"
+    (destination / "bad-pe-signature.tar.gz").write_bytes(
+        pack(("proofline.exe", bytes(wrong_signature), tarfile.REGTYPE))
+    )
     name = "proofline-x86_64-pc-windows-msvc.tar.gz"
     sha = hashlib.sha256(base).hexdigest()
     other = hashlib.sha256(b"other archive bytes").hexdigest()
@@ -75,14 +80,16 @@ def main(destination: Path) -> None:
         f"{other}  proofline-x86_64-unknown-linux-musl.tar.gz\n", encoding="ascii"
     )
     (destination / "SHA256SUMS-malformed").write_text(
-        f"not-a-hash  {name}\n", encoding="ascii"
+        f"{sha}  {name}\nnot-a-hash  another-release.tar.gz\n", encoding="ascii"
     )
     # The release's archive format is deterministic; assert our fixture name,
     # tar type and content are correct before it reaches PowerShell tests.
     with tarfile.open(fileobj=io.BytesIO(base), mode="r:gz") as tar:
         names = tar.getnames()
         assert names == ["proofline.exe"], names
-        assert tar.extractfile(tar.getmembers()[0]).read() == binary
+        member = tar.getmembers()[0]
+        assert member.type == tarfile.REGTYPE, member.type
+        assert tar.extractfile(member).read() == binary
     print(f"Created offline fixture files in {destination}")
 
 
