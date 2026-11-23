@@ -394,7 +394,16 @@ pub async fn pushed_branch_base(
         Err(error) => return Err(error),
     };
     let default = format!("refs/remotes/{remote}/HEAD");
-    let default_branch = answer_in(dir, &["symbolic-ref", "--quiet", &default]).await?;
+    // A missing default ref means no default branch, whatever status
+    // `symbolic-ref` exits with for it.
+    let has_default = line_in(dir, &["rev-parse", "--verify", "--quiet", &default])
+        .await
+        .is_ok();
+    let default_branch = if has_default {
+        answer_in(dir, &["symbolic-ref", "--quiet", &default]).await?
+    } else {
+        None
+    };
     let to_default = default_branch
         .as_deref()
         .and_then(|target| target.strip_prefix(&format!("refs/remotes/{remote}/")))
@@ -407,10 +416,7 @@ pub async fn pushed_branch_base(
             Err(GitError::UnknownRevision(remote_sha))
         };
     }
-    let fork_point = if line_in(dir, &["rev-parse", "--verify", "--quiet", &default])
-        .await
-        .is_ok()
-    {
+    let fork_point = if has_default {
         answer_in(dir, &["merge-base", &head, &default])
             .await?
             .map(|fork_point| commit_sha(&fork_point))
@@ -418,26 +424,37 @@ pub async fn pushed_branch_base(
     } else {
         None
     };
-    match fork_point {
-        // Comparing the pushed commit with itself would review nothing.
-        Some(fork_point) if fork_point == head => {
-            if known {
-                Ok(remote_sha)
-            } else {
-                Err(GitError::UnknownRevision(remote_sha))
-            }
-        }
-        Some(fork_point) if known => {
-            let ancestor = ["merge-base", "--is-ancestor", &fork_point, &remote_sha];
-            Ok(if answer_in(dir, &ancestor).await?.is_some() {
-                remote_sha
-            } else {
-                fork_point
-            })
-        }
-        Some(fork_point) => Ok(fork_point),
-        None if known => Ok(remote_sha),
-        None => Err(GitError::NoBase(remote.to_owned())),
+    let Some(fork_point) = fork_point else {
+        return if known {
+            Ok(remote_sha)
+        } else {
+            Err(GitError::NoBase(remote.to_owned()))
+        };
+    };
+    // A base with the pushed commit's files would review nothing, even
+    // where the push changes what the remote has.
+    let trees = line_in(
+        dir,
+        &[
+            "rev-parse",
+            &format!("{fork_point}^{{tree}}"),
+            &format!("{head}^{{tree}}"),
+        ],
+    )
+    .await?;
+    let trees: Vec<&str> = trees.lines().collect();
+    if trees.first() == trees.get(1) {
+        return if known {
+            Ok(remote_sha)
+        } else {
+            Err(GitError::UnknownRevision(remote_sha))
+        };
+    }
+    let ancestor = ["merge-base", "--is-ancestor", &fork_point, &remote_sha];
+    if known && answer_in(dir, &ancestor).await?.is_some() {
+        Ok(remote_sha)
+    } else {
+        Ok(fork_point)
     }
 }
 

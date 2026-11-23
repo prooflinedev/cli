@@ -710,9 +710,10 @@ async fn a_pushed_commit_the_tracking_ref_holds_is_reviewed_against_the_commit_t
         ("refs/heads/restore", &extended, "refs/heads/main"),
         // Another branch the remote also had at the base.
         ("refs/heads/feature", &restored, "refs/heads/feature"),
-        // A destination that is not a branch.
-        ("refs/heads/main", &restored, "refs/for/main"),
-        ("refs/heads/main", &extended, "refs/for/main"),
+        // A destination that is not a branch, from a branch that is not the
+        // default either.
+        ("refs/heads/topic", &restored, "refs/for/main"),
+        ("refs/heads/topic", &extended, "refs/for/main"),
     ];
     for (local_ref, pushed, remote_ref) in pushes {
         uploads.lock().unwrap().clear();
@@ -776,7 +777,7 @@ async fn a_push_is_not_reviewed_as_empty_when_the_remote_commit_is_missing() {
             "refs/heads/main",
             "restore",
         ),
-        ("refs/heads/main", &extended, "refs/for/main", "main"),
+        ("refs/heads/topic", &extended, "refs/for/main", "topic"),
     ];
     for (local_ref, pushed, remote_ref, label) in pushes {
         uploads.lock().unwrap().clear();
@@ -803,6 +804,47 @@ async fn a_push_is_not_reviewed_as_empty_when_the_remote_commit_is_missing() {
         );
         assert_eq!(output.status.code(), Some(1), "{case}");
     }
+}
+
+#[tokio::test]
+async fn a_force_push_that_only_drops_branch_changes_is_reviewed() {
+    let checkout = Checkout::new().await;
+    let uploads = Uploads::default();
+    let origin = serve(uploads.clone(), "SERIOUS", false).await;
+    checkout.git(&["checkout", "-q", "-b", "feature"]).await;
+    let pushed = checkout.commit("feature.rs", "fn feature() {}\n").await;
+    checkout.git(&["checkout", "-q", "main"]).await;
+    let main = checkout.commit("teammate.rs", "fn teammate() {}\n").await;
+    checkout
+        .git(&["update-ref", "refs/remotes/origin/main", &main])
+        .await;
+    // An empty commit on the default branch's tip replaces the branch: its
+    // files equal that tip's, but the push removes feature.rs.
+    checkout.git(&["checkout", "-q", "-b", "replacement"]).await;
+    checkout
+        .git(&["commit", "-q", "--allow-empty", "-m", "replace"])
+        .await;
+    let head = checkout.git(&["rev-parse", "HEAD"]).await;
+    checkout.git(&["checkout", "-q", "main"]).await;
+    let output = checkout
+        .proofline(
+            &origin,
+            &[
+                "hook",
+                "run",
+                "pre-push",
+                "origin",
+                "https://github.com/acme/web.git",
+            ],
+            &format!("refs/heads/replacement {head} refs/heads/feature {pushed}\n"),
+        )
+        .await;
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let uploads = uploads.lock().unwrap();
+    assert_eq!(uploads.len(), 1, "{}", stderr(&output));
+    assert_eq!(uploads[0]["base_commit_sha"], pushed);
+    let patch = uploads[0]["patch"].as_str().unwrap();
+    assert!(patch.contains("-fn feature() {}"), "{patch}");
 }
 
 #[tokio::test]
