@@ -2,7 +2,7 @@
 
 The command-line client for the [Proofline review API](https://proofline.sh/docs/). See the [CLI documentation](https://proofline.sh/docs/cli/) for commands.
 
-This repository is the published distribution of the Proofline CLI. `openapi.public.json` is the generated public API contract pinned for this revision. During the build, `build.rs` generates request URLs for the operations it declares. [Open an issue](https://github.com/prooflinedev/cli/issues) for changes to `openapi.public.json`, generated code, or workflows. Pull requests are welcome for the hand-written installer in `install.sh`, commands in `src/`, release scripts in `scripts/`, and tests in `tests/`.
+This repository is the published distribution of the Proofline CLI. `openapi.public.json` is the generated public API contract pinned for this revision. During the build, `build.rs` generates request URLs for the operations it declares. [Open an issue](https://github.com/prooflinedev/cli/issues) for changes to `openapi.public.json`, generated code, or workflows. Pull requests are welcome for the hand-written installers in `install.sh` and `install.ps1`, commands in `src/`, release scripts in `scripts/`, and tests in `tests/`.
 
 ## Installation and setup
 
@@ -12,7 +12,39 @@ On Linux and macOS, install the CLI with `curl -fsSL https://proofline.sh/cli | 
 
 ### Windows installation
 
-Official releases include `proofline-x86_64-pc-windows-msvc.tar.gz` with `proofline.exe`. Download the archive and `SHA256SUMS` from the same GitHub release, and compare its SHA-256 hash using `Get-FileHash -Algorithm SHA256`. Extract the archive with `tar -xzf` and put `proofline.exe` in a directory on `PATH`. Run `proofline login` to store credentials in Windows Credential Manager. To update, close running Proofline processes and replace the executable from a verified release. The Unix shell installer and self-update command do not install Windows binaries.
+On **Windows x64**, run the PowerShell installer from a checked-out copy of this repository:
+
+```powershell
+powershell.exe -NoProfile -File .\install.ps1
+```
+
+It downloads the official release and `SHA256SUMS` from `https://proofline.sh`, validates the archive, verifies `proofline.exe --version`, and installs for the **current user** in `%LOCALAPPDATA%\Programs\Proofline\bin` without administrator rights. By default it adds that directory to the user PATH; open a new terminal to run `proofline login`. It does not handle login or credentials.
+
+To pin a version or install in a disposable folder without updating PATH:
+
+```powershell
+powershell.exe -NoProfile -File .\install.ps1 -Version 0.5.2 -InstallDir "$env:TEMP\proofline-test-bin" -NoModifyPath
+```
+
+Re-running the installer with the same verified version is a no-op. Upgrading an installer-managed version preserves the previous executable and uses a pending recovery record; an unmanaged or inconsistent existing installation is not overwritten. No administrator privileges or machine-level PATH changes are required.
+
+The installer script is currently distributed **in this repository**, not via a verified Windows one-liner on `proofline.sh`. Alternatively, manually download `proofline-x86_64-pc-windows-msvc.tar.gz` and its `SHA256SUMS` from the same official release, verify the SHA-256 with `Get-FileHash`, extract `proofline.exe` and place it on PATH.
+
+Windows `proofline update` (self-update invoked from the CLI) remains unsupported; re-run `install.ps1` to upgrade an installer-managed installation.
+
+The installer verifies the archive against the official SHA-256 manifest. Because both are fetched from the same HTTPS release origin, this establishes download consistency rather than independent cryptographic publisher authentication.
+
+To verify the installer on Windows x64, run the following from the repository root (Python 3 is required for the offline fixtures):
+
+```powershell
+powershell.exe -NoProfile -File .\scripts\test_install_windows.ps1
+powershell.exe -NoProfile -File .\scripts\test_install_upgrade_windows.ps1
+powershell.exe -NoProfile -File .\scripts\test_install_concurrency_windows.ps1
+powershell.exe -NoProfile -File .\scripts\test_install_upgrade_real_windows.ps1
+powershell.exe -NoProfile -File .\scripts\test_install_interruption_real_windows.ps1
+```
+
+Run the same commands with `pwsh.exe` to verify PowerShell 7. The last two tests download pinned official releases; all test installations use disposable paths and do not modify User PATH. The separate `scripts/test_install_user_path_ci_windows.ps1` test intentionally runs **only on GitHub Actions Windows runners**, where it verifies registry persistence and restores the original User PATH value.
 
 On Linux, coding agents that omit `DBUS_SESSION_BUS_ADDRESS` and `XDG_RUNTIME_DIR`
 can still use the stored sign-in when the standard `/run/user/<uid>/bus` socket
