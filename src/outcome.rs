@@ -254,7 +254,15 @@ fn claim_fingerprint_match(
 fn claim_fallback_match(curr: &Finding, previous: &[Finding], prev_matched: &mut [bool]) -> bool {
     let key_curr = fallback_key(curr);
     for (i, prev) in previous.iter().enumerate() {
-        if !prev_matched[i] && !resolved(prev) && fallback_key(prev) == key_curr {
+        // Fallback matching is only valid when at least one finding lacks a fingerprint.
+        // If both sides have explicit but different fingerprints, they are distinct issues.
+        let has_missing_fingerprint =
+            curr.finding_fingerprint.is_none() || prev.finding_fingerprint.is_none();
+        if !prev_matched[i]
+            && !resolved(prev)
+            && has_missing_fingerprint
+            && fallback_key(prev) == key_curr
+        {
             prev_matched[i] = true;
             return true;
         }
@@ -267,6 +275,7 @@ enum FindingStatus {
     ExplicitResolved,
     Persistent,
     Regression,
+    Ignored,
 }
 
 /// Diffs findings across two review runs, categorizing them into resolved,
@@ -278,43 +287,68 @@ enum FindingStatus {
 pub fn diff_findings<'a>(previous: &'a [Finding], current: &'a [Finding]) -> FindingDiff<'a> {
     let mut diff = FindingDiff::default();
     let mut prev_matched = vec![false; previous.len()];
-    let mut curr_states = vec![FindingStatus::Regression; current.len()];
+    let mut curr_states: Vec<FindingStatus> = current
+        .iter()
+        .map(|f| {
+            if resolved(f) {
+                FindingStatus::Ignored
+            } else {
+                FindingStatus::Regression
+            }
+        })
+        .collect();
 
-    // Pass 1: Correlate open findings by exact fingerprint.
+    // Pass 1A: Match open current findings by exact fingerprint.
+    // Open findings match first so resolved findings cannot consume their match.
     for (j, curr) in current.iter().enumerate() {
-        if claim_fingerprint_match(curr, previous, &mut prev_matched) {
-            curr_states[j] = if resolved(curr) {
-                FindingStatus::ExplicitResolved
+        if !resolved(curr) && claim_fingerprint_match(curr, previous, &mut prev_matched) {
+            curr_states[j] = if curr.lifecycle_state == "REINTRODUCED" {
+                FindingStatus::Regression
             } else {
                 FindingStatus::Persistent
             };
         }
     }
 
-    // Pass 2: Fallback correlation for remaining unmatched findings.
-    // Connects findings across mismatched server versions where one side lacks fingerprints,
-    // or older servers where both lack fingerprints.
+    // Pass 1B: Fallback correlation for remaining unmatched open findings.
+    // Only pairs findings when at least one side lacks a fingerprint.
     for (j, curr) in current.iter().enumerate() {
-        if curr_states[j] != FindingStatus::Regression {
-            continue;
-        }
-        if claim_fallback_match(curr, previous, &mut prev_matched) {
-            curr_states[j] = if resolved(curr) {
-                FindingStatus::ExplicitResolved
+        if curr_states[j] == FindingStatus::Regression
+            && claim_fallback_match(curr, previous, &mut prev_matched)
+        {
+            curr_states[j] = if curr.lifecycle_state == "REINTRODUCED" {
+                FindingStatus::Regression
             } else {
                 FindingStatus::Persistent
             };
-        } else if resolved(curr) {
+        }
+    }
+
+    // Pass 2A: Match resolved current findings by exact fingerprint against remaining baseline.
+    for (j, curr) in current.iter().enumerate() {
+        if resolved(curr) && claim_fingerprint_match(curr, previous, &mut prev_matched) {
+            curr_states[j] = FindingStatus::ExplicitResolved;
+        }
+    }
+
+    // Pass 2B: Match resolved current findings by fallback against remaining baseline.
+    for (j, curr) in current.iter().enumerate() {
+        if resolved(curr)
+            && curr_states[j] == FindingStatus::Ignored
+            && claim_fallback_match(curr, previous, &mut prev_matched)
+        {
             curr_states[j] = FindingStatus::ExplicitResolved;
         }
     }
 
     // Assemble the diff preserving original slice ordering.
+    // Note: Unmatched resolved target findings remain `Ignored` and are not included in the diff.
     for (j, curr) in current.iter().enumerate() {
         match curr_states[j] {
             FindingStatus::ExplicitResolved => diff.resolved.push(curr),
             FindingStatus::Persistent => diff.persistent.push(curr),
             FindingStatus::Regression => diff.regressions.push(curr),
+            FindingStatus::Ignored => {}
         }
     }
 
@@ -691,5 +725,71 @@ mod tests {
         assert_eq!(diff_dup.persistent.len(), 1);
         assert_eq!(diff_dup.resolved.len(), 1);
         assert!(diff_dup.regressions.is_empty());
+
+        // Duplicate test: 1 in prev, 2 in curr -> 1 persistent, 1 regression
+        let prev_single = [finding_with("HIGH", "NEW", None, "dup issue")];
+        let curr_double = [
+            finding_with("HIGH", "NEW", None, "dup issue"),
+            finding_with("HIGH", "NEW", None, "dup issue"),
+        ];
+        let diff_dup2 = diff_findings(&prev_single, &curr_double);
+        assert_eq!(diff_dup2.persistent.len(), 1);
+        assert_eq!(diff_dup2.regressions.len(), 1);
+        assert!(diff_dup2.resolved.is_empty());
+
+        // Conflicting fingerprints: even if claim/location match, distinct fingerprints mean distinct issues
+        let prev_fp1 = [finding_with("HIGH", "NEW", Some("fp1"), "shared claim")];
+        let curr_fp2 = [finding_with("HIGH", "NEW", Some("fp2"), "shared claim")];
+        let diff_conflict = diff_findings(&prev_fp1, &curr_fp2);
+        assert_eq!(diff_conflict.resolved.len(), 1);
+        assert_eq!(
+            diff_conflict.resolved[0].finding_fingerprint.as_deref(),
+            Some("fp1")
+        );
+        assert_eq!(diff_conflict.regressions.len(), 1);
+        assert_eq!(
+            diff_conflict.regressions[0].finding_fingerprint.as_deref(),
+            Some("fp2")
+        );
+        assert!(diff_conflict.persistent.is_empty());
+
+        // Fingerprint precedence over fallback: ensure exact match takes priority over fallback-only candidate
+        let prev_candidates = [
+            finding_with("HIGH", "NEW", None, "shared claim"),
+            finding_with("HIGH", "NEW", Some("fp_target"), "shared claim"),
+        ];
+        let curr_target = [finding_with(
+            "HIGH",
+            "NEW",
+            Some("fp_target"),
+            "shared claim",
+        )];
+        let diff_precedence = diff_findings(&prev_candidates, &curr_target);
+        assert_eq!(diff_precedence.persistent.len(), 1);
+        assert_eq!(
+            diff_precedence.persistent[0].finding_fingerprint.as_deref(),
+            Some("fp_target")
+        );
+        assert_eq!(diff_precedence.resolved.len(), 1);
+        assert!(diff_precedence.resolved[0].finding_fingerprint.is_none());
+        assert!(diff_precedence.regressions.is_empty());
+
+        // Reintroduced finding matching an open baseline is still a regression, not persistent
+        let prev_open = [finding_with("HIGH", "NEW", Some("fp1"), "issue 1")];
+        let curr_reint = [finding_with("HIGH", "REINTRODUCED", Some("fp1"), "issue 1")];
+        let diff_reint = diff_findings(&prev_open, &curr_reint);
+        assert_eq!(diff_reint.regressions.len(), 1);
+        assert_eq!(
+            diff_reint.regressions[0].finding_fingerprint.as_deref(),
+            Some("fp1")
+        );
+        assert!(diff_reint.persistent.is_empty());
+        assert!(diff_reint.resolved.is_empty());
+
+        // Unmatched target resolved finding is omitted, not reported as newly resolved
+        let empty_prev: [Finding; 0] = [];
+        let curr_resolved_only = [finding_with("HIGH", "RESOLVED", Some("fp1"), "issue 1")];
+        let diff_unmatched_resolved = diff_findings(&empty_prev, &curr_resolved_only);
+        assert!(diff_unmatched_resolved.is_empty());
     }
 }

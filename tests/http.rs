@@ -3624,6 +3624,7 @@ async fn diff_categorizes_findings_and_honors_fail_on_regression() {
     let prefix = format!("/api/v1/organizations/{ORG}");
     let run1_id = "0190f3a0-0000-7000-8000-000000000001";
     let run2_id = "0190f3a0-0000-7000-8000-000000000002";
+    let run3_id = "0190f3a0-0000-7000-8000-000000000003";
 
     let finding_persist = json!({
         "id": "0190f3a0-0000-7000-8000-000000000010",
@@ -3655,12 +3656,23 @@ async fn diff_categorizes_findings_and_honors_fail_on_regression() {
         "finding_fingerprint": "fp_regression",
         "evidence_refs": []
     });
+    let finding_run3 = json!({
+        "id": "0190f3a0-0000-7000-8000-000000000013",
+        "severity": "LOW",
+        "risk_domain": "documentation",
+        "claim": "missing api doc",
+        "impact": "minor",
+        "lifecycle_state": "NEW",
+        "finding_fingerprint": "fp_run3_unique",
+        "evidence_refs": []
+    });
 
     let app = Router::new().fallback(move |request: axum::extract::Request| {
         let prefix = prefix.clone();
         let finding_persist = finding_persist.clone();
         let finding_resolved = finding_resolved.clone();
         let finding_regression = finding_regression.clone();
+        let finding_run3 = finding_run3.clone();
         async move {
             let path = request.uri().path().to_owned();
             if path == format!("{prefix}/reviews") {
@@ -3687,6 +3699,13 @@ async fn diff_categorizes_findings_and_honors_fail_on_regression() {
                             "kind": "PULL_REQUEST",
                             "status": "COMPLETED",
                             "created_at": "2026-01-02T00:00:00Z"
+                        },
+                        {
+                            "run_number": 3,
+                            "id": run3_id,
+                            "kind": "PULL_REQUEST",
+                            "status": "COMPLETED",
+                            "created_at": "2026-01-03T00:00:00Z"
                         }
                     ],
                     "next_cursor": null,
@@ -3732,6 +3751,25 @@ async fn diff_categorizes_findings_and_honors_fail_on_regression() {
                     "repository_full_name": "owner/repo"
                 }));
             }
+            if path == format!("{prefix}/reviews/{run3_id}") {
+                return Json(json!({
+                    "id": run3_id,
+                    "kind": "PULL_REQUEST",
+                    "status": "COMPLETED",
+                    "assessment_count": 0,
+                    "assessments": [],
+                    "code_assessment": {
+                        "id": "0190f3a0-0000-7000-8000-0000000000cc",
+                        "head_commit_sha": "89abcdef0123456789abcdef0123456789abcdef",
+                        "base_commit_sha": "0123456789abcdef0123456789abcdef01234567",
+                        "status": "COMPLETED",
+                        "findings": [finding_persist, finding_run3]
+                    },
+                    "pull_request_number": 7,
+                    "run_number": 3,
+                    "repository_full_name": "owner/repo"
+                }));
+            }
             Json(json!({}))
         }
     });
@@ -3742,8 +3780,22 @@ async fn diff_categorizes_findings_and_honors_fail_on_regression() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    // 1. Text diff: PR run comparison
-    let output = cli(&origin, &["diff", "--repo", "owner/repo", "--pr", "7"]).await;
+    // 1. Text diff: PR run comparison with explicit non-default selectors (--base-run 1 --target-run 2)
+    let output = cli(
+        &origin,
+        &[
+            "diff",
+            "--repo",
+            "owner/repo",
+            "--pr",
+            "7",
+            "--base-run",
+            "1",
+            "--target-run",
+            "2",
+        ],
+    )
+    .await;
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -3765,10 +3817,21 @@ async fn diff_categorizes_findings_and_honors_fail_on_regression() {
     assert!(text.contains("connection pool leak"), "{text}");
     assert!(text.contains("missing length check"), "{text}");
 
-    // 2. JSON diff
+    // 2. JSON diff with explicit non-default selectors
     let output_json = cli(
         &origin,
-        &["diff", "--repo", "owner/repo", "--pr", "7", "--json"],
+        &[
+            "diff",
+            "--repo",
+            "owner/repo",
+            "--pr",
+            "7",
+            "--base-run",
+            "1",
+            "--target-run",
+            "2",
+            "--json",
+        ],
     )
     .await;
     assert!(output_json.status.success());
@@ -3780,6 +3843,7 @@ async fn diff_categorizes_findings_and_honors_fail_on_regression() {
         parsed["regressions"][0]["finding_fingerprint"],
         "fp_regression"
     );
+    assert_eq!(parsed["resolved"][0]["finding_fingerprint"], "fp_resolved");
 
     // 3. Fail on regression exits code 3 (Verdict::Regressed)
     let output_fail = cli(
@@ -3790,29 +3854,38 @@ async fn diff_categorizes_findings_and_honors_fail_on_regression() {
             "owner/repo",
             "--pr",
             "7",
+            "--base-run",
+            "1",
+            "--target-run",
+            "2",
             "--fail-on-regression",
         ],
     )
     .await;
     assert_eq!(output_fail.status.code(), Some(3));
 
-    // 4. Direct review IDs comparison
+    // 4. Direct review IDs comparison with --json verifying both fingerprint identities
     let output_direct = cli(
         &origin,
-        &["diff", "--base-review", run1_id, "--target-review", run2_id],
+        &[
+            "diff",
+            "--base-review",
+            run1_id,
+            "--target-review",
+            run2_id,
+            "--json",
+        ],
     )
     .await;
     assert!(output_direct.status.success());
-    let direct_text = String::from_utf8_lossy(&output_direct.stdout);
-    assert!(
-        direct_text.contains(&format!(
-            "Finding diff: review {run1_id} -> review {run2_id}"
-        )),
-        "{direct_text}"
+    let direct_parsed: Value = serde_json::from_slice(&output_direct.stdout).unwrap();
+    assert_eq!(
+        direct_parsed["resolved"][0]["finding_fingerprint"],
+        "fp_resolved"
     );
-    assert!(
-        direct_text.contains("1 resolved, 1 persistent, 1 regressions"),
-        "{direct_text}"
+    assert_eq!(
+        direct_parsed["regressions"][0]["finding_fingerprint"],
+        "fp_regression"
     );
 
     server.abort();

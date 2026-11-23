@@ -1299,16 +1299,26 @@ async fn diff(api: &Api, args: &DiffArgs) -> anyhow::Result<Verdict> {
                 u64::try_from(pr_num).context("invalid pull request number")?
             };
 
-            let history_raw = api.history(route_name(&full_name), pr).await?;
-            let history_page: ReviewPage = serde_json::from_value(history_raw)
-                .context("could not parse pull request history")?;
-
-            let mut runs: Vec<_> = history_page
-                .items
-                .into_iter()
-                .filter_map(|item| item.run_number.map(|num| (num, item.id)))
-                .collect();
+            let mut runs: Vec<(i64, Uuid)> = Vec::new();
+            let mut cursor: Option<String> = None;
+            for _ in 0..SEARCH_PAGES {
+                let history_raw = api
+                    .history_page(route_name(&full_name), pr, cursor.as_deref())
+                    .await?;
+                let history_page: ReviewPage = serde_json::from_value(history_raw)
+                    .context("could not parse pull request history")?;
+                for item in history_page.items {
+                    if let Some(num) = item.run_number {
+                        runs.push((num, item.id));
+                    }
+                }
+                match history_page.next_cursor {
+                    Some(next) if cursor.as_ref() != Some(&next) => cursor = Some(next),
+                    _ => break,
+                }
+            }
             runs.sort_by_key(|&(num, _)| num);
+            runs.dedup_by_key(|&mut (num, _)| num);
 
             if runs.is_empty() {
                 bail!("{full_name} #{pr} has no recorded runs");

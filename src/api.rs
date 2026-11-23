@@ -515,13 +515,25 @@ impl Api {
         self.get(url).await
     }
 
+    pub(crate) async fn history_page(
+        &self,
+        repository: &str,
+        number: u64,
+        cursor: Option<&str>,
+    ) -> Result<serde_json::Value, ApiError> {
+        let mut url = self.url_list_pull_request_reviews(repository, &number.to_string());
+        if let Some(cursor) = cursor {
+            url.query_pairs_mut().append_pair("cursor", cursor);
+        }
+        self.get(url).await
+    }
+
     pub(crate) async fn history(
         &self,
         repository: &str,
         number: u64,
     ) -> Result<serde_json::Value, ApiError> {
-        self.get(self.url_list_pull_request_reviews(repository, &number.to_string()))
-            .await
+        self.history_page(repository, number, None).await
     }
 
     /// One pull request's review runs as received, with the review
