@@ -688,40 +688,53 @@ async fn a_pushed_branch_is_not_reviewed_with_commits_from_the_default_branch() 
 }
 
 #[tokio::test]
-async fn a_push_to_the_default_branch_is_reviewed_against_the_commit_the_remote_has() {
+async fn a_pushed_commit_the_tracking_ref_holds_is_reviewed_against_the_commit_the_remote_has() {
     let checkout = Checkout::new().await;
     let uploads = Uploads::default();
     let origin = serve(uploads.clone(), "SERIOUS", false).await;
     // The remote's main was rewound to the base, but this checkout's
-    // tracking ref still holds the commit the push now restores.
+    // tracking ref still holds the commit each push now restores.
     let restored = checkout
         .commit("orders.rs", "fn main() { restored() }\n")
         .await;
     checkout
         .git(&["update-ref", "refs/remotes/origin/main", &restored])
         .await;
-    let output = checkout
-        .proofline(
-            &origin,
-            &[
-                "hook",
-                "run",
-                "pre-push",
-                "origin",
-                "https://github.com/acme/web.git",
-            ],
-            &format!(
-                "refs/heads/main {restored} refs/heads/main {}\n",
-                checkout.base
-            ),
-        )
-        .await;
-    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-    let uploads = uploads.lock().unwrap();
-    assert_eq!(uploads.len(), 1, "{}", stderr(&output));
-    assert_eq!(uploads[0]["base_commit_sha"], checkout.base);
-    let patch = uploads[0]["patch"].as_str().unwrap();
-    assert!(patch.contains("+fn main() { restored() }"), "{patch}");
+    // (the pushed local ref, the destination ref)
+    let pushes = [
+        // The default branch, pushed from a differently named branch.
+        ("refs/heads/restore", "refs/heads/main"),
+        // Another branch the remote also had at the base.
+        ("refs/heads/feature", "refs/heads/feature"),
+        // A destination that is not a branch.
+        ("refs/heads/main", "refs/for/main"),
+    ];
+    for (local_ref, remote_ref) in pushes {
+        uploads.lock().unwrap().clear();
+        let output = checkout
+            .proofline(
+                &origin,
+                &[
+                    "hook",
+                    "run",
+                    "pre-push",
+                    "origin",
+                    "https://github.com/acme/web.git",
+                ],
+                &format!("{local_ref} {restored} {remote_ref} {}\n", checkout.base),
+            )
+            .await;
+        let case = format!("{local_ref} to {remote_ref}");
+        assert_eq!(output.status.code(), Some(0), "{case}: {}", stderr(&output));
+        let uploads = uploads.lock().unwrap();
+        assert_eq!(uploads.len(), 1, "{case}: {}", stderr(&output));
+        assert_eq!(uploads[0]["base_commit_sha"], checkout.base, "{case}");
+        let patch = uploads[0]["patch"].as_str().unwrap();
+        assert!(
+            patch.contains("+fn main() { restored() }"),
+            "{case}: {patch}"
+        );
+    }
 }
 
 #[tokio::test]

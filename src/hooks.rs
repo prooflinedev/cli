@@ -842,7 +842,7 @@ mod tests {
         let (a, b) = ("a".repeat(40), "b".repeat(40));
         let input = format!(
             "refs/heads/new {a} refs/heads/new {zero}\n\
-             refs/heads/main {b} refs/heads/main {a}\n\
+             refs/heads/topic {b} refs/heads/main {a}\n\
              (delete) {zero} refs/heads/old {b}\n\
              refs/tags/v1 {a} refs/tags/v1 {zero}\n"
         );
@@ -856,7 +856,7 @@ mod tests {
                     remote_sha: zero,
                 },
                 PushedRef {
-                    local_ref: "refs/heads/main".to_owned(),
+                    local_ref: "refs/heads/topic".to_owned(),
                     local_sha: b,
                     remote_ref: "refs/heads/main".to_owned(),
                     remote_sha: a,

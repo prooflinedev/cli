@@ -373,9 +373,12 @@ pub async fn new_branch_base(dir: &Path, remote: &str, head: &str) -> Result<Str
 /// branch is compared with its merge-base with the default branch, as a new
 /// branch is. So is a branch whose remote commit this checkout does not have.
 /// A branch with no default branch to compare with, or no history in common
-/// with it, keeps the remote's commit as its base. So does a push to the
-/// default branch itself, as `remote_ref`: its default-branch commits are
-/// what it sends, and this checkout's tracking ref for it can be stale.
+/// with it, keeps the remote's commit as its base.
+///
+/// The tracking ref for the default branch can be stale, so it never alone
+/// decides that a push has nothing to review: a push to the default branch
+/// itself, to a destination that is not a branch, or of a commit the
+/// tracking ref already holds also keeps the remote's commit as its base.
 pub async fn pushed_branch_base(
     dir: &Path,
     remote: &str,
@@ -384,6 +387,7 @@ pub async fn pushed_branch_base(
     head: &str,
 ) -> Result<String, GitError> {
     let remote_sha = commit_sha(remote_sha)?;
+    let head = commit_sha(head)?;
     let known = match resolve(dir, &remote_sha).await {
         Ok(_) => true,
         Err(GitError::UnknownRevision(_)) => false,
@@ -395,14 +399,14 @@ pub async fn pushed_branch_base(
         .as_deref()
         .and_then(|target| target.strip_prefix(&format!("refs/remotes/{remote}/")))
         .is_some_and(|name| remote_ref.strip_prefix("refs/heads/") == Some(name));
-    if known && to_default {
+    if known && (to_default || !remote_ref.starts_with("refs/heads/")) {
         return Ok(remote_sha);
     }
     let fork_point = if line_in(dir, &["rev-parse", "--verify", "--quiet", &default])
         .await
         .is_ok()
     {
-        answer_in(dir, &["merge-base", &commit_sha(head)?, &default])
+        answer_in(dir, &["merge-base", &head, &default])
             .await?
             .map(|fork_point| commit_sha(&fork_point))
             .transpose()?
@@ -410,6 +414,7 @@ pub async fn pushed_branch_base(
         None
     };
     match fork_point {
+        Some(fork_point) if known && fork_point == head => Ok(remote_sha),
         Some(fork_point) if known => {
             let ancestor = ["merge-base", "--is-ancestor", &fork_point, &remote_sha];
             Ok(if answer_in(dir, &ancestor).await?.is_some() {
