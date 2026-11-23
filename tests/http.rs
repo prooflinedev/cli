@@ -637,6 +637,8 @@ async fn a_sign_in_page_on_another_origin_is_refused() {
             "verification_uri_complete",
             "file:///C:/Windows/System32/calc.exe",
         ),
+        // Same scheme and host as the stand-in, whose port is never 1.
+        ("verification_uri", "http://127.0.0.1:1/auth/device"),
         ("verification_uri", "not a url"),
         // A blob: URL takes the origin of the URL inside it.
         ("verification_uri_complete", "blob:ORIGIN/0190f3a0"),
