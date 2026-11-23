@@ -434,7 +434,7 @@ struct Fake {
 }
 
 /// Answers with approval pages on the stand-in's own origin, as the console does.
-/// `{origin}` in an overriding field stands for that origin.
+/// `ORIGIN` in an overriding field stands for that origin.
 async fn code(State(fake): State<Fake>, headers: HeaderMap) -> Json<Value> {
     let origin = format!("http://{}", headers[header::HOST].to_str().unwrap());
     let mut body = json!({
@@ -448,7 +448,7 @@ async fn code(State(fake): State<Fake>, headers: HeaderMap) -> Json<Value> {
     if let Some(Value::Object(fields)) = fake.challenge {
         for (name, value) in fields {
             body[name] = match value {
-                Value::String(text) => Value::String(text.replace("{origin}", &origin)),
+                Value::String(text) => Value::String(text.replace("ORIGIN", &origin)),
                 other => other,
             };
         }
@@ -595,8 +595,8 @@ async fn device_sign_in_waits_for_approval_and_keeps_the_organization() {
         report_organization: true,
         // Same-origin pages whose dot segments the parsed URL removes.
         challenge: Some(json!({
-            "verification_uri": "{origin}/auth/./device",
-            "verification_uri_complete": "{origin}/auth/x/../device?user_code=WDJB-MJHT",
+            "verification_uri": "ORIGIN/auth/./device",
+            "verification_uri_complete": "ORIGIN/auth/x/../device?user_code=WDJB-MJHT",
         })),
         ..Fake::default()
     };
@@ -639,7 +639,7 @@ async fn a_sign_in_page_on_another_origin_is_refused() {
         ),
         ("verification_uri", "not a url"),
         // A blob: URL takes the origin of the URL inside it.
-        ("verification_uri_complete", "blob:{origin}/0190f3a0"),
+        ("verification_uri_complete", "blob:ORIGIN/0190f3a0"),
     ] {
         let http = Http::new(
             serve(Fake {
