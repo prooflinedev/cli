@@ -12,6 +12,7 @@
 param(
     [ValidateSet('Test', 'Hold')][string]$Mode = 'Test',
     [string]$CaseDir,
+    [string]$HoldToken,
     [string]$Python = 'python'
 )
 
@@ -25,10 +26,14 @@ if ($Mode -eq 'Hold') {
     if ([string]::IsNullOrWhiteSpace($CaseDir)) { throw 'Holder needs CaseDir.' }
     $folder = [IO.Path]::GetFullPath($CaseDir)
     $marker = Join-Path $folder '.proofline-test-only'
-    if (-not [IO.File]::Exists($marker) -or
-        [IO.File]::ReadAllText($marker) -cne 'DISPOSABLE_LOCK_TEST') {
-        throw 'Refusing to hold lock without disposable test marker.'
+    if ($HoldToken -cnotmatch '\A[0-9a-f]{32}\z' -or
+        -not [IO.File]::Exists($marker) -or
+        [IO.File]::ReadAllText($marker) -cne "DISPOSABLE_LOCK_TEST:$HoldToken") {
+        throw 'Refusing to hold lock without fresh matching test token.'
     }
+    # Consume the unique challenge before opening the lock. A retained marker
+    # cannot authorize another unrelated invocation later.
+    [IO.File]::Delete($marker)
     $lock = Join-Path $folder '.proofline-install.lock'
     $ready = Join-Path $folder '.holder-ready'
     $release = Join-Path $folder '.holder-release'
@@ -52,7 +57,8 @@ $root = Join-Path ([IO.Path]::GetTempPath()) ('proofline-concurrent-' + [guid]::
 [IO.Directory]::CreateDirectory($root) | Out-Null
 $bin = Join-Path $root 'bin'
 [IO.Directory]::CreateDirectory($bin) | Out-Null
-[IO.File]::WriteAllText((Join-Path $bin '.proofline-test-only'), 'DISPOSABLE_LOCK_TEST')
+$holdToken = [guid]::NewGuid().ToString('N')
+[IO.File]::WriteAllText((Join-Path $bin '.proofline-test-only'), "DISPOSABLE_LOCK_TEST:$holdToken")
 $holder = $null
 $passed = $false
 $holderReady = Join-Path $bin '.holder-ready'
@@ -97,7 +103,7 @@ try {
 
     $powershell = (Get-Process -Id $PID).Path
     $args = '-NoProfile -NonInteractive -File "' + $PSCommandPath +
-        '" -Mode Hold -CaseDir "' + $bin + '"'
+        '" -Mode Hold -CaseDir "' + $bin + '" -HoldToken "' + $holdToken + '"'
     $start = [Diagnostics.ProcessStartInfo]::new()
     $start.FileName = $powershell
     $start.Arguments = $args
@@ -116,6 +122,8 @@ try {
     Assert-Condition (-not $holder.HasExited) 'Lock holder exited before contested upgrade.'
     Write-Host 'Separate PowerShell process holds installer lock.'
 
+    $stagesBefore = @(Get-ChildItem -LiteralPath $bin -Force -Filter '.proofline-staged-*.exe' | ForEach-Object FullName)
+    Assert-Condition ($stagesBefore.Count -eq 0) 'Test fixture unexpectedly contains staged executables before refusal.'
     $refused = $false
     try {
         [void](Install-ProoflineArchive $newArchive $newManifest '0.5.2' $bin)
@@ -130,7 +138,9 @@ try {
     Assert-Condition ((Get-ProoflineSha256 $active) -ceq $script:oldHash) 'Concurrent attempt changed active executable.'
     Assert-ProoflineRecord $receipt '0.5.1' $script:oldHash
     Assert-Condition (-not [IO.File]::Exists((Join-Path $bin '.proofline-install.pending.json'))) 'Concurrent attempt left a journal.'
-    Write-Host 'PASS competing installer refused; old executable, receipt and journal unchanged.'
+    $stagesAfter = @(Get-ChildItem -LiteralPath $bin -Force -Filter '.proofline-staged-*.exe' | ForEach-Object FullName)
+    Assert-Condition ($stagesAfter.Count -eq $stagesBefore.Count) 'Competing installer staged executable bytes before acquiring lock.'
+    Write-Host 'PASS competing installer refused; old executable, receipt, stage and journal unchanged.'
 
     [IO.File]::WriteAllText($holderRelease, 'RELEASE')
     if (-not $holder.WaitForExit(10000)) { throw 'Holder did not exit after release.' }

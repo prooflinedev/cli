@@ -55,3 +55,32 @@ jobs:
         run: |
           & $env:TEST_ENGINE -NoProfile -NonInteractive -File scripts/test_install_user_path_ci_windows.ps1
           if ($LASTEXITCODE -ne 0) { throw "User PATH persistence test failed: $LASTEXITCODE" }
+
+  real-release-integration:
+    name: Real Windows install and interruption recovery (${{ matrix.engine }})
+    runs-on: windows-2025
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: ['powershell.exe', 'pwsh.exe']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install and upgrade pinned official releases
+        shell: pwsh
+        env:
+          TEST_ENGINE: ${{ matrix.engine }}
+        run: |
+          & $env:TEST_ENGINE -NoProfile -NonInteractive -File scripts/test_install_upgrade_real_windows.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Real Windows upgrade test failed: $LASTEXITCODE" }
+
+      - name: Recover from ten real process-termination checkpoints
+        shell: pwsh
+        env:
+          TEST_ENGINE: ${{ matrix.engine }}
+        run: |
+          & $env:TEST_ENGINE -NoProfile -NonInteractive -File scripts/test_install_interruption_real_windows.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Real interruption recovery failed: $LASTEXITCODE" }

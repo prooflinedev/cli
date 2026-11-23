@@ -56,11 +56,32 @@ function Check-Release([string]$Version) {
     if ($debris.Count -ne 0) {
         throw "Unexpected staged or recovery artifacts remain after $Version."
     }
-    $output = @(& $exe '--version')
-    $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0 -or ($output -join [Environment]::NewLine).Trim() -cne "proofline $Version") {
-        throw "Executable version check failed for $Version (exit $exitCode)."
+    # Always bound real executable execution, including stalled version probes.
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $exe
+    $start.Arguments = '--version'
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $child = [Diagnostics.Process]::new()
+    $child.StartInfo = $start
+    try {
+        if (-not $child.Start()) { throw "Could not launch official Proofline $Version." }
+        $outTask = $child.StandardOutput.ReadToEndAsync()
+        $errTask = $child.StandardError.ReadToEndAsync()
+        if (-not $child.WaitForExit(15000)) {
+            try { $child.Kill() } catch { }
+            [void]$child.WaitForExit(5000)
+            throw "Executable version check timed out for $Version after 15 seconds."
+        }
+        $output = $outTask.GetAwaiter().GetResult().Trim()
+        $errors = $errTask.GetAwaiter().GetResult().Trim()
+        if ($child.ExitCode -ne 0 -or $output -cne "proofline $Version" -or $errors -ne '') {
+            throw "Executable version check failed for $Version (exit $($child.ExitCode), output '$output', stderr '$errors')."
+        }
     }
+    finally { $child.Dispose() }
     return [pscustomobject]@{
         BinarySha256 = $hash
         ReceiptSha256 = $receiptHash

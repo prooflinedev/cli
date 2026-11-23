@@ -96,11 +96,12 @@ try {
     # NEVER be started. Production installer calls the original version checker.
     $script:smokeCount = 0
     $script:failInstalledPostcheckPath = $null
+    $script:failInstalledPostcheckVersion = '0.5.2'
     function Assert-ProoflineExeVersion([string]$Path, [string]$Version) {
         $script:smokeCount++
         if ($null -ne $script:failInstalledPostcheckPath -and
             $Path -ieq $script:failInstalledPostcheckPath -and
-            $Version -ceq '0.5.2') {
+            $Version -ceq $script:failInstalledPostcheckVersion) {
             # Only the installed copy fails, never the staged verified image.
             throw 'Simulated installed executable postcheck failure.'
         }
@@ -150,19 +151,38 @@ try {
         [void](Install-ProoflineArchive $script:oldArchive $script:oldSums '0.5.1' $dir)
         Assert-ProoflineRecord (Join-Path $dir '.proofline-install.receipt.json') '0.5.1' $script:oldHash
     }
-    Check 'interrupted fresh install finalizes verified published executable' {
+    Check 'first install with no passed postcheck quarantines instead of finalizing' {
         $dir = Join-Path $root 'fresh-published'
         [IO.Directory]::CreateDirectory($dir) | Out-Null
         $id = [guid]::NewGuid().ToString('N')
         [IO.File]::WriteAllBytes((Join-Path $dir 'proofline.exe'), (Get-ProoflineTarExecutable $script:oldArchive))
         $journal = Join-Path $dir '.proofline-install.pending.json'
         Write-ProoflineAtomicRecord $journal (ConvertTo-Json -Compress -InputObject ([ordered]@{
-            schema = 3; id = $id; version = '0.5.1'; sha256 = $script:oldHash
+            schema = 3; id = $id; version = '0.5.1'; sha256 = $script:oldHash; postcheck = 'checking'
         }))
         Invoke-ProoflinePendingRepair $dir
-        Require (-not [IO.File]::Exists($journal)) 'Journal not cleared after successful receipt recovery.'
+        Require (-not [IO.File]::Exists($journal)) 'Quarantine did not clear the first-install journal.'
+        Require (-not [IO.File]::Exists((Join-Path $dir 'proofline.exe'))) 'Unverified first-install image became active.'
+        Require (-not [IO.File]::Exists((Join-Path $dir '.proofline-install.receipt.json'))) 'Unverified first install received a receipt.'
+        $evidence = Join-Path $dir ".proofline-unverified-first-$id.exe"
+        Require ((Get-ProoflineSha256 $evidence) -ceq $script:oldHash) 'First-install quarantine lost the rejected candidate.'
+        [void](Install-ProoflineArchive $script:oldArchive $script:oldSums '0.5.1' $dir)
         Assert-ProoflineRecord (Join-Path $dir '.proofline-install.receipt.json') '0.5.1' $script:oldHash
-        Require ((Get-ProoflineSha256 (Join-Path $dir 'proofline.exe')) -ceq $script:oldHash) 'First-install recovery modified verified bytes.'
+    }
+    Check 'passed first-install postcheck allows finalization after crash' {
+        $dir = Join-Path $root 'fresh-passed'
+        [IO.Directory]::CreateDirectory($dir) | Out-Null
+        $id = [guid]::NewGuid().ToString('N')
+        [IO.File]::WriteAllBytes((Join-Path $dir 'proofline.exe'), (Get-ProoflineTarExecutable $script:oldArchive))
+        $journal = Join-Path $dir '.proofline-install.pending.json'
+        Write-ProoflineAtomicRecord $journal (ConvertTo-Json -Compress -InputObject ([ordered]@{
+            schema = 3; id = $id; version = '0.5.1'; sha256 = $script:oldHash; postcheck = 'checking'
+        }))
+        Set-ProoflinePendingPostcheck $journal 'passed'
+        Invoke-ProoflinePendingRepair $dir
+        Require (-not [IO.File]::Exists($journal)) 'Passed first-install journal remains.'
+        Assert-ProoflineRecord (Join-Path $dir '.proofline-install.receipt.json') '0.5.1' $script:oldHash
+        Require ((Get-ProoflineSha256 (Join-Path $dir 'proofline.exe')) -ceq $script:oldHash) 'Verified first-install image was lost.'
     }
     Check 'clean upgrade from previous verified install' {
         $dir = PrepareOld 'normal'
@@ -195,7 +215,7 @@ try {
     Check 'interrupted in-progress postcheck restores old release' {
         $dir = PrepareOld 'checking-interrupted'
         [void](MakePending $dir)
-        Set-ProoflineUpgradePostcheck (Pending 'checking-interrupted') 'checking'
+        Set-ProoflinePendingPostcheck (Pending 'checking-interrupted') 'checking'
         [IO.File]::WriteAllBytes((Active 'checking-interrupted'), (Get-ProoflineTarExecutable $script:newArchive))
         Invoke-ProoflinePendingRepair $dir
         Require ((Get-ProoflineSha256 (Active 'checking-interrupted')) -ceq $script:oldHash) 'Interrupted postcheck was incorrectly treated as verified.'
@@ -205,7 +225,7 @@ try {
     Check 'missing rollback backup never silently adopts rejected executable' {
         $dir = PrepareOld 'failed-postcheck-no-backup'
         $paths = MakePending $dir
-        Set-ProoflineUpgradePostcheck (Pending 'failed-postcheck-no-backup') 'checking'
+        Set-ProoflinePendingPostcheck (Pending 'failed-postcheck-no-backup') 'checking'
         [IO.File]::WriteAllBytes((Active 'failed-postcheck-no-backup'), (Get-ProoflineTarExecutable $script:newArchive))
         [IO.File]::Delete($paths.old)
         Must-Throw { Invoke-ProoflinePendingRepair $dir }
@@ -219,13 +239,68 @@ try {
     Check 'completed postcheck permits interrupted receipt finalization' {
         $dir = PrepareOld 'passed-before-receipt'
         [void](MakePending $dir)
-        Set-ProoflineUpgradePostcheck (Pending 'passed-before-receipt') 'checking'
+        Set-ProoflinePendingPostcheck (Pending 'passed-before-receipt') 'checking'
         [IO.File]::WriteAllBytes((Active 'passed-before-receipt'), (Get-ProoflineTarExecutable $script:newArchive))
-        Set-ProoflineUpgradePostcheck (Pending 'passed-before-receipt') 'passed'
+        Set-ProoflinePendingPostcheck (Pending 'passed-before-receipt') 'passed'
         Invoke-ProoflinePendingRepair $dir
         Require ((Get-ProoflineSha256 (Active 'passed-before-receipt')) -ceq $script:newHash) 'Recovery rolled back an explicitly passed postcheck.'
         Assert-ProoflineRecord (Receipt 'passed-before-receipt') '0.5.2' $script:newHash
         Require (-not [IO.File]::Exists((Pending 'passed-before-receipt'))) 'Passed-postcheck recovery left its journal.'
+    }
+    Check 'failed first-install postcheck quarantines on next recovery' {
+        $dir = Join-Path $root 'fresh-failed-installed-check'
+        $script:failInstalledPostcheckPath = Join-Path $dir 'proofline.exe'
+        $script:failInstalledPostcheckVersion = '0.5.1'
+        try {
+            Must-Throw { [void](Install-ProoflineArchive $script:oldArchive $script:oldSums '0.5.1' $dir) }
+        }
+        finally {
+            $script:failInstalledPostcheckPath = $null
+            $script:failInstalledPostcheckVersion = '0.5.2'
+        }
+        Require ([IO.File]::Exists((Pending 'fresh-failed-installed-check'))) 'Failed first install did not retain journal.'
+        Invoke-ProoflinePendingRepair $dir
+        Require (-not [IO.File]::Exists((Active 'fresh-failed-installed-check'))) 'Rejected first-install executable remained active.'
+        $evidence = @(Get-ChildItem -LiteralPath $dir -Filter '.proofline-unverified-first-*.exe')
+        Require ($evidence.Count -eq 1) 'Rejected first-install image was not quarantined.'
+        Require ((Get-ProoflineSha256 $evidence[0].FullName) -ceq $script:oldHash) 'Quarantined first-install bytes changed.'
+        [void](Install-ProoflineArchive $script:oldArchive $script:oldSums '0.5.1' $dir)
+        Assert-ProoflineRecord (Receipt 'fresh-failed-installed-check') '0.5.1' $script:oldHash
+    }
+    Check 'upgrade without postcheck marker rolls back matching new image' {
+        $dir = PrepareOld 'legacy-unchecked-upgrade'
+        [void](MakePending $dir)
+        [IO.File]::WriteAllBytes((Active 'legacy-unchecked-upgrade'), (Get-ProoflineTarExecutable $script:newArchive))
+        Invoke-ProoflinePendingRepair $dir
+        Require ((Get-ProoflineSha256 (Active 'legacy-unchecked-upgrade')) -ceq $script:oldHash) 'Markerless upgrade was finalized by hash alone.'
+        Assert-ProoflineRecord (Receipt 'legacy-unchecked-upgrade') '0.5.1' $script:oldHash
+        Require (-not [IO.File]::Exists((Pending 'legacy-unchecked-upgrade'))) 'Rollback journal remains.'
+    }
+    Check 'unreadable primary backup falls back to verified secondary copy' {
+        $dir = PrepareOld 'backup-fallback'
+        $paths = MakePending $dir
+        [IO.File]::Copy($paths.old, $paths.api, $false)
+        [IO.File]::WriteAllBytes((Active 'backup-fallback'), (Get-ProoflineTarExecutable $script:newArchive))
+        Set-ProoflinePendingPostcheck (Pending 'backup-fallback') 'checking'
+        $originalDigest = (Get-Item Function:\Get-ProoflineSha256).ScriptBlock
+        $script:blockedBackup = $paths.old
+        $script:realDigest = $originalDigest
+        try {
+            Set-Item Function:\Get-ProoflineSha256 -Value {
+                param([string]$Path)
+                if ($Path -ieq $script:blockedBackup) { throw [IO.IOException]::new('Simulated unreadable primary backup.') }
+                & $script:realDigest $Path
+            }
+            Invoke-ProoflinePendingRepair $dir
+        }
+        finally {
+            Set-Item Function:\Get-ProoflineSha256 -Value $originalDigest
+            $script:blockedBackup = $null
+            $script:realDigest = $null
+        }
+        Require ((Get-ProoflineSha256 (Active 'backup-fallback')) -ceq $script:oldHash) 'Verified secondary backup did not restore old release.'
+        Assert-ProoflineRecord (Receipt 'backup-fallback') '0.5.1' $script:oldHash
+        Require (-not [IO.File]::Exists((Pending 'backup-fallback'))) 'Fallback recovery left pending journal.'
     }
     Check 'receipt replacement preserves and cleans up its backup' {
         $dir = PrepareOld 'receipt-backup'
@@ -280,7 +355,9 @@ try {
     Check 'new active detected and finalized after restart' {
         $dir = PrepareOld 'finalize'
         $paths = MakePending $dir
+        Set-ProoflinePendingPostcheck (Pending 'finalize') 'checking'
         [IO.File]::WriteAllBytes((Active 'finalize'), (Get-ProoflineTarExecutable $script:newArchive))
+        Set-ProoflinePendingPostcheck (Pending 'finalize') 'passed'
         $before = $script:smokeCount
         Invoke-ProoflinePendingRepair $dir
         Require ($script:smokeCount -eq $before) 'Recovery executed pre-existing executable verified only by local journal.'
@@ -329,7 +406,9 @@ try {
     Check 'verified recovered upgrade is never undone by cleanup failure' {
         $dir = PrepareOld 'cleanup-recovery'
         [void](MakePending $dir)
+        Set-ProoflinePendingPostcheck (Pending 'cleanup-recovery') 'checking'
         [IO.File]::WriteAllBytes((Active 'cleanup-recovery'), (Get-ProoflineTarExecutable $script:newArchive))
+        Set-ProoflinePendingPostcheck (Pending 'cleanup-recovery') 'passed'
         $originalCleanup = (Get-Item Function:\Clear-ProoflineUpgradeFiles).ScriptBlock
         try {
             Set-Item Function:\Clear-ProoflineUpgradeFiles -Value {

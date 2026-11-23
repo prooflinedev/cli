@@ -45,7 +45,19 @@ try {
     Test-Case 'valid official-style tar and multi-target digest manifest' {
         Assert-ProoflineChecksum $valid $sums
         $exe = Get-ProoflineTarExecutable $valid
-        if ($exe.Length -ne 1024) { throw 'Unexpected fixture executable length.' }
+        # Verify every payload byte, not just the archive layout and length.
+        $expected = [byte[]]::new(1024)
+        $expected[0] = 77
+        $expected[1] = 90
+        $expected[0x3c] = 0x80
+        $expected[0x80] = 80
+        $expected[0x81] = 69
+        if ($exe.Length -ne $expected.Length) { throw 'Unexpected fixture executable length.' }
+        for ($i = 0; $i -lt $expected.Length; $i++) {
+            if ($exe[$i] -ne $expected[$i]) {
+                throw "Extracted executable payload differs from independent fixture at byte $i."
+            }
+        }
     }
     foreach ($name in @('SHA256SUMS-mismatch', 'SHA256SUMS-duplicate',
             'SHA256SUMS-missing', 'SHA256SUMS-malformed')) {
@@ -58,7 +70,18 @@ try {
             'symlink.tar.gz', 'not-pe.tar.gz')) {
         $archive = Bytes $name
         Test-Case "archive rejects $name" {
-            Must-Throw { Get-ProoflineTarExecutable $archive }
+            if ($name -eq 'symlink.tar.gz') {
+                $rejectedForType = $false
+                try { [void](Get-ProoflineTarExecutable $archive) }
+                catch {
+                    if ($_.Exception.Message -notlike '*exactly one regular proofline.exe*') {
+                        throw "Symlink rejected for the wrong reason: $($_.Exception.Message)"
+                    }
+                    $rejectedForType = $true
+                }
+                if (-not $rejectedForType) { throw 'Symlink tar member was accepted.' }
+            }
+            else { Must-Throw { Get-ProoflineTarExecutable $archive } }
         }
     }
     Test-Case 'checksum rejects modified archive bytes' {

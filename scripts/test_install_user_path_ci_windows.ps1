@@ -47,8 +47,10 @@ $directory = Join-Path $env:RUNNER_TEMP ('proofline-path-ci-' + [guid]::NewGuid(
 $token = '%PROOFLINE_CI_TEST_ROOT%\bin'
 $seed = if ([string]::IsNullOrEmpty($original.value)) { $token }
 else { $original.value.TrimEnd(';') + ';' + $token }
-$expected = Get-ProoflineUpdatedUserPath $seed $directory
-if ($null -eq $expected) { throw 'Fresh randomized CI directory was already in User PATH.' }
+# Independent oracle: do not use the same helper under test to construct
+# expected output, or truncation before $token could go undetected.
+$expected = $seed.TrimEnd(';') + ';' + $directory
+if ($seed -match [regex]::Escape($directory)) { throw 'Fresh randomized CI directory was already in User PATH.' }
 [IO.Directory]::CreateDirectory($directory) | Out-Null
 
 $seeded = $false
@@ -100,8 +102,10 @@ finally {
     if ($seeded) {
         $current = Get-RawUserPath
         # Restore only the exact test values; do not overwrite other edits.
-        if ($current.kind -ceq 'ExpandString' -and
+        if ($current.kind -in @('ExpandString', 'String') -and
             $current.value -in @($seed, $expected)) {
+            # Even if a registry-kind regression occurred, restore the exact
+            # seeded text instead of leaving the disposable PATH entries behind.
             $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
             try {
                 if ($original.exists) {

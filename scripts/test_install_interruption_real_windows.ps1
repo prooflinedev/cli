@@ -42,6 +42,30 @@ function Assert-Sandbox([string]$Directory) {
         throw 'Missing disposable test marker; refusing to touch a real installation.'
     }
 }
+function Assert-TestExecutableVersion([string]$Exe, [string]$Version) {
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $Exe
+    $start.Arguments = '--version'
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $child = [Diagnostics.Process]::new()
+    $child.StartInfo = $start
+    try {
+        if (-not $child.Start()) { throw "Could not start recovered version $Version." }
+        $stdout = $child.StandardOutput.ReadToEndAsync()
+        $stderr = $child.StandardError.ReadToEndAsync()
+        if (-not $child.WaitForExit(15000)) {
+            try { $child.Kill() } catch { }
+            [void]$child.WaitForExit(5000)
+            throw "Version check timed out for recovered $Version."
+        }
+        Require ($child.ExitCode -eq 0 -and $stdout.GetAwaiter().GetResult().Trim() -ceq "proofline $Version" -and
+            $stderr.GetAwaiter().GetResult().Trim() -eq '') "Executable version check failed for $Version."
+    }
+    finally { $child.Dispose() }
+}
 function Assert-Installed(
     [string]$Directory,
     [string]$Version,
@@ -58,9 +82,8 @@ function Assert-Installed(
     $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
     Require ($data.schema -eq 1 -and $data.version -ceq $Version -and
         $data.sha256 -ceq $hash) 'Receipt does not match installed executable.'
-    $output = @(& $exe --version)
-    $exitCode = $LASTEXITCODE
-    Require ($exitCode -eq 0 -and ($output -join '').Trim() -ceq "proofline $Version") "Executable version check failed for $Version."
+    Require ($hash -ceq $script:pinnedExeHashes[$Version]) 'Recovered executable does not match pinned official fixture bytes.'
+    Assert-TestExecutableVersion $exe $Version
     # A partial, untrusted stage is deliberately retained as .exe.incomplete
     # evidence. This is not an executable eligible for install or recovery.
     $incompletePattern = '\A\.proofline-staged-[0-9a-f]{32}\.exe\.incomplete\z'
@@ -89,7 +112,7 @@ function Assert-Installed(
             Require ([IO.File]::ReadAllText($damaged[0].FullName) -ceq 'INTENTIONALLY_CORRUPTED') 'Quarantined contents differ from injected corruption.'
         }
         else {
-            Require ((Get-FileHash -LiteralPath $damaged[0].FullName -Algorithm SHA256).Hash -cne $hash) 'Rejected new release was not quarantined.'
+            Require ((Get-FileHash -LiteralPath $damaged[0].FullName -Algorithm SHA256).Hash -ceq $script:pinnedExeHashes['0.5.2']) 'Quarantine does not match the pinned rejected new release.'
         }
     }
     else {
@@ -243,7 +266,7 @@ $expected = @{
     'fresh-after-journal' = 'absent'
     'fresh-partial-stage' = 'absent'
     'fresh-after-stage' = 'absent'
-    'fresh-after-move' = '0.5.1'
+    'fresh-after-move' = 'absent'
     'fresh-after-receipt' = '0.5.1'
 }
 $engine = (Get-Process -Id $PID).Path
@@ -254,6 +277,7 @@ $cleanup = $false
 
 try {
     . $originalInstaller
+    $script:pinnedExeHashes = @{}
     foreach ($pair in @(@('0.5.1', 'old'), @('0.5.2', 'new'))) {
         $v = $pair[0]
         $kind = $pair[1]
@@ -262,7 +286,10 @@ try {
         $archive = Get-ProoflineOfficialBytes "$prefix/$script:ProoflineArchiveName" $script:MaxArchiveBytes
         $manifest = Get-ProoflineOfficialBytes "$prefix/SHA256SUMS" 8192
         Assert-ProoflineChecksum $archive $manifest
-        [void](Get-ProoflineTarExecutable $archive)
+        $verifiedBinary = Get-ProoflineTarExecutable $archive
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $script:pinnedExeHashes[$v] = [BitConverter]::ToString($sha.ComputeHash($verifiedBinary)).Replace('-', '') }
+        finally { $sha.Dispose() }
         [IO.File]::WriteAllBytes((Join-Path $cache "$kind.tar.gz"), $archive)
         [IO.File]::WriteAllBytes((Join-Path $cache "$kind-SHA256SUMS"), $manifest)
     }
@@ -312,16 +339,16 @@ try {
             Require ($null -eq $activeDigest) 'Fresh install published executable before intended checkpoint.'
         }
         elseif ($checkpoint -in @('fresh-after-move', 'fresh-after-receipt')) {
-            Require ($null -ne $activeDigest) 'Fresh install did not publish executable before checkpoint.'
+            Require ($activeDigest -ceq $script:pinnedExeHashes['0.5.1']) 'Fresh install did not publish the pinned executable before checkpoint.'
         }
         elseif ($checkpoint -in @('after-journal', 'upgrade-partial-stage')) {
             Require ($activeDigest -ceq $oldDigest) 'Journal checkpoint unexpectedly changed old executable.'
         }
         elseif ($checkpoint -eq 'corrupt-after-switch') {
-            Require ($activeDigest -cne $oldDigest) 'Corruption checkpoint did not change the active file.'
+            Require ([IO.File]::ReadAllText($activeFile) -ceq 'INTENTIONALLY_CORRUPTED') 'Corruption checkpoint did not install injected corruption.'
         }
         else {
-            Require ($activeDigest -cne $oldDigest) 'Replacement checkpoint did not change executable.'
+            Require ($activeDigest -ceq $script:pinnedExeHashes['0.5.2']) 'Replacement checkpoint did not publish pinned new executable.'
         }
 
         $recoverStdout = Join-Path $root ("recovery-$checkpoint.stdout.txt")
@@ -348,7 +375,14 @@ try {
                     Where-Object { $_.Name -match '^\.proofline-staged-[a-f0-9]{32}\.exe\.incomplete$' })
                 Require ($evidence.Count -eq 1) 'Incomplete first-install bytes were not preserved.'
             }
-            Write-Host "PASS $checkpoint; fresh process removed interrupted first-install files."
+            $unverified = @(Get-ChildItem -LiteralPath $directory -Force |
+                Where-Object { $_.Name -match '^\.proofline-unverified-first-[a-f0-9]{32}\.exe$' })
+            if ($checkpoint -eq 'fresh-after-move') {
+                Require ($unverified.Count -eq 1) 'Unverified published first-install executable was not quarantined.'
+                Require ((Get-FileHash -LiteralPath $unverified[0].FullName -Algorithm SHA256).Hash -ceq $script:pinnedExeHashes['0.5.1']) 'First-install quarantine does not match pinned executable.'
+            }
+            else { Require ($unverified.Count -eq 0) 'Unexpected first-install quarantine remains.' }
+            Write-Host "PASS $checkpoint; fresh process recovered without accepting an unverified executable."
         }
         else {
             $damagedMode = 'none'
