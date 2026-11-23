@@ -394,7 +394,8 @@ async fn subjects(hook: Hook, here: &Path, remote: &str) -> anyhow::Result<(Vec<
                 let base = if is_zero(&pushed.remote_sha) {
                     git::new_branch_base(here, remote, &pushed.local_sha).await
                 } else {
-                    Ok(pushed.remote_sha)
+                    git::pushed_branch_base(here, remote, &pushed.remote_sha, &pushed.local_sha)
+                        .await
                 };
                 let changes = match base {
                     Ok(base) => git::range_changes(here, &base, &pushed.local_sha).await,

@@ -612,6 +612,72 @@ async fn each_pushed_branch_is_reviewed_against_the_commit_the_remote_has() {
 }
 
 #[tokio::test]
+async fn a_pushed_branch_is_not_reviewed_with_commits_from_the_default_branch() {
+    let checkout = Checkout::new().await;
+    let uploads = Uploads::default();
+    let origin = serve(uploads.clone(), "SERIOUS", false).await;
+    checkout.git(&["checkout", "-q", "-b", "feature"]).await;
+    let pushed = checkout.commit("feature.rs", "fn feature() {}\n").await;
+    // Another change reaches the default branch after the branch was pushed.
+    checkout.git(&["checkout", "-q", "main"]).await;
+    let main = checkout.commit("teammate.rs", "fn teammate() {}\n").await;
+    checkout
+        .git(&["update-ref", "refs/remotes/origin/main", &main])
+        .await;
+    let unknown = "1".repeat(40);
+    // (how the branch is updated, the remote's commit, the expected base)
+    let cases = [
+        ("merge", pushed.as_str(), main.as_str()),
+        ("rebase", pushed.as_str(), main.as_str()),
+        ("amend", pushed.as_str(), pushed.as_str()),
+        ("amend", unknown.as_str(), checkout.base.as_str()),
+    ];
+    for (update, remote_sha, expected_base) in cases {
+        checkout
+            .git(&["checkout", "-q", "-B", "feature", &pushed])
+            .await;
+        match update {
+            "merge" => {
+                checkout
+                    .git(&["merge", "-q", "--no-edit", "origin/main"])
+                    .await;
+            }
+            "rebase" => {
+                checkout.git(&["rebase", "-q", "origin/main"]).await;
+            }
+            _ => {
+                checkout.git(&["reset", "-q", "--soft", "HEAD~"]).await;
+            }
+        }
+        let head = checkout
+            .commit("feature.rs", "fn feature() { pushed() }\n")
+            .await;
+        uploads.lock().unwrap().clear();
+        let output = checkout
+            .proofline(
+                &origin,
+                &[
+                    "hook",
+                    "run",
+                    "pre-push",
+                    "origin",
+                    "https://github.com/acme/web.git",
+                ],
+                &format!("refs/heads/feature {head} refs/heads/feature {remote_sha}\n"),
+            )
+            .await;
+        let case = format!("{update} over {remote_sha}");
+        assert_eq!(output.status.code(), Some(0), "{case}: {}", stderr(&output));
+        let uploads = uploads.lock().unwrap();
+        assert_eq!(uploads.len(), 1, "{case}");
+        assert_eq!(uploads[0]["base_commit_sha"], expected_base, "{case}");
+        let patch = uploads[0]["patch"].as_str().unwrap();
+        assert!(patch.contains("+fn feature() { pushed() }"), "{case}");
+        assert!(!patch.contains("teammate"), "{case}: {patch}");
+    }
+}
+
+#[tokio::test]
 #[ignore = "requires official pre-commit >=3.2.0 on PATH; run this suite with --include-ignored"]
 async fn the_pre_commit_framework_preserves_selection_policy_and_existing_configuration() {
     let checkout = Checkout::new().await;

@@ -365,6 +365,59 @@ pub async fn new_branch_base(dir: &Path, remote: &str, head: &str) -> Result<Str
     merge_base(dir, remote, &commit_sha(head)?, &[default.as_str()]).await
 }
 
+/// The base of a branch the remote has at `remote_sha`. That commit is the
+/// base while `head` takes in nothing from `remote`'s default branch that
+/// `remote_sha` lacks, so a push reviews only what it adds. After `head`
+/// merged or rebased onto newer default-branch commits, comparing with
+/// `remote_sha` would review those commits again as part of the push, so the
+/// branch is compared with its merge-base with the default branch, as a new
+/// branch is. So is a branch whose remote commit this checkout does not have.
+pub async fn pushed_branch_base(
+    dir: &Path,
+    remote: &str,
+    remote_sha: &str,
+    head: &str,
+) -> Result<String, GitError> {
+    let remote_sha = commit_sha(remote_sha)?;
+    let known = match resolve(dir, &remote_sha).await {
+        Ok(_) => true,
+        Err(GitError::UnknownRevision(_)) => false,
+        Err(error) => return Err(error),
+    };
+    let default = format!("refs/remotes/{remote}/HEAD");
+    let fork_point = match merge_base(dir, remote, &commit_sha(head)?, &[default.as_str()]).await {
+        Ok(fork_point) => fork_point,
+        // Without a default branch, the remote's commit is the only base.
+        Err(GitError::NoBase(_)) if known => return Ok(remote_sha),
+        Err(error) => return Err(error),
+    };
+    if known && is_ancestor(dir, &fork_point, &remote_sha).await? {
+        Ok(remote_sha)
+    } else {
+        Ok(fork_point)
+    }
+}
+
+/// Whether `ancestor` is reachable from `descendant`.
+async fn is_ancestor(dir: &Path, ancestor: &str, descendant: &str) -> Result<bool, GitError> {
+    let args = ["merge-base", "--is-ancestor", ancestor, descendant];
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .await
+        .map_err(|error| GitError::Unavailable(error.to_string()))?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(GitError::Failed {
+            command: args.join(" "),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        }),
+    }
+}
+
 /// The patch from `base_commit_sha` to `head`, or to `index` when `head` is
 /// `None`.
 async fn diff(
