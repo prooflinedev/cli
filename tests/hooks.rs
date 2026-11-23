@@ -673,8 +673,49 @@ async fn a_pushed_branch_is_not_reviewed_with_commits_from_the_default_branch() 
         assert_eq!(uploads[0]["base_commit_sha"], expected_base, "{case}");
         let patch = uploads[0]["patch"].as_str().unwrap();
         assert!(patch.contains("+fn feature() { pushed() }"), "{case}");
+        // Against the remote's commit, the patch is only the change to it;
+        // against a merge-base, it adds the whole file.
+        assert_eq!(
+            patch.contains("-fn feature() {}"),
+            expected_base == pushed,
+            "{case}: {patch}"
+        );
         assert!(!patch.contains("teammate"), "{case}: {patch}");
     }
+}
+
+#[tokio::test]
+async fn a_branch_without_history_in_common_with_the_default_branch_keeps_the_remote_commit() {
+    let checkout = Checkout::new().await;
+    let uploads = Uploads::default();
+    let origin = serve(uploads.clone(), "SERIOUS", false).await;
+    // A site branch such as gh-pages starts from no commit of main.
+    checkout.git(&["checkout", "-q", "--orphan", "pages"]).await;
+    checkout.git(&["rm", "-q", "-r", "--cached", "."]).await;
+    let pushed = checkout.commit("index.html", "<p>old</p>\n").await;
+    let head = checkout.commit("index.html", "<p>new</p>\n").await;
+    let output = checkout
+        .proofline(
+            &origin,
+            &[
+                "hook",
+                "run",
+                "pre-push",
+                "origin",
+                "https://github.com/acme/web.git",
+            ],
+            &format!("refs/heads/pages {head} refs/heads/pages {pushed}\n"),
+        )
+        .await;
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let uploads = uploads.lock().unwrap();
+    assert_eq!(uploads.len(), 1, "{}", stderr(&output));
+    assert_eq!(uploads[0]["base_commit_sha"], pushed);
+    let patch = uploads[0]["patch"].as_str().unwrap();
+    assert!(
+        patch.contains("-<p>old</p>") && patch.contains("+<p>new</p>"),
+        "{patch}"
+    );
 }
 
 #[tokio::test]

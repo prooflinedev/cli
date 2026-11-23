@@ -372,6 +372,8 @@ pub async fn new_branch_base(dir: &Path, remote: &str, head: &str) -> Result<Str
 /// `remote_sha` would review those commits again as part of the push, so the
 /// branch is compared with its merge-base with the default branch, as a new
 /// branch is. So is a branch whose remote commit this checkout does not have.
+/// A branch with no default branch to compare with, or no history in common
+/// with it, keeps the remote's commit as its base.
 pub async fn pushed_branch_base(
     dir: &Path,
     remote: &str,
@@ -385,22 +387,36 @@ pub async fn pushed_branch_base(
         Err(error) => return Err(error),
     };
     let default = format!("refs/remotes/{remote}/HEAD");
-    let fork_point = match merge_base(dir, remote, &commit_sha(head)?, &[default.as_str()]).await {
-        Ok(fork_point) => fork_point,
-        // Without a default branch, the remote's commit is the only base.
-        Err(GitError::NoBase(_)) if known => return Ok(remote_sha),
-        Err(error) => return Err(error),
-    };
-    if known && is_ancestor(dir, &fork_point, &remote_sha).await? {
-        Ok(remote_sha)
+    let fork_point = if line_in(dir, &["rev-parse", "--verify", "--quiet", &default])
+        .await
+        .is_ok()
+    {
+        answer_in(dir, &["merge-base", &commit_sha(head)?, &default])
+            .await?
+            .map(|fork_point| commit_sha(&fork_point))
+            .transpose()?
     } else {
-        Ok(fork_point)
+        None
+    };
+    match fork_point {
+        Some(fork_point) if known => {
+            let ancestor = ["merge-base", "--is-ancestor", &fork_point, &remote_sha];
+            Ok(if answer_in(dir, &ancestor).await?.is_some() {
+                remote_sha
+            } else {
+                fork_point
+            })
+        }
+        Some(fork_point) => Ok(fork_point),
+        None if known => Ok(remote_sha),
+        None => Err(GitError::NoBase(remote.to_owned())),
     }
 }
 
-/// Whether `ancestor` is reachable from `descendant`.
-async fn is_ancestor(dir: &Path, ancestor: &str, descendant: &str) -> Result<bool, GitError> {
-    let args = ["merge-base", "--is-ancestor", ancestor, descendant];
+/// Runs git in `dir` where exit status 1 is an answer, not a failure: `None`
+/// for status 1 (not an ancestor, no common ancestor), and the trimmed output
+/// otherwise.
+async fn answer_in(dir: &Path, args: &[&str]) -> Result<Option<String>, GitError> {
     let output = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -409,8 +425,10 @@ async fn is_ancestor(dir: &Path, ancestor: &str, descendant: &str) -> Result<boo
         .await
         .map_err(|error| GitError::Unavailable(error.to_string()))?;
     match output.status.code() {
-        Some(0) => Ok(true),
-        Some(1) => Ok(false),
+        Some(0) => Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        )),
+        Some(1) => Ok(None),
         _ => Err(GitError::Failed {
             command: args.join(" "),
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
