@@ -434,18 +434,24 @@ struct Fake {
 }
 
 /// Answers with approval pages on the stand-in's own origin, as the console does.
+/// `{origin}` in an overriding field stands for that origin.
 async fn code(State(fake): State<Fake>, headers: HeaderMap) -> Json<Value> {
-    let host = headers[header::HOST].to_str().unwrap();
+    let origin = format!("http://{}", headers[header::HOST].to_str().unwrap());
     let mut body = json!({
         "device_code": "d".repeat(52),
         "user_code": "WDJB-MJHT",
-        "verification_uri": format!("http://{host}/auth/device"),
-        "verification_uri_complete": format!("http://{host}/auth/device?user_code=WDJB-MJHT"),
+        "verification_uri": format!("{origin}/auth/device"),
+        "verification_uri_complete": format!("{origin}/auth/device?user_code=WDJB-MJHT"),
         "expires_in": 600,
         "interval": 1,
     });
     if let Some(Value::Object(fields)) = fake.challenge {
-        body.as_object_mut().unwrap().extend(fields);
+        for (name, value) in fields {
+            body[name] = match value {
+                Value::String(text) => Value::String(text.replace("{origin}", &origin)),
+                other => other,
+            };
+        }
     }
     Json(body)
 }
@@ -587,11 +593,25 @@ fn org() -> Uuid {
 async fn device_sign_in_waits_for_approval_and_keeps_the_organization() {
     let fake = Fake {
         report_organization: true,
+        // Same-origin pages whose dot segments the parsed URL removes.
+        challenge: Some(json!({
+            "verification_uri": "{origin}/auth/./device",
+            "verification_uri_complete": "{origin}/auth/x/../device?user_code=WDJB-MJHT",
+        })),
         ..Fake::default()
     };
-    let http = Http::new(serve(fake.clone()).await).unwrap();
+    let origin = serve(fake.clone()).await;
+    let http = Http::new(origin.clone()).unwrap();
     let challenge = device::start(&http, &[]).await.unwrap();
     assert_eq!(challenge.user_code.expose_secret(), "WDJB-MJHT");
+    assert_eq!(challenge.verification_uri, format!("{origin}/auth/device"));
+    assert_eq!(
+        challenge
+            .verification_uri_complete
+            .as_ref()
+            .map(|complete| complete.expose_secret().to_owned()),
+        Some(format!("{origin}/auth/device?user_code=WDJB-MJHT"))
+    );
     assert!(format!("{challenge:?}").contains("REDACTED"));
     assert!(!format!("{challenge:?}").contains("WDJB"));
     let credential = device::finish(&http, &challenge, None).await.unwrap();
@@ -618,6 +638,8 @@ async fn a_sign_in_page_on_another_origin_is_refused() {
             "file:///C:/Windows/System32/calc.exe",
         ),
         ("verification_uri", "not a url"),
+        // A blob: URL takes the origin of the URL inside it.
+        ("verification_uri_complete", "blob:{origin}/0190f3a0"),
     ] {
         let http = Http::new(
             serve(Fake {

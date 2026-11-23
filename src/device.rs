@@ -101,10 +101,14 @@ pub async fn start(http: &Http, scopes: &[String]) -> Result<Challenge, DeviceEr
 
 /// Returns `address` when it is a page on the console's own origin. The CLI
 /// opens it in a browser, so a page on another site, or a `file:` or custom
-/// scheme, is refused. The serialized URL is ASCII, so it is safe to print.
+/// scheme, is refused. The scheme is checked too, because a `blob:` URL takes
+/// the origin of the URL inside it. The serialized URL is ASCII, so it is safe
+/// to print.
 fn approval_page(http: &Http, field: &str, address: &str) -> Result<String, ApiError> {
     let page = Url::parse(address).map_err(|_| http.protocol(format!("{field} is not a URL")))?;
-    if page.origin().ascii_serialization() != http.origin().as_key() {
+    if !matches!(page.scheme(), "http" | "https")
+        || page.origin().ascii_serialization() != http.origin().as_key()
+    {
         return Err(http.protocol(format!("{field} is not on {}", http.origin())));
     }
     Ok(page.into())
