@@ -239,10 +239,15 @@ function Get-ProoflineTarExecutable([byte[]]$ArchiveBytes) {
         throw 'Release executable has no valid MZ header.'
     }
     $peOffset = [BitConverter]::ToInt32($binary, 0x3c)
-    if ($peOffset -lt 64 -or $peOffset -gt ($binary.Length - 4) -or
+    if ($peOffset -lt 64 -or $peOffset -gt ($binary.Length - 6) -or
         $binary[$peOffset] -ne 80 -or $binary[$peOffset + 1] -ne 69 -or
         $binary[$peOffset + 2] -ne 0 -or $binary[$peOffset + 3] -ne 0) {
         throw 'Release executable has no valid PE signature.'
+    }
+    # The archive name promises x86_64. A valid PE signature alone also
+    # accepts x86 images, which can run under WOW64 and pass --version.
+    if ([BitConverter]::ToUInt16($binary, $peOffset + 4) -ne 0x8664) {
+        throw 'Release executable has no AMD64 (x64) COFF machine type.'
     }
     return ,$binary
 }
@@ -412,35 +417,54 @@ function Assert-ProoflineVersionResult(
     }
 }
 
-function Assert-ProoflineExeVersion([string]$Path, [string]$Version) {
-    # Run only checksum-verified images; bound both process termination
-    # and redirected output collection so descendants cannot hang the check.
-    $startInfo = [Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = $Path
-    $startInfo.Arguments = '--version'
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-    $process = [Diagnostics.Process]::new()
-    $process.StartInfo = $startInfo
-    $clock = [Diagnostics.Stopwatch]::StartNew()
-    try {
-        if (-not $process.Start()) { throw 'Candidate executable did not start.' }
-        $outTask = $process.StandardOutput.ReadToEndAsync()
-        $errTask = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit(15000)) {
-            try { $process.Kill() } catch { }
-            [void]$process.WaitForExit(5000)
-            throw 'Candidate executable did not exit within 15 seconds.'
-        }
-        $remaining = [int][Math]::Max(0, 15000 - $clock.ElapsedMilliseconds)
-        if (-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($outTask, $errTask), $remaining)) {
-            throw 'Candidate version check exited but output streams remained open beyond 15 seconds.'
-        }
-        Assert-ProoflineVersionResult $process.ExitCode ($outTask.GetAwaiter().GetResult()) ($errTask.GetAwaiter().GetResult()) $Version
+function Assert-ProoflineExeVersion([string]$Path, [string]$Version, [string]$ExpectedSha256) {
+    # Keep a read-only handle that denies writes and deletes from the hash
+    # through process creation and the --version check. This closes the gap
+    # between a standalone Get-FileHash and launching the executable.
+    if ($ExpectedSha256 -cnotmatch '\A[0-9A-Fa-f]{64}\z') {
+        throw 'Executable version check requires an expected SHA-256 digest.'
     }
-    finally { $process.Dispose() }
+    Assert-ProoflineNoReparse $Path
+    $lockedImage = [IO.File]::Open($Path, [IO.FileMode]::Open,
+        [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $digest = [Security.Cryptography.SHA256]::Create()
+        try { $actualHash = [BitConverter]::ToString($digest.ComputeHash($lockedImage)).Replace('-', '') }
+        finally { $digest.Dispose() }
+        if ($actualHash -cne $ExpectedSha256.ToUpperInvariant()) {
+            throw 'Executable changed before its protected version check.'
+        }
+
+        # Bound both process termination and redirected output collection so
+        # descendants cannot hang the check.
+        $startInfo = [Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $Path
+        $startInfo.Arguments = '--version'
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $process = [Diagnostics.Process]::new()
+        $process.StartInfo = $startInfo
+        $clock = [Diagnostics.Stopwatch]::StartNew()
+        try {
+            if (-not $process.Start()) { throw 'Candidate executable did not start.' }
+            $outTask = $process.StandardOutput.ReadToEndAsync()
+            $errTask = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(15000)) {
+                try { $process.Kill() } catch { }
+                [void]$process.WaitForExit(5000)
+                throw 'Candidate executable did not exit within 15 seconds.'
+            }
+            $remaining = [int][Math]::Max(0, 15000 - $clock.ElapsedMilliseconds)
+            if (-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($outTask, $errTask), $remaining)) {
+                throw 'Candidate version check exited but output streams remained open beyond 15 seconds.'
+            }
+            Assert-ProoflineVersionResult $process.ExitCode ($outTask.GetAwaiter().GetResult()) ($errTask.GetAwaiter().GetResult()) $Version
+        }
+        finally { $process.Dispose() }
+    }
+    finally { $lockedImage.Dispose() }
 }
 
 function Write-ProoflineAtomicRecord([string]$Path, [string]$Content) {
@@ -847,7 +871,9 @@ function Recover-ProoflinePending([string]$Directory) {
             if ([IO.File]::Exists($paths.damaged)) {
                 throw 'Damaged-file evidence path already exists; manual recovery required.'
             }
-            [IO.File]::Replace($restore, $destination, $paths.damaged)
+            # Reuse bounded transient-lock retries without ever retrying a
+            # partially completed replacement or losing rejected-image evidence.
+            Invoke-ProoflineReplaceWithRetry $restore $destination $paths.damaged $record.oldSha256 $activeHash
         } else {
             [IO.File]::Move($restore, $destination)
         }
@@ -1025,7 +1051,7 @@ function Install-ProoflineArchive(
                 $stream.Flush($true)
             }
             finally { $stream.Dispose() }
-            Assert-ProoflineExeVersion $stage $ReleaseVersion
+            Assert-ProoflineExeVersion $stage $ReleaseVersion $hash
 
             if ($null -eq $oldReceipt) {
                 [IO.File]::Move($stage, $destination)
@@ -1033,7 +1059,7 @@ function Install-ProoflineArchive(
                     throw 'Installed executable digest differs after relocation.'
                 }
                 try {
-                    Assert-ProoflineExeVersion $destination $ReleaseVersion
+                    Assert-ProoflineExeVersion $destination $ReleaseVersion $hash
                     Set-ProoflinePendingPostcheck $pending 'passed'
                     Write-ProoflineReceipt $receipt $ReleaseVersion $hash
                     Clear-ProoflineJournalBackup $pending
@@ -1064,7 +1090,7 @@ function Install-ProoflineArchive(
                 if ((Get-ProoflineSha256 $destination) -cne $hash) {
                     throw 'Upgraded executable digest differs from verified candidate.'
                 }
-                Assert-ProoflineExeVersion $destination $ReleaseVersion
+                Assert-ProoflineExeVersion $destination $ReleaseVersion $hash
                 Set-ProoflinePendingPostcheck $pending 'passed'
                 Write-ProoflineReceipt $receipt $ReleaseVersion $hash
                 try { Clear-ProoflineUpgradeFiles $paths $pending $hash }

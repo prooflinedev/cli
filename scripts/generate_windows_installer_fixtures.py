@@ -29,6 +29,7 @@ def pe_fixture() -> bytes:
     image[:2] = b"MZ"
     image[0x3C:0x40] = (0x80).to_bytes(4, "little")
     image[0x80:0x84] = b"PE\0\0"
+    image[0x84:0x86] = (0x8664).to_bytes(2, "little")  # AMD64 COFF Machine
     return bytes(image)
 
 
@@ -57,6 +58,11 @@ def main(destination: Path) -> None:
     )
     (destination / "not-pe.tar.gz").write_bytes(
         pack(("proofline.exe", b"not a PE" * 128, tarfile.REGTYPE))
+    )
+    x86_binary = bytearray(binary)
+    x86_binary[0x84:0x86] = (0x014C).to_bytes(2, "little")
+    (destination / "x86-machine.tar.gz").write_bytes(
+        pack(("proofline.exe", bytes(x86_binary), tarfile.REGTYPE))
     )
     wrong_signature = bytearray(binary)
     wrong_signature[0x80:0x84] = b"NOPE"

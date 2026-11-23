@@ -43,7 +43,12 @@ jobs:
           # The normal tar smoke test alone does not reject extra members.
           . ./install.ps1
           $archivePath = 'artifacts/proofline-x86_64-pc-windows-msvc.tar.gz'
-          $binary = Get-ProoflineTarExecutable ([IO.File]::ReadAllBytes((Resolve-Path $archivePath).Path))
+          $archiveFile = (Resolve-Path $archivePath).Path
+          $archiveLength = ([IO.FileInfo]::new($archiveFile)).Length
+          if ($archiveLength -le 0 -or $archiveLength -gt $script:MaxArchiveBytes) {
+            throw "PR-built Windows archive exceeds the installer size limit: $archiveLength bytes."
+          }
+          $binary = Get-ProoflineTarExecutable ([IO.File]::ReadAllBytes($archiveFile))
           if ($binary.Length -le 0) { throw 'PR-built Windows archive contains no supported Proofline executable.' }
           Write-Host "Installer-compatible PR-built Windows archive validated ($($binary.Length) bytes)."
           tar -xzf artifacts/proofline-x86_64-pc-windows-msvc.tar.gz -C artifacts

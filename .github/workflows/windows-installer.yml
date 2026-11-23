@@ -57,7 +57,9 @@ jobs:
   real-release-integration:
     name: Real Windows install and interruption recovery (${{ matrix.engine }})
     runs-on: windows-2025
-    timeout-minutes: 30
+    # Up to 24 forced-termination workers x 90 seconds plus real upgrades,
+    # download/setup time, and test-runner overhead can exceed 30 minutes.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:

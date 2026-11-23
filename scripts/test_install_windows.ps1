@@ -52,6 +52,8 @@ try {
         $expected[0x3c] = 0x80
         $expected[0x80] = 80
         $expected[0x81] = 69
+        $expected[0x84] = 0x64
+        $expected[0x85] = 0x86
         if ($exe.Length -ne $expected.Length) { throw 'Unexpected fixture executable length.' }
         for ($i = 0; $i -lt $expected.Length; $i++) {
             if ($exe[$i] -ne $expected[$i]) {
@@ -95,6 +97,18 @@ try {
             $specificRejection = $true
         }
         if (-not $specificRejection) { throw 'Corrupt PE signature was accepted.' }
+    }
+    Test-Case 'valid PE with x86 COFF Machine is rejected as non-AMD64' {
+        $x86 = Bytes 'x86-machine.tar.gz'
+        $rejectedArchitecture = $false
+        try { [void](Get-ProoflineTarExecutable $x86) }
+        catch {
+            if ($_.Exception.Message -notlike '*AMD64 (x64) COFF machine type*') {
+                throw "x86 fixture rejected for wrong reason: $($_.Exception.Message)"
+            }
+            $rejectedArchitecture = $true
+        }
+        if (-not $rejectedArchitecture) { throw 'Mislabeled x86 release was accepted.' }
     }
     Test-Case 'checksum rejects modified archive bytes' {
         $modified = Bytes 'bad-digest.tar.gz'
