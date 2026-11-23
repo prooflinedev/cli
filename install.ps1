@@ -410,6 +410,83 @@ function Assert-ProoflinePathTree([string]$Directory) {
     }
 }
 
+function Protect-ProoflineDirectoryTree([string]$Directory, [bool]$CreateMissing) {
+    # Pin every ancestor (root first), denying FILE_SHARE_DELETE for the entire
+    # transaction. A checked directory cannot be renamed or swapped for a
+    # junction between validation and a later lock/open by its pathname.
+    # Open the reparse point itself and verify handle attributes, never the
+    # attributes of a separately resolved pathname.
+    if (-not ('ProoflineDirectoryPin' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class ProoflineDirectoryPin {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileInfo {
+        public uint Attributes, CreationLow, CreationHigh, AccessLow, AccessHigh;
+        public uint WriteLow, WriteHigh, VolumeSerial, SizeHigh, SizeLow;
+        public uint Links, FileIndexHigh, FileIndexLow;
+    }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFile(string name, uint access,
+        uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandle(SafeFileHandle file,
+        out FileInfo info);
+    public static SafeFileHandle Open(string path) {
+        // FILE_READ_ATTRIBUTES; FILE_SHARE_READ | FILE_SHARE_WRITE (no delete);
+        // OPEN_EXISTING; BACKUP_SEMANTICS | OPEN_REPARSE_POINT.
+        var handle = CreateFile(path, 0x80, 0x03, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
+        if (handle.IsInvalid) {
+            int error = Marshal.GetLastWin32Error();
+            handle.Dispose();
+            throw new Win32Exception(error, "Unable to pin install directory: " + path);
+        }
+        return handle;
+    }
+    public static uint Attributes(SafeFileHandle handle) {
+        FileInfo info;
+        if (!GetFileInformationByHandle(handle, out info))
+            throw new Win32Exception(Marshal.GetLastWin32Error(),
+                "Unable to inspect pinned directory handle");
+        return info.Attributes;
+    }
+}
+'@
+    }
+    $ancestors = [Collections.Generic.List[string]]::new()
+    $cursor = [IO.DirectoryInfo]::new($Directory)
+    while ($null -ne $cursor) {
+        $ancestors.Add($cursor.FullName)
+        $cursor = $cursor.Parent
+    }
+    $guards = [Collections.Generic.List[Microsoft.Win32.SafeHandles.SafeFileHandle]]::new()
+    try {
+        for ($i = $ancestors.Count - 1; $i -ge 0; $i--) {
+            $path = $ancestors[$i]
+            if (-not [IO.Directory]::Exists($path)) {
+                if (-not $CreateMissing) { throw "Missing install directory: $path" }
+                # Parent is already pinned, so creating a missing child cannot
+                # be redirected through an ancestor swapped concurrently.
+                [IO.Directory]::CreateDirectory($path) | Out-Null
+            }
+            $handle = [ProoflineDirectoryPin]::Open($path)
+            $guards.Add($handle)
+            $attributes = [ProoflineDirectoryPin]::Attributes($handle)
+            if (($attributes -band 0x400) -ne 0 -or ($attributes -band 0x10) -eq 0) {
+                throw "Refusing reparse point or non-directory in install path: $path"
+            }
+        }
+        return ,$guards
+    }
+    catch {
+        foreach ($guard in $guards) { $guard.Dispose() }
+        throw
+    }
+}
+
 function Get-ProoflineSha256([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
 }
@@ -907,17 +984,20 @@ function Recover-ProoflinePending([string]$Directory) {
 function Invoke-ProoflinePendingRepair([string]$Directory) {
     # Recover BEFORE network activity, so an outage cannot block local repair.
     $directory = Resolve-ProoflineInstallDir $Directory
-    Assert-ProoflinePathTree $directory
     if (-not [IO.Directory]::Exists($directory)) { return }
     $pending = [IO.Path]::Combine($directory, '.proofline-install.pending.json')
     if (-not [IO.File]::Exists($pending) -and
         -not [IO.File]::Exists($pending + '.postcheck.bak')) { return }
-    $lock = [IO.Path]::Combine($directory, '.proofline-install.lock')
-    Assert-ProoflineNoReparse $lock
-    $handle = [IO.File]::Open($lock, [IO.FileMode]::OpenOrCreate,
-        [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
-    try { Recover-ProoflinePending $directory }
-    finally { $handle.Dispose() }
+    $guards = Protect-ProoflineDirectoryTree $directory $false
+    try {
+        $lock = [IO.Path]::Combine($directory, '.proofline-install.lock')
+        Assert-ProoflineNoReparse $lock
+        $handle = [IO.File]::Open($lock, [IO.FileMode]::OpenOrCreate,
+            [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        try { Recover-ProoflinePending $directory }
+        finally { $handle.Dispose() }
+    }
+    finally { foreach ($guard in $guards) { $guard.Dispose() } }
 }
 
 function Test-ProoflineTransientReplaceFailure([Exception]$Error) {
@@ -987,8 +1067,9 @@ function Install-ProoflineArchive(
     finally { $digest.Dispose() }
 
     $directory = Resolve-ProoflineInstallDir $Directory
-    Assert-ProoflinePathTree $directory
-    [IO.Directory]::CreateDirectory($directory) | Out-Null
+    # Pin the entire path through the lock, journal, replacement and cleanup.
+    $guards = Protect-ProoflineDirectoryTree $directory $true
+    try {
     $destination = [IO.Path]::Combine($directory, 'proofline.exe')
     $receipt = [IO.Path]::Combine($directory, '.proofline-install.receipt.json')
     $pending = [IO.Path]::Combine($directory, '.proofline-install.pending.json')
@@ -1125,6 +1206,8 @@ function Install-ProoflineArchive(
         }
     }
     finally { $lockHandle.Dispose() }
+    }
+    finally { foreach ($guard in $guards) { $guard.Dispose() } }
 }
 
 function Invoke-ProoflineInstaller([string]$RequestedVersion, [string]$RequestedDirectory, [bool]$ModifyPath) {
