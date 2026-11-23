@@ -414,7 +414,14 @@ pub async fn pushed_branch_base(
         None
     };
     match fork_point {
-        Some(fork_point) if known && fork_point == head => Ok(remote_sha),
+        // Comparing the pushed commit with itself would review nothing.
+        Some(fork_point) if fork_point == head => {
+            if known {
+                Ok(remote_sha)
+            } else {
+                Err(GitError::UnknownRevision(remote_sha))
+            }
+        }
         Some(fork_point) if known => {
             let ancestor = ["merge-base", "--is-ancestor", &fork_point, &remote_sha];
             Ok(if answer_in(dir, &ancestor).await?.is_some() {

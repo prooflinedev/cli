@@ -738,6 +738,43 @@ async fn a_pushed_commit_the_tracking_ref_holds_is_reviewed_against_the_commit_t
 }
 
 #[tokio::test]
+async fn a_push_is_not_reviewed_as_empty_when_the_remote_commit_is_missing() {
+    let checkout = Checkout::new().await;
+    let uploads = Uploads::default();
+    let origin = serve(uploads.clone(), "SERIOUS", false).await;
+    // The remote's branch moved to a commit this checkout never fetched,
+    // and the stale tracking ref holds the commit the push restores.
+    let restored = checkout
+        .commit("orders.rs", "fn main() { restored() }\n")
+        .await;
+    checkout
+        .git(&["update-ref", "refs/remotes/origin/main", &restored])
+        .await;
+    checkout
+        .git(&["config", "proofline.hook.pre-push.onIncomplete", "block"])
+        .await;
+    let missing = "1".repeat(40);
+    let output = checkout
+        .proofline(
+            &origin,
+            &[
+                "hook",
+                "run",
+                "pre-push",
+                "origin",
+                "https://github.com/acme/web.git",
+            ],
+            &format!("refs/heads/feature {restored} refs/heads/feature {missing}\n"),
+        )
+        .await;
+    let text = stderr(&output);
+    assert!(uploads.lock().unwrap().is_empty(), "{text}");
+    assert!(!text.contains("nothing to review"), "{text}");
+    assert!(text.contains("could not review feature"), "{text}");
+    assert_eq!(output.status.code(), Some(1), "{text}");
+}
+
+#[tokio::test]
 async fn a_branch_without_history_in_common_with_the_default_branch_keeps_the_remote_commit() {
     let checkout = Checkout::new().await;
     let uploads = Uploads::default();
