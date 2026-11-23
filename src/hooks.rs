@@ -24,7 +24,10 @@ use crate::outcome::{self, Outcome};
 use crate::render::location;
 use crate::severity::Severity;
 use crate::text::one_line;
-use crate::{RepositoryArgs, Verdict, connect, connected_repository, preflight, read_review, say};
+use crate::{
+    OnInterrupt, ReadReview, RepositoryArgs, Verdict, WaitResult, connect, connected_repository,
+    preflight, read_review, say,
+};
 
 /// Identifies a script this CLI wrote. Uninstall removes a hook only when its
 /// whole text is the script this version writes, so an edited hook stays.
@@ -369,6 +372,9 @@ enum Report {
         detail: Box<ReviewDetail>,
         state: Option<Outcome>,
     },
+
+    /// The wait was interrupted by `Ctrl-C`.
+    Interrupted,
 }
 
 /// The subjects to review, and how many pushed branches were left out.
@@ -463,6 +469,9 @@ pub(crate) async fn run(
                 report
             }
         };
+        if matches!(report, Report::Interrupted) {
+            return Ok(Verdict::Interrupted);
+        }
         reports.push((subject.label, report));
     }
     Ok(conclude(hook, &settings, &reports, skipped))
@@ -495,17 +504,28 @@ async fn request(
             verify_finding_ids: Vec::new(),
         };
         let requested = api.request_patch_review(repository_id, &request).await?;
-        let (_, detail, state) =
-            read_review(api, requested.review_id, Some(deadline), false).await?;
-        anyhow::Ok((requested.review_id, detail, state))
+        let on_interrupt = OnInterrupt::for_stoppable_request(requested.existing);
+        let wait = read_review(
+            api,
+            requested.review_id,
+            Some(deadline),
+            false,
+            on_interrupt,
+        )
+        .await?;
+        anyhow::Ok((requested.review_id, wait))
     };
     match requested.await {
-        Ok((review_id, detail, state)) => Report::Read {
-            review_id,
-            url: api.review_url(review_id),
-            detail: Box::new(detail),
-            state,
-        },
+        Ok((_, WaitResult::Interrupted)) => Report::Interrupted,
+        Ok((review_id, WaitResult::Ready(read))) => {
+            let ReadReview { detail, state, .. } = *read;
+            Report::Read {
+                review_id,
+                url: api.review_url(review_id),
+                detail: Box::new(detail),
+                state,
+            }
+        }
         Err(error) => Report::Unreviewed(format!("{error:#}")),
     }
 }
@@ -658,6 +678,7 @@ fn conclude(
                 print_read(label, *review_id, url, detail, *state, complete);
                 failing |= reaches_fail_on(detail, complete, settings.fail_on);
             }
+            Report::Interrupted => {}
         }
     }
     if skipped > 0 {

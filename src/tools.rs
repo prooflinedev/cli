@@ -5,7 +5,7 @@ use anyhow::{Context as _, bail};
 use clap::{Args, Subcommand, ValueEnum};
 use uuid::Uuid;
 
-use crate::{OutputArgs, OutputFormat, RepositoryArgs, Verdict, api::Api, say, show};
+use crate::{OnInterrupt, OutputArgs, OutputFormat, RepositoryArgs, Verdict, api::Api, say, show};
 
 #[derive(Debug, Args)]
 pub(crate) struct RerunArgs {
@@ -113,6 +113,7 @@ pub(crate) async fn rerun(api: &Api, args: &RerunArgs) -> anyhow::Result<Verdict
         &args.output,
         OutputFormat::from_json(args.output.json),
         None,
+        OnInterrupt::Detach,
     )
     .await
 }
