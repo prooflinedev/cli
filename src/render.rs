@@ -235,6 +235,39 @@ pub fn review(review: &ReviewDetail, state: Option<Outcome>, url: &Url) -> Strin
     out.join("\n")
 }
 
+/// Formats a finding diff between two runs for terminal display.
+pub fn diff(diff: &outcome::FindingDiff<'_>, previous_label: &str, current_label: &str) -> String {
+    let mut out = vec![
+        format!("Finding diff: {previous_label} -> {current_label}"),
+        format!(
+            "  {} resolved, {} persistent, {} regressions",
+            diff.resolved.len(),
+            diff.persistent.len(),
+            diff.regressions.len()
+        ),
+    ];
+
+    let mut section = |title: &str, findings: &[&Finding]| {
+        if findings.is_empty() {
+            return;
+        }
+        out.push(String::new());
+        out.push(format!("{title} ({}):", findings.len()));
+        let mut sorted: Vec<&Finding> = findings.to_vec();
+        sorted.sort_by_key(|item| Reverse(Severity::parse(&item.severity)));
+        for item in sorted {
+            finding(&mut out, item);
+        }
+    };
+
+    section("Regressions", &diff.regressions);
+    section("Resolved", &diff.resolved);
+    section("Persistent", &diff.persistent);
+
+    out.push(String::new());
+    out.join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,5 +376,24 @@ mod tests {
         let text = review(&detail, None, &url());
         assert!(!text.contains('\u{1b}'));
         assert!(text.contains("x\u{FFFD}[2J y"));
+    }
+
+    #[test]
+    fn diff_renders_summary_and_sorted_sections() {
+        let f1 = finding("WARNING", "persistent issue");
+        let f2 = finding("SERIOUS", "regression issue");
+        let f3 = finding("NOTE", "resolved issue");
+        let diff_obj = outcome::FindingDiff {
+            resolved: vec![&f3],
+            persistent: vec![&f1],
+            regressions: vec![&f2],
+        };
+        let text = diff(&diff_obj, "run 1", "run 2");
+        assert!(text.contains("Finding diff: run 1 -> run 2"));
+        assert!(text.contains("  1 resolved, 1 persistent, 1 regressions"));
+        assert!(text.contains("Regressions (1):"));
+        assert!(text.contains("Resolved (1):"));
+        assert!(text.contains("Persistent (1):"));
+        assert!(text.contains("regression issue"));
     }
 }

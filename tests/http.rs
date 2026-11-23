@@ -3618,3 +3618,202 @@ async fn config_proposal_targets_must_match_the_selected_organization() {
     assert_eq!(server.requests()[0]["arguments"]["organization_id"], ORG);
     assert_eq!(server.frames.load(Ordering::SeqCst), 3);
 }
+
+#[tokio::test]
+async fn diff_categorizes_findings_and_honors_fail_on_regression() {
+    let prefix = format!("/api/v1/organizations/{ORG}");
+    let run1_id = "0190f3a0-0000-7000-8000-000000000001";
+    let run2_id = "0190f3a0-0000-7000-8000-000000000002";
+
+    let finding_persist = json!({
+        "id": "0190f3a0-0000-7000-8000-000000000010",
+        "severity": "MEDIUM",
+        "risk_domain": "input_validation",
+        "claim": "missing length check",
+        "impact": "potential buffer overflow",
+        "lifecycle_state": "NEW",
+        "finding_fingerprint": "fp_persist",
+        "evidence_refs": []
+    });
+    let finding_resolved = json!({
+        "id": "0190f3a0-0000-7000-8000-000000000011",
+        "severity": "HIGH",
+        "risk_domain": "resource_capacity",
+        "claim": "connection pool leak",
+        "impact": "exhausted connections",
+        "lifecycle_state": "NEW",
+        "finding_fingerprint": "fp_resolved",
+        "evidence_refs": []
+    });
+    let finding_regression = json!({
+        "id": "0190f3a0-0000-7000-8000-000000000012",
+        "severity": "SERIOUS",
+        "risk_domain": "data_integrity",
+        "claim": "unindexed foreign key",
+        "impact": "deadlocks under load",
+        "lifecycle_state": "NEW",
+        "finding_fingerprint": "fp_regression",
+        "evidence_refs": []
+    });
+
+    let app = Router::new().fallback(move |request: axum::extract::Request| {
+        let prefix = prefix.clone();
+        let finding_persist = finding_persist.clone();
+        let finding_resolved = finding_resolved.clone();
+        let finding_regression = finding_regression.clone();
+        async move {
+            let path = request.uri().path().to_owned();
+            if path == format!("{prefix}/reviews") {
+                return Json(json!({
+                    "items": [],
+                    "next_cursor": null,
+                    "truncated": false,
+                    "filters": {"repositories": [{"id": REPOSITORY, "name": "Owner/Repo"}]},
+                }));
+            }
+            if path == format!("{prefix}/reviews/pr/Repo/7") {
+                return Json(json!({
+                    "items": [
+                        {
+                            "run_number": 1,
+                            "id": run1_id,
+                            "kind": "PULL_REQUEST",
+                            "status": "COMPLETED",
+                            "created_at": "2026-01-01T00:00:00Z"
+                        },
+                        {
+                            "run_number": 2,
+                            "id": run2_id,
+                            "kind": "PULL_REQUEST",
+                            "status": "COMPLETED",
+                            "created_at": "2026-01-02T00:00:00Z"
+                        }
+                    ],
+                    "next_cursor": null,
+                    "truncated": false,
+                    "filters": {"repositories": []}
+                }));
+            }
+            if path == format!("{prefix}/reviews/{run1_id}") {
+                return Json(json!({
+                    "id": run1_id,
+                    "kind": "PULL_REQUEST",
+                    "status": "COMPLETED",
+                    "assessment_count": 0,
+                    "assessments": [],
+                    "code_assessment": {
+                        "id": "0190f3a0-0000-7000-8000-0000000000aa",
+                        "head_commit_sha": "89abcdef0123456789abcdef0123456789abcdef",
+                        "base_commit_sha": "0123456789abcdef0123456789abcdef01234567",
+                        "status": "COMPLETED",
+                        "findings": [finding_persist, finding_resolved]
+                    },
+                    "pull_request_number": 7,
+                    "run_number": 1,
+                    "repository_full_name": "owner/repo"
+                }));
+            }
+            if path == format!("{prefix}/reviews/{run2_id}") {
+                return Json(json!({
+                    "id": run2_id,
+                    "kind": "PULL_REQUEST",
+                    "status": "COMPLETED",
+                    "assessment_count": 0,
+                    "assessments": [],
+                    "code_assessment": {
+                        "id": "0190f3a0-0000-7000-8000-0000000000bb",
+                        "head_commit_sha": "89abcdef0123456789abcdef0123456789abcdef",
+                        "base_commit_sha": "0123456789abcdef0123456789abcdef01234567",
+                        "status": "COMPLETED",
+                        "findings": [finding_persist, finding_regression]
+                    },
+                    "pull_request_number": 7,
+                    "run_number": 2,
+                    "repository_full_name": "owner/repo"
+                }));
+            }
+            Json(json!({}))
+        }
+    });
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    // 1. Text diff: PR run comparison
+    let output = cli(&origin, &["diff", "--repo", "owner/repo", "--pr", "7"]).await;
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("Finding diff: Owner/Repo #7 run 1 -> Owner/Repo #7 run 2"),
+        "{text}"
+    );
+    assert!(
+        text.contains("1 resolved, 1 persistent, 1 regressions"),
+        "{text}"
+    );
+    assert!(text.contains("Regressions (1):"), "{text}");
+    assert!(text.contains("Resolved (1):"), "{text}");
+    assert!(text.contains("Persistent (1):"), "{text}");
+    assert!(text.contains("unindexed foreign key"), "{text}");
+    assert!(text.contains("connection pool leak"), "{text}");
+    assert!(text.contains("missing length check"), "{text}");
+
+    // 2. JSON diff
+    let output_json = cli(
+        &origin,
+        &["diff", "--repo", "owner/repo", "--pr", "7", "--json"],
+    )
+    .await;
+    assert!(output_json.status.success());
+    let parsed: Value = serde_json::from_slice(&output_json.stdout).unwrap();
+    assert_eq!(parsed["regressions"].as_array().unwrap().len(), 1);
+    assert_eq!(parsed["resolved"].as_array().unwrap().len(), 1);
+    assert_eq!(parsed["persistent"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        parsed["regressions"][0]["finding_fingerprint"],
+        "fp_regression"
+    );
+
+    // 3. Fail on regression exits code 3 (Verdict::Regressed)
+    let output_fail = cli(
+        &origin,
+        &[
+            "diff",
+            "--repo",
+            "owner/repo",
+            "--pr",
+            "7",
+            "--fail-on-regression",
+        ],
+    )
+    .await;
+    assert_eq!(output_fail.status.code(), Some(3));
+
+    // 4. Direct review IDs comparison
+    let output_direct = cli(
+        &origin,
+        &["diff", "--base-review", run1_id, "--target-review", run2_id],
+    )
+    .await;
+    assert!(output_direct.status.success());
+    let direct_text = String::from_utf8_lossy(&output_direct.stdout);
+    assert!(
+        direct_text.contains(&format!(
+            "Finding diff: review {run1_id} -> review {run2_id}"
+        )),
+        "{direct_text}"
+    );
+    assert!(
+        direct_text.contains("1 resolved, 1 persistent, 1 regressions"),
+        "{direct_text}"
+    );
+
+    server.abort();
+}

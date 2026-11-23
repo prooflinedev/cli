@@ -2,6 +2,7 @@
 //! rules match `waitForReview` in the TypeScript SDK: unknown is never
 //! complete, and an assessment with a gap is never reported as clean.
 
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::model::{
@@ -181,6 +182,150 @@ pub(crate) fn findings_reach(review: &ReviewDetail, threshold: Severity) -> bool
         })
     });
     environment || code_assessment(review).is_some_and(|code| code_reaches(code, threshold))
+}
+
+/// Categorized difference between findings across two review runs.
+#[derive(Debug, Default, PartialEq, Eq, Serialize)]
+pub struct FindingDiff<'a> {
+    /// Findings that were open in the previous run but are resolved or absent in the current run.
+    pub resolved: Vec<&'a Finding>,
+    /// Findings that were open in the previous run and remain open in the current run.
+    pub persistent: Vec<&'a Finding>,
+    /// New or reintroduced findings in the current run that were not open in the previous run.
+    pub regressions: Vec<&'a Finding>,
+}
+
+impl<'a> FindingDiff<'a> {
+    /// Whether there are no findings in any category.
+    pub fn is_empty(&self) -> bool {
+        self.resolved.is_empty() && self.persistent.is_empty() && self.regressions.is_empty()
+    }
+}
+
+/// Collects all findings across CODE and environment assessments of a review.
+pub fn all_findings(review: &ReviewDetail) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    if let Some(code) = code_assessment(review) {
+        findings.extend(code.findings.iter().cloned());
+    }
+    for assessment in &review.assessments {
+        findings.extend(assessment.findings.iter().cloned());
+    }
+    findings
+}
+
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+struct FallbackKey<'a> {
+    domain: &'a str,
+    claim: &'a str,
+    path: Option<&'a str>,
+    start_line: Option<u32>,
+}
+
+fn fallback_key(finding: &Finding) -> FallbackKey<'_> {
+    let primary = finding.evidence_refs.first();
+    FallbackKey {
+        domain: &finding.risk_domain,
+        claim: &finding.claim,
+        path: primary.and_then(|evidence| evidence.repository_path.as_deref()),
+        start_line: primary.and_then(|evidence| evidence.start_line),
+    }
+}
+
+fn claim_fingerprint_match(
+    curr: &Finding,
+    previous: &[Finding],
+    prev_matched: &mut [bool],
+) -> bool {
+    if let Some(fp_curr) = curr.finding_fingerprint.as_deref() {
+        for (i, prev) in previous.iter().enumerate() {
+            if !prev_matched[i]
+                && !resolved(prev)
+                && prev.finding_fingerprint.as_deref() == Some(fp_curr)
+            {
+                prev_matched[i] = true;
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn claim_fallback_match(curr: &Finding, previous: &[Finding], prev_matched: &mut [bool]) -> bool {
+    let key_curr = fallback_key(curr);
+    for (i, prev) in previous.iter().enumerate() {
+        if !prev_matched[i] && !resolved(prev) && fallback_key(prev) == key_curr {
+            prev_matched[i] = true;
+            return true;
+        }
+    }
+    false
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FindingStatus {
+    ExplicitResolved,
+    Persistent,
+    Regression,
+}
+
+/// Diffs findings across two review runs, categorizing them into resolved,
+/// persistent, and new regressions.
+///
+/// Findings are correlated primarily by their semantic `finding_fingerprint`.
+/// If fingerprints are missing or mismatched across server versions, it falls
+/// back to matching on the risk domain, claim, and primary evidence location.
+pub fn diff_findings<'a>(previous: &'a [Finding], current: &'a [Finding]) -> FindingDiff<'a> {
+    let mut diff = FindingDiff::default();
+    let mut prev_matched = vec![false; previous.len()];
+    let mut curr_states = vec![FindingStatus::Regression; current.len()];
+
+    // Pass 1: Correlate open findings by exact fingerprint.
+    for (j, curr) in current.iter().enumerate() {
+        if claim_fingerprint_match(curr, previous, &mut prev_matched) {
+            curr_states[j] = if resolved(curr) {
+                FindingStatus::ExplicitResolved
+            } else {
+                FindingStatus::Persistent
+            };
+        }
+    }
+
+    // Pass 2: Fallback correlation for remaining unmatched findings.
+    // Connects findings across mismatched server versions where one side lacks fingerprints,
+    // or older servers where both lack fingerprints.
+    for (j, curr) in current.iter().enumerate() {
+        if curr_states[j] != FindingStatus::Regression {
+            continue;
+        }
+        if claim_fallback_match(curr, previous, &mut prev_matched) {
+            curr_states[j] = if resolved(curr) {
+                FindingStatus::ExplicitResolved
+            } else {
+                FindingStatus::Persistent
+            };
+        } else if resolved(curr) {
+            curr_states[j] = FindingStatus::ExplicitResolved;
+        }
+    }
+
+    // Assemble the diff preserving original slice ordering.
+    for (j, curr) in current.iter().enumerate() {
+        match curr_states[j] {
+            FindingStatus::ExplicitResolved => diff.resolved.push(curr),
+            FindingStatus::Persistent => diff.persistent.push(curr),
+            FindingStatus::Regression => diff.regressions.push(curr),
+        }
+    }
+
+    // Any open previous finding that was not matched in current was fixed/removed in code.
+    for (i, prev) in previous.iter().enumerate() {
+        if !prev_matched[i] && !resolved(prev) {
+            diff.resolved.push(prev);
+        }
+    }
+
+    diff
 }
 
 /// CODE has no World receipts or environment checks. Its recorded status,
@@ -430,5 +575,121 @@ mod tests {
             Some(vec!["UNKNOWN_ASSESSMENT_STATUS".to_owned()])
         );
         assert_eq!(gap(&assessment("COMPLETED")), None);
+    }
+
+    fn finding_with(severity: &str, lifecycle: &str, fp: Option<&str>, claim: &str) -> Finding {
+        Finding {
+            id: Uuid::nil(),
+            finding_fingerprint: fp.map(str::to_owned),
+            severity: severity.to_owned(),
+            risk_domain: "resource_capacity".to_owned(),
+            claim: claim.to_owned(),
+            impact: "connection limit exceeded".to_owned(),
+            lifecycle_state: lifecycle.to_owned(),
+            remediation: None,
+            evidence_refs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn diff_findings_categorization_and_empty_runs() {
+        let f1 = finding_with("HIGH", "NEW", Some("fp1"), "issue 1");
+        let f2 = finding_with("MEDIUM", "NEW", Some("fp2"), "issue 2");
+        let f3 = finding_with("SERIOUS", "NEW", Some("fp3"), "issue 3");
+
+        // 1. Both runs empty
+        let empty_a: [Finding; 0] = [];
+        let empty_b: [Finding; 0] = [];
+        assert!(diff_findings(&empty_a, &empty_b).is_empty());
+
+        // 2. Clean baseline regressed (0 -> 1)
+        let curr_regressed = [f1.clone()];
+        let diff = diff_findings(&empty_a, &curr_regressed);
+        assert_eq!(diff.regressions.len(), 1);
+        assert_eq!(
+            diff.regressions[0].finding_fingerprint.as_deref(),
+            Some("fp1")
+        );
+        assert!(diff.resolved.is_empty() && diff.persistent.is_empty());
+
+        // 3. All resolved (1 -> 0)
+        let prev_resolved = [f1.clone()];
+        let diff = diff_findings(&prev_resolved, &empty_b);
+        assert_eq!(diff.resolved.len(), 1);
+        assert_eq!(diff.resolved[0].finding_fingerprint.as_deref(), Some("fp1"));
+        assert!(diff.persistent.is_empty() && diff.regressions.is_empty());
+
+        // 4. Mixed: f1 resolved, f2 persistent, f3 regression
+        let prev_mixed = [f1.clone(), f2.clone()];
+        let curr_mixed = [f2.clone(), f3];
+        let diff = diff_findings(&prev_mixed, &curr_mixed);
+        assert_eq!(diff.resolved.len(), 1);
+        assert_eq!(diff.resolved[0].finding_fingerprint.as_deref(), Some("fp1"));
+        assert_eq!(diff.persistent.len(), 1);
+        assert_eq!(
+            diff.persistent[0].finding_fingerprint.as_deref(),
+            Some("fp2")
+        );
+        assert_eq!(diff.regressions.len(), 1);
+        assert_eq!(
+            diff.regressions[0].finding_fingerprint.as_deref(),
+            Some("fp3")
+        );
+
+        // 5. Identical runs
+        let prev_identical = [f1.clone(), f2.clone()];
+        let curr_identical = [f1, f2];
+        let diff = diff_findings(&prev_identical, &curr_identical);
+        assert_eq!(diff.persistent.len(), 2);
+        assert_eq!(
+            diff.persistent[0].finding_fingerprint.as_deref(),
+            Some("fp1")
+        );
+        assert_eq!(
+            diff.persistent[1].finding_fingerprint.as_deref(),
+            Some("fp2")
+        );
+        assert!(diff.resolved.is_empty() && diff.regressions.is_empty());
+    }
+
+    #[test]
+    fn diff_findings_server_version_mismatches_and_reintroduced() {
+        // Fallback matching when one side lacks fingerprint (legacy <-> upgraded)
+        let legacy = [finding_with("HIGH", "NEW", None, "issue 1")];
+        let upgraded = [finding_with("HIGH", "NEW", Some("fp1"), "issue 1")];
+
+        let diff_upgraded = diff_findings(&legacy, &upgraded);
+        assert_eq!(diff_upgraded.persistent.len(), 1);
+        assert_eq!(diff_upgraded.persistent[0].claim, "issue 1");
+        assert!(diff_upgraded.resolved.is_empty() && diff_upgraded.regressions.is_empty());
+
+        let diff_legacy = diff_findings(&upgraded, &legacy);
+        assert_eq!(diff_legacy.persistent.len(), 1);
+        assert_eq!(diff_legacy.persistent[0].claim, "issue 1");
+        assert!(diff_legacy.resolved.is_empty() && diff_legacy.regressions.is_empty());
+
+        // Reintroduced finding is a regression, not persistent
+        let resolved = [finding_with("HIGH", "RESOLVED", Some("fp1"), "issue 1")];
+        let reintroduced = [finding_with("HIGH", "REINTRODUCED", Some("fp1"), "issue 1")];
+        let diff_reintroduced = diff_findings(&resolved, &reintroduced);
+        assert_eq!(diff_reintroduced.regressions.len(), 1);
+        assert_eq!(
+            diff_reintroduced.regressions[0]
+                .finding_fingerprint
+                .as_deref(),
+            Some("fp1")
+        );
+        assert!(diff_reintroduced.persistent.is_empty() && diff_reintroduced.resolved.is_empty());
+
+        // Duplicate occurrences cardinality: 2 in prev, 1 in curr -> 1 persistent, 1 resolved
+        let prev_dup = [
+            finding_with("HIGH", "NEW", None, "dup issue"),
+            finding_with("HIGH", "NEW", None, "dup issue"),
+        ];
+        let curr_dup = [finding_with("HIGH", "NEW", None, "dup issue")];
+        let diff_dup = diff_findings(&prev_dup, &curr_dup);
+        assert_eq!(diff_dup.persistent.len(), 1);
+        assert_eq!(diff_dup.resolved.len(), 1);
+        assert!(diff_dup.regressions.is_empty());
     }
 }

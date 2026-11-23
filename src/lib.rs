@@ -45,7 +45,7 @@ mod tools;
 
 use crate::model::{
     CommitReviewRequest, FileReviewRequest, OpenItems, PatchReviewRequest, RepositoryNames,
-    ReviewDetail, ReviewFilters, ReviewSummary,
+    ReviewDetail, ReviewFilters, ReviewPage, ReviewSummary,
 };
 use crate::origin::{DEFAULT_ORIGIN, Origin};
 use crate::outcome::Outcome;
@@ -169,6 +169,8 @@ enum Command {
     Stop(StopArgs),
     /// Show the findings of the latest review of a commit or pull request.
     Findings(FindingsArgs),
+    /// Compare findings across review runs, identifying resolved, persistent, and new regressions.
+    Diff(DiffArgs),
     /// Forward a coding agent's stdio messages to this console's MCP server.
     Mcp,
     /// Commands for a CI job.
@@ -395,6 +397,43 @@ struct FindingsArgs {
     output: OutputArgs,
 }
 
+#[derive(Debug, Args)]
+struct DiffArgs {
+    /// Pull request number to compare recorded runs for.
+    #[arg(long, value_name = "NUMBER")]
+    pr: Option<u64>,
+    /// Specific review ID for the base (previous) run.
+    #[arg(
+        long,
+        value_name = "ID",
+        requires = "target_review",
+        conflicts_with = "pr"
+    )]
+    base_review: Option<Uuid>,
+    /// Specific review ID for the target (current) run.
+    #[arg(
+        long,
+        value_name = "ID",
+        requires = "base_review",
+        conflicts_with = "pr"
+    )]
+    target_review: Option<Uuid>,
+    /// Run number for the base review. Defaults to the run before target.
+    #[arg(long, requires = "pr")]
+    base_run: Option<u64>,
+    /// Run number for the target review. Defaults to the latest recorded run.
+    #[arg(long, requires = "pr")]
+    target_run: Option<u64>,
+    /// Exit with code 3 if any new or reintroduced regressions are detected.
+    #[arg(long)]
+    fail_on_regression: bool,
+    #[command(flatten)]
+    repository: RepositoryArgs,
+    /// Print machine-readable JSON diff instead of text.
+    #[arg(long)]
+    json: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum OutputFormat {
     Text,
@@ -602,6 +641,10 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
             }
             let api = connect(Http::new(origin)?, token, cli.org).await?;
             findings(&api, &args).await
+        }
+        Command::Diff(args) => {
+            let api = connect(Http::new(origin)?, token, cli.org).await?;
+            diff(&api, &args).await
         }
         Command::Mcp => {
             let http = Http::new(origin)?;
@@ -1216,6 +1259,128 @@ async fn findings(api: &Api, args: &FindingsArgs) -> anyhow::Result<Verdict> {
         OutputFormat::from_json(args.output.json)
     };
     show(api, review_id, args.wait, &args.output, format, None).await
+}
+
+async fn diff(api: &Api, args: &DiffArgs) -> anyhow::Result<Verdict> {
+    let (base_detail, target_detail, base_label, target_label) = match (
+        args.base_review,
+        args.target_review,
+        args.pr,
+    ) {
+        (Some(base_id), Some(target_id), _) => {
+            let (_, base_detail) = api.review(base_id).await?;
+            let (_, target_detail) = api.review(target_id).await?;
+            let base_label = format!("review {}", base_detail.id);
+            let target_label = format!("review {}", target_detail.id);
+            (Some(base_detail), target_detail, base_label, target_label)
+        }
+        (None, None, pr_opt) => {
+            let (full_name, repository_id) = reviewed_repository(api, &args.repository).await?;
+            let pr = if let Some(pr) = pr_opt {
+                pr
+            } else {
+                let sha = git::head().await?;
+                let review_id = latest(api, repository_id, &sha, |item| {
+                    item.audit_mode.is_none()
+                        && item.head_commit_sha.as_deref() == Some(sha.as_str())
+                })
+                .await?
+                .with_context(|| {
+                    format!(
+                        "no review of {full_name} has head commit {sha}; push it and open a pull request, or name one with --pr"
+                    )
+                })?;
+                let (_, detail) = api.review(review_id).await?;
+                let pr_num = detail.pull_request_number.with_context(|| {
+                    format!(
+                        "review {review_id} for {sha} is not associated with a pull request; pass --pr or --base-review and --target-review"
+                    )
+                })?;
+                u64::try_from(pr_num).context("invalid pull request number")?
+            };
+
+            let history_raw = api.history(route_name(&full_name), pr).await?;
+            let history_page: ReviewPage = serde_json::from_value(history_raw)
+                .context("could not parse pull request history")?;
+
+            let mut runs: Vec<_> = history_page
+                .items
+                .into_iter()
+                .filter_map(|item| item.run_number.map(|num| (num, item.id)))
+                .collect();
+            runs.sort_by_key(|&(num, _)| num);
+
+            if runs.is_empty() {
+                bail!("{full_name} #{pr} has no recorded runs");
+            }
+
+            let target_run = if let Some(r) = args.target_run {
+                r
+            } else {
+                let max_run = runs.last().unwrap().0;
+                u64::try_from(max_run).context("invalid target run number")?
+            };
+            let target_run_i64 = i64::try_from(target_run).context("target run out of range")?;
+            let target_item = runs
+                .iter()
+                .find(|&&(num, _)| num == target_run_i64)
+                .with_context(|| format!("{full_name} #{pr} has no run {target_run}"))?;
+            let (_, target_detail) = api.review(target_item.1).await?;
+
+            let base_run_opt: Option<u64> = args.base_run.or_else(|| {
+                runs.iter()
+                    .filter(|&&(num, _)| num < target_run_i64)
+                    .map(|&(num, _)| num)
+                    .next_back()
+                    .and_then(|num| u64::try_from(num).ok())
+            });
+
+            let base_detail = match base_run_opt {
+                Some(base_run) => {
+                    let base_run_i64 = i64::try_from(base_run).context("base run out of range")?;
+                    let base_item = runs
+                        .iter()
+                        .find(|&&(num, _)| num == base_run_i64)
+                        .with_context(|| format!("{full_name} #{pr} has no run {base_run}"))?;
+                    let (_, detail) = api.review(base_item.1).await?;
+                    Some(detail)
+                }
+                None => None,
+            };
+
+            let base_label = base_run_opt.map_or_else(
+                || format!("{full_name} #{pr} initial baseline"),
+                |r| format!("{full_name} #{pr} run {r}"),
+            );
+            let target_label = format!("{full_name} #{pr} run {target_run}");
+
+            (base_detail, target_detail, base_label, target_label)
+        }
+        _ => bail!("specify either --pr, or both --base-review and --target-review"),
+    };
+
+    let prev_findings = base_detail
+        .as_ref()
+        .map(outcome::all_findings)
+        .unwrap_or_default();
+    let curr_findings = outcome::all_findings(&target_detail);
+    let diff_result = outcome::diff_findings(&prev_findings, &curr_findings);
+
+    let mut stdout = std::io::stdout().lock();
+    if args.json {
+        writeln!(stdout, "{}", serde_json::to_string_pretty(&diff_result)?)?;
+    } else {
+        writeln!(
+            stdout,
+            "{}",
+            render::diff(&diff_result, &base_label, &target_label)
+        )?;
+    }
+
+    if args.fail_on_regression && !diff_result.regressions.is_empty() {
+        return Ok(Verdict::Regressed);
+    }
+    Ok(Verdict::Done)
 }
 
 #[derive(Debug, thiserror::Error)]

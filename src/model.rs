@@ -246,7 +246,7 @@ pub struct Check {
     pub unresolved_reason: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Finding {
     pub id: Uuid,
     /// The retained semantic identity that correlates this finding's
@@ -262,7 +262,7 @@ pub struct Finding {
     pub evidence_refs: Vec<EvidenceRef>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct EvidenceRef {
     pub kind: String,
     pub label: String,
