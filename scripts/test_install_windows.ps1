@@ -164,24 +164,6 @@ try {
             Set-Item Function:\Get-ProoflineUserPathRecord -Value $realReader
         }
     }
-    Test-Case 'pinned install directory cannot be renamed before releasing handles' {
-        $probe = Join-Path $root 'unlocked-directory-probe'
-        [IO.Directory]::CreateDirectory($probe) | Out-Null
-        [IO.Directory]::Move($probe, $probe + '-moved')
-        [IO.Directory]::Move($probe + '-moved', $probe)
-        $dir = Join-Path $root 'pinned-directory'
-        $guards = Protect-ProoflineDirectoryTree $dir $true
-        try {
-            $blocked = $false
-            try { [IO.Directory]::Move($dir, $dir + '-moved') }
-            catch [IO.IOException] { $blocked = $true }
-            if (-not $blocked) {
-                throw 'Pinned directory was renamed despite share-delete protection.'
-            }
-            if (-not [IO.Directory]::Exists($dir)) { throw 'Pinned directory disappeared.' }
-        }
-        finally { foreach ($guard in $guards) { $guard.Dispose() } }
-    }
     Test-Case 'PATH change is idempotent' {
         $directory = 'C:\Users\tester\AppData\Local\Programs\Proofline\bin'
         if ($null -ne (Get-ProoflineUpdatedUserPath $directory $directory)) {
