@@ -42,7 +42,12 @@ function Assert-Sandbox([string]$Directory) {
         throw 'Missing disposable test marker; refusing to touch a real installation.'
     }
 }
-function Assert-Installed([string]$Directory, [string]$Version, [bool]$ExpectDamagedEvidence = $false) {
+function Assert-Installed(
+    [string]$Directory,
+    [string]$Version,
+    [bool]$ExpectDamagedEvidence = $false,
+    [bool]$ExpectIncompleteStageEvidence = $false
+) {
     $exe = Join-Path $Directory 'proofline.exe'
     $receipt = Join-Path $Directory '.proofline-install.receipt.json'
     $pending = Join-Path $Directory '.proofline-install.pending.json'
@@ -56,9 +61,23 @@ function Assert-Installed([string]$Directory, [string]$Version, [bool]$ExpectDam
     $output = @(& $exe --version)
     $exitCode = $LASTEXITCODE
     Require ($exitCode -eq 0 -and ($output -join '').Trim() -ceq "proofline $Version") "Executable version check failed for $Version."
-    $debris = @(Get-ChildItem -LiteralPath $Directory -Force |
-        Where-Object { $_.Name -match '\A\.proofline-(recovery|api-backup|staged|restore)-' })
+    # A partial, untrusted stage is deliberately retained as .exe.incomplete
+    # evidence. This is not an executable eligible for install or recovery.
+    $incompletePattern = '\A\.proofline-staged-[0-9a-f]{32}\.exe\.incomplete\z'
+    $files = @(Get-ChildItem -LiteralPath $Directory -Force)
+    $debris = @($files | Where-Object {
+        $_.Name -match '\A\.proofline-(recovery|api-backup|staged|restore)-' -and
+        $_.Name -notmatch $incompletePattern
+    })
     Require ($debris.Count -eq 0) 'A recovery or staging executable remains after successful repair.'
+    $incomplete = @($files | Where-Object { $_.Name -match $incompletePattern })
+    if ($ExpectIncompleteStageEvidence) {
+        Require ($incomplete.Count -eq 1) 'Exactly one incomplete staged-file evidence copy was expected.'
+        Require ($incomplete[0].Length -eq 32) 'Incomplete stage does not contain the expected injected prefix.'
+    }
+    else {
+        Require ($incomplete.Count -eq 0) 'Unexpected incomplete staged-file evidence remains.'
+    }
     # A corrupted active executable is intentionally kept in a quarantine
     # path following successful rollback. Don't conceal that evidence merely
     # to make this test green; verify exactly what was preserved.
@@ -327,17 +346,15 @@ try {
             Write-Host "PASS $checkpoint; fresh process removed interrupted first-install files."
         }
         else {
-            $digest = Assert-Installed $directory $expected[$checkpoint] ($checkpoint -eq 'corrupt-after-switch')
+            $digest = Assert-Installed $directory $expected[$checkpoint] `
+                ($checkpoint -eq 'corrupt-after-switch') `
+                ($checkpoint -eq 'upgrade-partial-stage')
             if ($isFresh) {
                 Require ($null -ne $digest) 'First-install recovery failed to finalize new executable.'
             }
             elseif ($expected[$checkpoint] -eq '0.5.1') {
                 Require ($digest -ceq $oldDigest) 'Rollback did not preserve original executable bytes.'
-                if ($checkpoint -eq 'upgrade-partial-stage') {
-                    $evidence = @(Get-ChildItem -LiteralPath $directory -Force |
-                        Where-Object { $_.Name -match '^\.proofline-staged-[a-f0-9]{32}\.exe\.incomplete$' })
-                    Require ($evidence.Count -eq 1) 'Incomplete upgrade stage was not preserved.'
-                }
+
             }
             else {
                 Require ($digest -cne $oldDigest) 'Recovery did not install the different new executable.'
