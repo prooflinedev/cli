@@ -1,0 +1,56 @@
+name: Windows installer tests
+
+on:
+  pull_request:
+    paths:
+      - 'install.ps1'
+      - 'scripts/test_install*windows.ps1'
+      - 'scripts/generate_windows_installer_fixtures.py'
+      - '.github/workflows/windows-installer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  offline-validation:
+    name: Installer offline tests (${{ matrix.engine }})
+    runs-on: windows-2025
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: ['powershell.exe', 'pwsh.exe']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check fixture generator
+        shell: pwsh
+        run: |
+          python -m py_compile scripts/generate_windows_installer_fixtures.py
+          if ($LASTEXITCODE -ne 0) { throw 'Fixture generator did not compile.' }
+
+      - name: Run validator and recovery fixtures
+        shell: pwsh
+        env:
+          TEST_ENGINE: ${{ matrix.engine }}
+        run: |
+          foreach ($script in @(
+            'scripts/test_install_windows.ps1',
+            'scripts/test_install_upgrade_windows.ps1',
+            'scripts/test_install_concurrency_windows.ps1'
+          )) {
+            Write-Host "Running $script with $env:TEST_ENGINE"
+            & $env:TEST_ENGINE -NoProfile -NonInteractive -File $script
+            if ($LASTEXITCODE -ne 0) { throw "$script failed with exit code $LASTEXITCODE" }
+          }
+
+      - name: Verify User PATH persistence on disposable CI runner
+        shell: pwsh
+        env:
+          TEST_ENGINE: ${{ matrix.engine }}
+        run: |
+          & $env:TEST_ENGINE -NoProfile -NonInteractive -File scripts/test_install_user_path_ci_windows.ps1
+          if ($LASTEXITCODE -ne 0) { throw "User PATH persistence test failed: $LASTEXITCODE" }
