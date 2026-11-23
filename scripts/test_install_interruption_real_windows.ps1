@@ -321,59 +321,7 @@ try {
             Require ($unclaimed.Count -eq 0) 'Fresh-install recovery left a staged executable.'
             if ($checkpoint -eq 'fresh-partial-stage') {
                 $evidence = @(Get-ChildItem -LiteralPath $directory -Force |
-                    Where-Object { $_.Name -match '^\.proofline-staged-[a-f0-9]{32}\.exe\.incomplete
-        }
-        else {
-            $digest = Assert-Installed $directory $expected[$checkpoint] ($checkpoint -eq 'corrupt-after-switch')
-            if ($isFresh) {
-                Require ($null -ne $digest) 'First-install recovery failed to finalize new executable.'
-            }
-            elseif ($expected[$checkpoint] -eq '0.5.1') {
-                Require ($digest -ceq $oldDigest) 'Rollback did not preserve original executable bytes.'
-            }
-            else {
-                Require ($digest -cne $oldDigest) 'Recovery did not install the different new executable.'
-            }
-            Write-Host "PASS $checkpoint; fresh process recovered to v$($expected[$checkpoint])."
-        }
-        $results += [pscustomobject]@{
-            checkpoint = $checkpoint
-            workerExitCode = $workerExit
-            recoveryExitCode = $recoverExit
-            recoveredVersion = $expected[$checkpoint]
-            recoveredSha256 = $digest
-        }
-    }
-
-    Require ([Environment]::GetEnvironmentVariable('Path', 'User') -ceq $pathBefore) 'User PATH was modified.'
-    $passed = $true
-}
-catch {
-    Write-Warning "FAIL real installer interruption test: $($_.Exception.ToString())"
-}
-finally {
-    if ($passed -and -not $KeepFiles) {
-        try {
-            Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop
-            $cleanup = $true
-        }
-        catch {
-            Write-Warning "Could not delete disposable test directory: $($_.Exception.Message)"
-            $passed = $false
-        }
-    }
-}
-Write-Host "Completed $($results.Count) of $($scenarios.Count) interruption scenarios."
-if ($passed) {
-    Write-Host 'Real Windows installer interruption integration: PASS'
-    if ($KeepFiles) { Write-Host "Retained test evidence at $root" }
-    else { Write-Host "Cleaned isolated test directory: $cleanup" }
-}
-else {
-    Write-Warning "Failure evidence preserved at: $root"
-    exit 1
-}
- })
+                    Where-Object { $_.Name -match '^\.proofline-staged-[a-f0-9]{32}\.exe\.incomplete$' })
                 Require ($evidence.Count -eq 1) 'Incomplete first-install bytes were not preserved.'
             }
             Write-Host "PASS $checkpoint; fresh process removed interrupted first-install files."
@@ -385,6 +333,11 @@ else {
             }
             elseif ($expected[$checkpoint] -eq '0.5.1') {
                 Require ($digest -ceq $oldDigest) 'Rollback did not preserve original executable bytes.'
+                if ($checkpoint -eq 'upgrade-partial-stage') {
+                    $evidence = @(Get-ChildItem -LiteralPath $directory -Force |
+                        Where-Object { $_.Name -match '^\.proofline-staged-[a-f0-9]{32}\.exe\.incomplete$' })
+                    Require ($evidence.Count -eq 1) 'Incomplete upgrade stage was not preserved.'
+                }
             }
             else {
                 Require ($digest -cne $oldDigest) 'Recovery did not install the different new executable.'

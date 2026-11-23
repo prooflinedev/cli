@@ -38,6 +38,7 @@ jobs:
           TEST_ENGINE: ${{ matrix.engine }}
         run: |
           foreach ($script in @(
+             'scripts/test_install_syntax_windows.ps1',
             'scripts/test_install_windows.ps1',
             'scripts/test_install_upgrade_windows.ps1',
             'scripts/test_install_concurrency_windows.ps1'
