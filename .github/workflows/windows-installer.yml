@@ -6,6 +6,7 @@ on:
       - 'install.ps1'
       - 'scripts/test_install*windows.ps1'
       - 'scripts/generate_windows_installer_fixtures.py'
+      - 'scripts/check_windows_release_archive.ps1'
       - 'scripts/archive.py'
       - 'Cargo.toml'
       - 'Cargo.lock'

@@ -164,6 +164,38 @@ try {
             Set-Item Function:\Get-ProoflineUserPathRecord -Value $realReader
         }
     }
+    Test-Case 'pinned installation directory and ancestor resist rename' {
+        # A plain directory is renameable; pinning must make it unavailable
+        # for rename until the entire installer transaction completes.
+        $probe = Join-Path $root 'unpinned-control'
+        [IO.Directory]::CreateDirectory($probe) | Out-Null
+        [IO.Directory]::Move($probe, $probe + '-moved')
+        [IO.Directory]::Move($probe + '-moved', $probe)
+
+        $parent = Join-Path $root 'pin-parent'
+        $child = Join-Path $parent 'bin'
+        $guards = Protect-ProoflineDirectoryTree $child $true
+        try {
+            if ($guards.Count -lt 2) { throw 'Directory pinning returned too few handles.' }
+            foreach ($guard in $guards) {
+                if ($guard.IsClosed -or $guard.IsInvalid) {
+                    throw 'Directory guard handle was closed before the transaction.'
+                }
+            }
+            foreach ($testPath in @($child, $parent)) {
+                $blocked = $false
+                try { [IO.Directory]::Move($testPath, $testPath + '-moved') }
+                catch [IO.IOException] { $blocked = $true }
+                if (-not $blocked) {
+                    throw "Pinned directory was renamed while its guard was held: $testPath"
+                }
+                if (-not [IO.Directory]::Exists($testPath)) {
+                    throw "Pinned directory disappeared: $testPath"
+                }
+            }
+        }
+        finally { foreach ($guard in $guards) { $guard.Dispose() } }
+    }
     Test-Case 'PATH change is idempotent' {
         $directory = 'C:\Users\tester\AppData\Local\Programs\Proofline\bin'
         if ($null -ne (Get-ProoflineUpdatedUserPath $directory $directory)) {

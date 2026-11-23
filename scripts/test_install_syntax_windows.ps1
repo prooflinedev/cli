@@ -5,7 +5,8 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$paths = @((Join-Path $root 'install.ps1'))
+$paths = @((Join-Path $root 'install.ps1'),
+           (Join-Path $PSScriptRoot 'check_windows_release_archive.ps1'))
 $paths += @(Get-ChildItem -LiteralPath $PSScriptRoot -File -Filter 'test_install*windows.ps1' |
     ForEach-Object { $_.FullName })
 foreach ($path in $paths) {

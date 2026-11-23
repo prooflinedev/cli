@@ -82,25 +82,18 @@ jobs:
             fi
           fi
           python3 scripts/archive.py "$TARGET"
-      - name: Validate exact Windows release archive with installer rules
+      - name: Validate packaged Windows release with both PowerShell engines
         if: matrix.target == 'x86_64-pc-windows-msvc'
         shell: pwsh
         run: |
-          . ./install.ps1
-          $archiveFile = (Resolve-Path 'artifacts/proofline-x86_64-pc-windows-msvc.tar.gz').Path
-          $archiveLength = ([IO.FileInfo]::new($archiveFile)).Length
-          if ($archiveLength -le 0 -or $archiveLength -gt $script:MaxArchiveBytes) {
-            throw "Windows release archive exceeds installer size limit: $archiveLength bytes."
+          $archive = 'artifacts/proofline-x86_64-pc-windows-msvc.tar.gz'
+          $built = 'target/x86_64-pc-windows-msvc/release/proofline.exe'
+          # Validate exactly the archive being uploaded, not the separate
+          # Checks workflow build. Both engines must accept its gzip stream.
+          foreach ($engine in @('powershell.exe', 'pwsh.exe')) {
+            & $engine -NoProfile -NonInteractive -File scripts/check_windows_release_archive.ps1 -ArchivePath $archive -ExecutablePath $built
+            if ($LASTEXITCODE -ne 0) { throw "$engine rejected the release archive." }
           }
-          $payload = Get-ProoflineTarExecutable ([IO.File]::ReadAllBytes($archiveFile))
-          $built = (Resolve-Path 'target/x86_64-pc-windows-msvc/release/proofline.exe').Path
-          $sha = [Security.Cryptography.SHA256]::Create()
-          try { $packedDigest = [BitConverter]::ToString($sha.ComputeHash($payload)).Replace('-', '') }
-          finally { $sha.Dispose() }
-          if ($packedDigest -cne (Get-FileHash -LiteralPath $built -Algorithm SHA256).Hash) {
-            throw 'Packaged Windows executable differs from tested release build.'
-          }
-          Write-Host 'Published Windows archive passed installer compatibility checks.'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cli-${{ matrix.target }}

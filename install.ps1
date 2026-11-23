@@ -410,6 +410,86 @@ function Assert-ProoflinePathTree([string]$Directory) {
     }
 }
 
+function Protect-ProoflineDirectoryTree([string]$Directory, [bool]$CreateMissing) {
+    # Retain handles for all existing ancestors for the entire install/repair
+    # transaction, not merely a path-string check. FILE_LIST_DIRECTORY is
+    # essential: metadata-only 0x80 handles do NOT prevent directory renames.
+    # Denying FILE_SHARE_DELETE then prevents a checked ancestor from being
+    # replaced with a junction while child paths are being opened.
+    if (-not ('ProoflinePinnedDirectory' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class ProoflinePinnedDirectory {
+    [StructLayout(LayoutKind.Sequential)]
+    private struct Info {
+        public uint Attributes, CreationLow, CreationHigh, AccessLow, AccessHigh;
+        public uint WriteLow, WriteHigh, VolumeSerial, SizeHigh, SizeLow;
+        public uint Links, IndexHigh, IndexLow;
+    }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFile(string path, uint access,
+        uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandle(SafeFileHandle file, out Info info);
+    public static SafeFileHandle Open(string path) {
+        // SYNCHRONIZE | FILE_READ_ATTRIBUTES | FILE_LIST_DIRECTORY:
+        // list-directory access makes the no-FILE_SHARE_DELETE lock effective.
+        // BACKUP_SEMANTICS permits directory handles; OPEN_REPARSE_POINT ensures
+        // the handle identifies the link itself, not a redirected target.
+        SafeFileHandle h = CreateFile(path, 0x00100081u, 0x03u, IntPtr.Zero,
+            3u, 0x02200000u, IntPtr.Zero);
+        if (h.IsInvalid) {
+            int error = Marshal.GetLastWin32Error();
+            h.Dispose();
+            throw new Win32Exception(error, "Unable to pin installation directory: " + path);
+        }
+        return h;
+    }
+    public static uint GetAttributes(SafeFileHandle h) {
+        Info info;
+        if (!GetFileInformationByHandle(h, out info))
+            throw new Win32Exception(Marshal.GetLastWin32Error(),
+                "Unable to inspect pinned directory");
+        return info.Attributes;
+    }
+}
+'@
+    }
+    $parents = [Collections.Generic.List[string]]::new()
+    $cursor = [IO.DirectoryInfo]::new($Directory)
+    while ($null -ne $cursor) {
+        $parents.Add($cursor.FullName)
+        $cursor = $cursor.Parent
+    }
+    $handles = [Collections.Generic.List[Microsoft.Win32.SafeHandles.SafeFileHandle]]::new()
+    try {
+        for ($i = $parents.Count - 1; $i -ge 0; $i--) {
+            $path = $parents[$i]
+            if (-not [IO.Directory]::Exists($path)) {
+                if (-not $CreateMissing) { throw "Installation directory is missing: $path" }
+                # All already-existing ancestors are pinned, so an attacker
+                # cannot swap a parent for a junction during this creation.
+                [IO.Directory]::CreateDirectory($path) | Out-Null
+            }
+            $handle = [ProoflinePinnedDirectory]::Open($path)
+            $handles.Add($handle)
+            $attributes = [ProoflinePinnedDirectory]::GetAttributes($handle)
+            if (($attributes -band 0x400) -ne 0 -or
+                ($attributes -band 0x10) -eq 0) {
+                throw "Refusing a reparse point or non-directory in installation path: $path"
+            }
+        }
+        return ,$handles
+    }
+    catch {
+        foreach ($handle in $handles) { $handle.Dispose() }
+        throw
+    }
+}
+
 function Get-ProoflineSha256([string]$Path) {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
 }
@@ -907,17 +987,20 @@ function Recover-ProoflinePending([string]$Directory) {
 function Invoke-ProoflinePendingRepair([string]$Directory) {
     # Recover BEFORE network activity, so an outage cannot block local repair.
     $directory = Resolve-ProoflineInstallDir $Directory
-    Assert-ProoflinePathTree $directory
     if (-not [IO.Directory]::Exists($directory)) { return }
-    $pending = [IO.Path]::Combine($directory, '.proofline-install.pending.json')
-    if (-not [IO.File]::Exists($pending) -and
-        -not [IO.File]::Exists($pending + '.postcheck.bak')) { return }
-    $lock = [IO.Path]::Combine($directory, '.proofline-install.lock')
-    Assert-ProoflineNoReparse $lock
-    $handle = [IO.File]::Open($lock, [IO.FileMode]::OpenOrCreate,
-        [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
-    try { Recover-ProoflinePending $directory }
-    finally { $handle.Dispose() }
+    $guards = Protect-ProoflineDirectoryTree $directory $false
+    try {
+        $pending = [IO.Path]::Combine($directory, '.proofline-install.pending.json')
+        if (-not [IO.File]::Exists($pending) -and
+            -not [IO.File]::Exists($pending + '.postcheck.bak')) { return }
+        $lock = [IO.Path]::Combine($directory, '.proofline-install.lock')
+        Assert-ProoflineNoReparse $lock
+        $handle = [IO.File]::Open($lock, [IO.FileMode]::OpenOrCreate,
+            [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        try { Recover-ProoflinePending $directory }
+        finally { $handle.Dispose() }
+    }
+    finally { foreach ($guard in $guards) { $guard.Dispose() } }
 }
 
 function Test-ProoflineTransientReplaceFailure([Exception]$Error) {
@@ -987,9 +1070,9 @@ function Install-ProoflineArchive(
     finally { $digest.Dispose() }
 
     $directory = Resolve-ProoflineInstallDir $Directory
-    Assert-ProoflinePathTree $directory
-    [IO.Directory]::CreateDirectory($directory) | Out-Null
-    $destination = [IO.Path]::Combine($directory, 'proofline.exe')
+    $guards = Protect-ProoflineDirectoryTree $directory $true
+    try {
+        $destination = [IO.Path]::Combine($directory, 'proofline.exe')
     $receipt = [IO.Path]::Combine($directory, '.proofline-install.receipt.json')
     $pending = [IO.Path]::Combine($directory, '.proofline-install.pending.json')
     $lock = [IO.Path]::Combine($directory, '.proofline-install.lock')
@@ -1125,6 +1208,8 @@ function Install-ProoflineArchive(
         }
     }
     finally { $lockHandle.Dispose() }
+    }
+    finally { foreach ($guard in $guards) { $guard.Dispose() } }
 }
 
 function Invoke-ProoflineInstaller([string]$RequestedVersion, [string]$RequestedDirectory, [bool]$ModifyPath) {

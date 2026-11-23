@@ -105,25 +105,33 @@ try {
     $script:smokeCount = 0
     $script:failInstalledPostcheckPath = $null
     $script:failInstalledPostcheckVersion = '0.5.2'
-    function Assert-ProoflineExeVersion([string]$Path, [string]$Version) {
+    function Assert-ProoflineExeVersion([string]$Path, [string]$Version, [string]$ExpectedSha256) {
         $script:smokeCount++
+        $expected = switch ($Version) {
+            '0.5.1' { $script:oldHash; break }
+            '0.5.2' { $script:newHash; break }
+            default { throw "Unexpected test-only version $Version" }
+        }
+        if ($ExpectedSha256 -cne $expected) {
+            throw "Version checker for $Version received a missing or wrong verified digest."
+        }
+        if ((Get-ProoflineSha256 $Path) -cne $expected) {
+            throw "Test fixture for $Version has unexpected digest."
+        }
         if ($null -ne $script:failInstalledPostcheckPath -and
             $Path -ieq $script:failInstalledPostcheckPath -and
             $Version -ceq $script:failInstalledPostcheckVersion) {
             # Only the installed copy fails, never the staged verified image.
             throw 'Simulated installed executable postcheck failure.'
         }
-        $digest = Get-ProoflineSha256 $Path
-        $expected = switch ($Version) {
-            '0.5.1' { $script:oldHash; break }
-            '0.5.2' { $script:newHash; break }
-            default { throw "Unexpected test-only version $Version" }
-        }
-        if ($digest -cne $expected) {
-            throw "Test fixture for $Version has unexpected digest."
-        }
     }
 
+    Check 'offline version checker enforces caller supplied SHA-256' {
+        $dir = PrepareOld 'version-digest-contract'
+        Must-Throw { Assert-ProoflineExeVersion (Active 'version-digest-contract') '0.5.1' $null }
+        Must-Throw { Assert-ProoflineExeVersion (Active 'version-digest-contract') '0.5.1' $script:newHash }
+        Assert-ProoflineExeVersion (Active 'version-digest-contract') '0.5.1' $script:oldHash
+    }
     Check 'interrupted fresh install cleans only verified matching stage' {
         $dir = Join-Path $root 'fresh-stage'
         [IO.Directory]::CreateDirectory($dir) | Out-Null
@@ -341,6 +349,22 @@ try {
         Require (-not [IO.File]::Exists($pendingPath + '.postcheck.bak')) 'Backup was not cleaned after recovery.'
         Require (-not [IO.File]::Exists($pendingPath)) 'Restored journal was not cleared.'
     }
+    Check 'canonical passed postcheck takes precedence over stale checking backup' {
+        $dir = PrepareOld 'passed-plus-stale-checking'
+        [void](MakePending $dir)
+        $journal = Pending 'passed-plus-stale-checking'
+        Set-ProoflinePendingPostcheck $journal 'checking'
+        $checkingCopy = [IO.File]::ReadAllBytes($journal)
+        Set-ProoflinePendingPostcheck $journal 'passed'
+        [IO.File]::WriteAllBytes($journal + '.postcheck.bak', $checkingCopy)
+        [IO.File]::WriteAllBytes((Active 'passed-plus-stale-checking'),
+            (Get-ProoflineTarExecutable $script:newArchive))
+        Invoke-ProoflinePendingRepair $dir
+        Require ((Get-ProoflineSha256 (Active 'passed-plus-stale-checking')) -ceq $script:newHash) 'Stale checking backup rolled back a passed image.'
+        Assert-ProoflineRecord (Receipt 'passed-plus-stale-checking') '0.5.2' $script:newHash
+        Require (-not [IO.File]::Exists($journal)) 'Canonical passed journal remains after recovery.'
+        Require (-not [IO.File]::Exists($journal + '.postcheck.bak')) 'Stale checking backup remains after recovery.'
+    }
     Check 'backup deletion lock does not block rollback from validated canonical journal' {
         $dir = PrepareOld 'locked-journal-backup'
         [void](MakePending $dir)
@@ -508,7 +532,20 @@ try {
         $dir = PrepareOld 'repeat'
         [void](Install-ProoflineArchive $script:newArchive $script:newSums '0.5.2' $dir)
         $before = $script:smokeCount
-        [void](Install-ProoflineArchive $script:newArchive $script:newSums '0.5.2' $dir)
+        # Read-only deny-write handles ensure a byte-identical rewrite cannot
+        # pass the test just because the final digests still match.
+        $heldExe = [IO.File]::Open((Active 'repeat'), [IO.FileMode]::Open,
+            [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        $heldReceipt = $null
+        try {
+            $heldReceipt = [IO.File]::Open((Receipt 'repeat'), [IO.FileMode]::Open,
+                [IO.FileAccess]::Read, [IO.FileShare]::Read)
+            [void](Install-ProoflineArchive $script:newArchive $script:newSums '0.5.2' $dir)
+        }
+        finally {
+            if ($null -ne $heldReceipt) { $heldReceipt.Dispose() }
+            $heldExe.Dispose()
+        }
         Require ($script:smokeCount -eq $before) 'No-op installation executed the pre-existing local executable.'
         Require ((Get-ProoflineSha256 (Active 'repeat')) -ceq $script:newHash) 'Repeat changed active bytes.'
         Assert-ProoflineRecord (Receipt 'repeat') '0.5.2' $script:newHash

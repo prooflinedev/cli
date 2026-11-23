@@ -125,7 +125,21 @@ try {
     }
     Write-Host "PASS upgrade to v0.5.2; hash $($after.BinarySha256)"
 
-    Install-Release '0.5.2'
+    # Hold both published files read-only with deny-write/delete sharing
+    # while the same-version installer runs in a fresh process. Hash-only
+    # checks would miss a byte-identical rewrite.
+    $heldExe = [IO.File]::Open((Join-Path $bin 'proofline.exe'), [IO.FileMode]::Open,
+        [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    $heldReceipt = $null
+    try {
+        $heldReceipt = [IO.File]::Open((Join-Path $bin '.proofline-install.receipt.json'),
+            [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        Install-Release '0.5.2'
+    }
+    finally {
+        if ($null -ne $heldReceipt) { $heldReceipt.Dispose() }
+        $heldExe.Dispose()
+    }
     $repeat = Check-Release '0.5.2'
     if ($repeat.BinarySha256 -cne $after.BinarySha256 -or
         $repeat.ReceiptSha256 -cne $after.ReceiptSha256) {

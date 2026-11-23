@@ -37,30 +37,20 @@ jobs:
           persist-credentials: false
       - run: cargo build --release --locked --target x86_64-pc-windows-msvc
       - run: python scripts/archive.py x86_64-pc-windows-msvc
-      - shell: pwsh
+      - name: Check packaged archive with PowerShell 5.1 and PowerShell 7
+        shell: pwsh
         run: |
-          # Reject a packaged archive that the proposed installer cannot read.
-          # The normal tar smoke test alone does not reject extra members.
-          . ./install.ps1
-          $archivePath = 'artifacts/proofline-x86_64-pc-windows-msvc.tar.gz'
-          $archiveFile = (Resolve-Path $archivePath).Path
-          $archiveLength = ([IO.FileInfo]::new($archiveFile)).Length
-          if ($archiveLength -le 0 -or $archiveLength -gt $script:MaxArchiveBytes) {
-            throw "PR-built Windows archive exceeds the installer size limit: $archiveLength bytes."
+          $archive = 'artifacts/proofline-x86_64-pc-windows-msvc.tar.gz'
+          $built = 'target/x86_64-pc-windows-msvc/release/proofline.exe'
+          foreach ($engine in @('powershell.exe', 'pwsh.exe')) {
+            & $engine -NoProfile -NonInteractive -File scripts/check_windows_release_archive.ps1 -ArchivePath $archive -ExecutablePath $built
+            if ($LASTEXITCODE -ne 0) { throw "$engine rejected the packaged Windows executable." }
           }
-          $binary = Get-ProoflineTarExecutable ([IO.File]::ReadAllBytes($archiveFile))
-          if ($binary.Length -le 0) { throw 'PR-built Windows archive contains no supported Proofline executable.' }
-          tar -xzf artifacts/proofline-x86_64-pc-windows-msvc.tar.gz -C artifacts
-          # Require the installer parser and the smoke-tested executable to
-          # agree byte-for-byte by independent SHA-256 comparison.
-          $sha = [Security.Cryptography.SHA256]::Create()
-          try { $parsedDigest = [BitConverter]::ToString($sha.ComputeHash($binary)).Replace('-', '') }
-          finally { $sha.Dispose() }
-          $extractedDigest = (Get-FileHash -LiteralPath './artifacts/proofline.exe' -Algorithm SHA256).Hash
-          if ($parsedDigest -cne $extractedDigest) {
-            throw 'Installer parser output differs from the Windows executable tested by CI.'
+          tar -xzf $archive -C artifacts
+          if ((Get-FileHash -LiteralPath './artifacts/proofline.exe' -Algorithm SHA256).Hash -cne
+              (Get-FileHash -LiteralPath $built -Algorithm SHA256).Hash) {
+            throw 'Smoke-tested Windows executable differs from installer-validated archive.'
           }
-          Write-Host "Installer-compatible PR-built archive validated ($($binary.Length) bytes)."
           & ./artifacts/proofline.exe --version
           if ($LASTEXITCODE -ne 0) { throw "Windows executable failed" }
           & ./artifacts/proofline.exe setup --print

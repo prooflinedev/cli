@@ -117,11 +117,14 @@ try {
     $script:newHash = Digest-Bytes (Get-ProoflineTarExecutable $newArchive)
 
     # This is test-only: artificial PE fixtures must never be executed.
-    function Assert-ProoflineExeVersion([string]$Path, [string]$Version) {
+    function Assert-ProoflineExeVersion([string]$Path, [string]$Version, [string]$ExpectedSha256) {
         $expected = switch ($Version) {
             '0.5.1' { $script:oldHash; break }
             '0.5.2' { $script:newHash; break }
             default { throw "Unexpected fixture version $Version" }
+        }
+        if ($ExpectedSha256 -cne $expected) {
+            throw "Version check for $Version omitted or supplied an incorrect digest."
         }
         if ((Get-ProoflineSha256 $Path) -cne $expected) {
             throw "Invalid fixture contents for $Version"
