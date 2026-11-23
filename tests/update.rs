@@ -51,3 +51,49 @@ fn cached_update_preserves_schema_help_and_source_installation() {
         b"keep this installed CLI"
     );
 }
+
+// Windows binaries are installed by hand (README "Windows installation"), so
+// `update` must explain those steps instead of failing on Unix installer paths.
+#[cfg(windows)]
+#[test]
+fn windows_update_explains_the_manual_steps() {
+    let directory = tempfile::tempdir().unwrap();
+    let installed = directory.path().join("bin").join("proofline.exe");
+    std::fs::create_dir_all(installed.parent().unwrap()).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_proofline"), &installed).unwrap();
+    let before = std::fs::read(&installed).unwrap();
+    for home in [None, Some(directory.path())] {
+        let mut command = Command::new(&installed);
+        command
+            .arg("update")
+            .env("PROOFLINE_NO_UPDATE_CHECK", "1")
+            .env("LOCALAPPDATA", directory.path())
+            .env_remove("PROOFLINE_INSTALL_DIR")
+            .env_remove("HOME");
+        if let Some(home) = home {
+            command.env("HOME", home);
+        }
+        let update = command.output().unwrap();
+        assert!(!update.status.success());
+        assert!(update.stdout.is_empty());
+        let stderr = String::from_utf8(update.stderr).unwrap();
+        for expected in [
+            "https://github.com/prooflinedev/cli/releases/latest",
+            "proofline-x86_64-pc-windows-msvc.tar.gz",
+            "SHA256SUMS",
+            "Get-FileHash -Algorithm SHA256",
+            &installed.display().to_string(),
+        ] {
+            assert!(
+                stderr.contains(expected),
+                "{expected:?} missing from {stderr}"
+            );
+        }
+        assert!(!stderr.contains("HOME"), "{stderr}");
+        assert!(
+            !stderr.contains("outside the installer directory"),
+            "{stderr}"
+        );
+    }
+    assert_eq!(std::fs::read(&installed).unwrap(), before);
+}

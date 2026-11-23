@@ -195,6 +195,39 @@ fn notices_are_suppressed_for_machine_and_hook_commands() {
     assert!(suggestion(&cache, &["status".into()], true).is_some());
 }
 
+#[test]
+fn windows_notices_point_to_the_manual_steps() {
+    assert_eq!(
+        notice("9.0.0", false),
+        "proofline 9.0.0 is available; run 'proofline update'"
+    );
+    let windows = notice("9.0.0", true);
+    assert!(
+        windows.starts_with("proofline 9.0.0 is available;"),
+        "{windows}"
+    );
+    assert!(
+        windows.contains("'proofline update' shows how"),
+        "{windows}"
+    );
+    let steps = windows_steps(Some(Path::new(r"C:\tools\proofline.exe")));
+    for expected in [
+        "Close every running Proofline process",
+        "https://github.com/prooflinedev/cli/releases/latest",
+        "proofline-x86_64-pc-windows-msvc.tar.gz",
+        "SHA256SUMS",
+        "Get-FileHash -Algorithm SHA256",
+        "tar -xzf",
+        r"C:\tools\proofline.exe",
+    ] {
+        assert!(
+            steps.contains(expected),
+            "{expected:?} missing from {steps}"
+        );
+    }
+    assert!(windows_steps(None).contains("proofline.exe"));
+}
+
 // This same test executable supplies a real child fixture. All endpoint and
 // fixture-mode injection lives in cfg(test), never in the customer binary.
 #[tokio::test]

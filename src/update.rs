@@ -143,7 +143,32 @@ fn suggestion(cache: &Cache, args: &[std::ffi::OsString], interactive: bool) -> 
         .latest
         .as_ref()
         .filter(|latest| newer(latest))
-        .map(|latest| format!("proofline {latest} is available; run 'proofline update'"))
+        .map(|latest| notice(latest, cfg!(target_os = "windows")))
+}
+
+fn notice(latest: &str, windows: bool) -> String {
+    if windows {
+        format!("proofline {latest} is available; 'proofline update' shows how to install it")
+    } else {
+        format!("proofline {latest} is available; run 'proofline update'")
+    }
+}
+
+/// The README's verified manual update: self-update cannot replace a Windows
+/// binary, and Windows has no Unix installer directory to check.
+fn windows_steps(executable: Option<&Path>) -> String {
+    const ARCHIVE: &str = "proofline-x86_64-pc-windows-msvc.tar.gz";
+    let executable = executable.map_or_else(
+        || "proofline.exe".to_owned(),
+        |path| path.display().to_string(),
+    );
+    format!(
+        "'proofline update' cannot replace proofline.exe on Windows; update it by hand:\n  \
+         1. Close every running Proofline process.\n  \
+         2. Download {ARCHIVE} and SHA256SUMS from https://github.com/prooflinedev/cli/releases/latest\n  \
+         3. Run 'Get-FileHash -Algorithm SHA256 {ARCHIVE}' and check that the hash matches the archive's line in SHA256SUMS.\n  \
+         4. Run 'tar -xzf {ARCHIVE}' and replace {executable} with the extracted proofline.exe."
+    )
 }
 
 fn prepare_check(
@@ -422,6 +447,9 @@ fn replace(archive: &[u8], destination: &Path) -> anyhow::Result<()> {
 
 /// Updates an official installer location after verifying the pinned archive.
 pub(crate) async fn install() -> anyhow::Result<()> {
+    if cfg!(target_os = "windows") {
+        bail!(windows_steps(std::env::current_exe().ok().as_deref()));
+    }
     let (destination, target) =
         tokio::task::spawn_blocking(|| Ok::<_, anyhow::Error>((destination()?, target()?)))
             .await??;
