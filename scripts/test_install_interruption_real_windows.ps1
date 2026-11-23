@@ -294,9 +294,9 @@ function Make-InstrumentedInstaller([string]$Source, [string]$Destination, [stri
             "`n" + '        ' + $abort + "`n" + '        try {'
     }
     elseif ($Checkpoint -eq 'fresh-after-stage') {
-        $target = '            Assert-ProoflineExeVersion $stage $ReleaseVersion' +
+        $target = '            Assert-ProoflineExeVersion $stage $ReleaseVersion $hash' +
             "`n`n" + '            if ($null -eq $oldReceipt) {'
-        $replacement = '            Assert-ProoflineExeVersion $stage $ReleaseVersion' +
+        $replacement = '            Assert-ProoflineExeVersion $stage $ReleaseVersion $hash' +
             "`n" + '            ' + $abort + "`n`n" + '            if ($null -eq $oldReceipt) {'
     }
     elseif ($Checkpoint -eq 'fresh-after-move') {

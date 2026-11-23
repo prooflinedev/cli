@@ -35,16 +35,18 @@ if ($Mode -eq 'Hold') {
     if ([IO.File]::Exists($claimed)) { throw 'Test marker was already claimed.' }
     try { [IO.File]::Move($marker, $claimed) }
     catch { throw 'Refusing to hold lock: fresh disposable test marker is unavailable or already claimed.' }
+    $validatedClaim = $false
     try {
         if ([IO.File]::ReadAllText($claimed) -cne "DISPOSABLE_LOCK_TEST:$HoldToken") {
-            # Invalid invocations must not consume another holder's valid
-            # marker. Atomic move back only if no new marker was created.
+            # Preserve an unrecognized claim if restoration fails or a
+            # replacement marker appeared. Never delete another test's token.
             if (-not [IO.File]::Exists($marker)) { [IO.File]::Move($claimed, $marker) }
             throw 'Refusing to hold lock: claimed marker has unexpected contents.'
         }
+        $validatedClaim = $true
     }
     finally {
-        if ([IO.File]::Exists($claimed)) { [IO.File]::Delete($claimed) }
+        if ($validatedClaim -and [IO.File]::Exists($claimed)) { [IO.File]::Delete($claimed) }
     }
     $lock = Join-Path $folder '.proofline-install.lock'
     $ready = Join-Path $folder '.holder-ready'

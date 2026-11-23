@@ -50,8 +50,17 @@ jobs:
           }
           $binary = Get-ProoflineTarExecutable ([IO.File]::ReadAllBytes($archiveFile))
           if ($binary.Length -le 0) { throw 'PR-built Windows archive contains no supported Proofline executable.' }
-          Write-Host "Installer-compatible PR-built Windows archive validated ($($binary.Length) bytes)."
           tar -xzf artifacts/proofline-x86_64-pc-windows-msvc.tar.gz -C artifacts
+          # Require the installer parser and the smoke-tested executable to
+          # agree byte-for-byte by independent SHA-256 comparison.
+          $sha = [Security.Cryptography.SHA256]::Create()
+          try { $parsedDigest = [BitConverter]::ToString($sha.ComputeHash($binary)).Replace('-', '') }
+          finally { $sha.Dispose() }
+          $extractedDigest = (Get-FileHash -LiteralPath './artifacts/proofline.exe' -Algorithm SHA256).Hash
+          if ($parsedDigest -cne $extractedDigest) {
+            throw 'Installer parser output differs from the Windows executable tested by CI.'
+          }
+          Write-Host "Installer-compatible PR-built archive validated ($($binary.Length) bytes)."
           & ./artifacts/proofline.exe --version
           if ($LASTEXITCODE -ne 0) { throw "Windows executable failed" }
           & ./artifacts/proofline.exe setup --print

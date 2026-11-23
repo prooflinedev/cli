@@ -11,6 +11,7 @@ on:
       - 'Cargo.lock'
       - 'src/**'
       - '.github/workflows/ci.yml'
+      - '.github/workflows/release.yml'
       - '.github/workflows/windows-installer.yml'
   workflow_dispatch:
 

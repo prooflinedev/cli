@@ -347,7 +347,8 @@ function Add-ProoflineUserPath([string]$Directory) {
     # Other PATH editors are not obligated to acquire this mutex; their edits
     # can still race with RegistryKey.SetValue (no registry compare-and-swap).
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    $mutexName = 'Local\Proofline-UserPath-' + $sid
+    # HKCU Path is shared between sessions for this SID.
+    $mutexName = 'Global\Proofline-UserPath-' + $sid
     $mutex = [Threading.Mutex]::new($false, $mutexName)
     $locked = $false
     $changed = $false
@@ -360,6 +361,12 @@ function Add-ProoflineUserPath([string]$Directory) {
         }
         if (-not $locked) { throw 'Another Proofline installer is updating user PATH; retry after it completes.' }
         $previous = Get-ProoflineUserPathRecord
+        # An expandable Path interprets %NAME% inside the appended directory.
+        # Refuse a misleading PATH write while retaining the installed binary.
+        if ($previous.kind -eq [Microsoft.Win32.RegistryValueKind]::ExpandString -and
+            $Directory -match '%[^%]+%') {
+            throw 'Install directory contains %VARIABLE% syntax that would expand in User PATH; use -NoModifyPath and add a safe directory manually.'
+        }
         $result = Get-ProoflineUpdatedUserPath $previous.value $Directory $previous.kind
         if ($null -eq $result) {
             Write-Host 'User PATH already contains the Proofline directory.'
@@ -653,7 +660,10 @@ function Restore-ProoflinePendingBackup([string]$Pending) {
     if (-not [IO.File]::Exists($backup)) { return }
     if ([IO.File]::Exists($Pending)) {
         [void](Read-ProoflinePending $Pending)
-        [IO.File]::Delete($backup)
+        # The canonical journal is verified. A transiently locked backup
+        # must not prevent rollback; leave it for transaction cleanup.
+        try { [IO.File]::Delete($backup) }
+        catch { Write-Warning "Journal backup is locked; recovery will retain it until cleanup: $($_.Exception.Message)" }
     }
     else {
         [void](Read-ProoflinePending $backup)
