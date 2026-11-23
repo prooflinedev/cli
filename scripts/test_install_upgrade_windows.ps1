@@ -393,6 +393,30 @@ try {
         Assert-ProoflineRecord (Receipt 'rollback-matching-receipt') '0.5.1' $script:oldHash
         Require (-not [IO.File]::Exists((Pending 'rollback-matching-receipt'))) 'Rollback left journal.'
     }
+    Check 'latest release invocation uses pinned offline archive and passes installer postchecks' {
+        $dir = Join-Path $root 'latest-release-entrypoint'
+        $realDownload = (Get-Item Function:\Get-ProoflineOfficialBytes).ScriptBlock
+        try {
+            Set-Item Function:\Get-ProoflineOfficialBytes -Value {
+                param([string]$RelativePath, [int]$MaximumLength)
+                if ($RelativePath -ceq '/cli/latest') {
+                    return ,([Text.Encoding]::UTF8.GetBytes("0.5.1`n"))
+                }
+                if ($RelativePath -ceq '/cli/download/0.5.1/proofline-x86_64-pc-windows-msvc.tar.gz') {
+                    return ,$script:oldArchive
+                }
+                if ($RelativePath -ceq '/cli/download/0.5.1/SHA256SUMS') {
+                    return ,$script:oldSums
+                }
+                throw "Unexpected official endpoint $RelativePath"
+            }
+            Invoke-ProoflineInstaller $null $dir $false
+        }
+        finally { Set-Item Function:\Get-ProoflineOfficialBytes -Value $realDownload }
+        Require ((Get-ProoflineSha256 (Active 'latest-release-entrypoint')) -ceq $script:oldHash) 'Latest release entrypoint installed the wrong executable.'
+        Assert-ProoflineRecord (Receipt 'latest-release-entrypoint') '0.5.1' $script:oldHash
+        Require (-not [IO.File]::Exists((Pending 'latest-release-entrypoint'))) 'Latest release entrypoint left a recovery journal.'
+    }
     Check 'pre-download installer repairs interrupted upgrade despite download outage' {
         $dir = PrepareOld 'predownload-outage'
         [void](MakePending $dir)

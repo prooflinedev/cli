@@ -139,6 +139,31 @@ try {
         }
         finally { [Environment]::SetEnvironmentVariable($variable, $previous, 'Process') }
     }
+    Test-Case 'REG_EXPAND_SZ refuses an installation path whose percent tokens would expand' {
+        # Stubs make this non-mutating even if the installer regresses: the
+        # helper throws before any registry write can be attempted.
+        $realReader = (Get-Item Function:\Get-ProoflineUserPathRecord).ScriptBlock
+        $realCalculator = (Get-Item Function:\Get-ProoflineUpdatedUserPath).ScriptBlock
+        try {
+            Set-Item Function:\Get-ProoflineUserPathRecord -Value {
+                return @{ value = 'C:\safe'; kind = [Microsoft.Win32.RegistryValueKind]::ExpandString; exists = $true }
+            }
+            Set-Item Function:\Get-ProoflineUpdatedUserPath -Value {
+                throw 'PATH calculator reached after invalid expandable install directory.'
+            }
+            $rejected = $false
+            try { Add-ProoflineUserPath 'C:\literal\%PROOFLINE_UNSAFE_EXPANSION%\bin' }
+            catch {
+                if ($_.Exception.Message -notlike '*contains %VARIABLE% syntax*') { throw }
+                $rejected = $true
+            }
+            if (-not $rejected) { throw 'Unsafe expandable installation path was accepted.' }
+        }
+        finally {
+            Set-Item Function:\Get-ProoflineUpdatedUserPath -Value $realCalculator
+            Set-Item Function:\Get-ProoflineUserPathRecord -Value $realReader
+        }
+    }
     Test-Case 'PATH change is idempotent' {
         $directory = 'C:\Users\tester\AppData\Local\Programs\Proofline\bin'
         if ($null -ne (Get-ProoflineUpdatedUserPath $directory $directory)) {
