@@ -1,15 +1,14 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-  Verify current-user PATH registry updates only in a disposable CI runner.
+  Verify raw current-user PATH persistence and expandable registry types.
 .DESCRIPTION
-  Writes a unique temporary Proofline-style PATH entry to the CI runner's
-  User PATH, checks a fresh PowerShell process can read it, checks idempotence,
-  and restores the original value in finally. Refuses non-CI execution.
-  Never run this test on a personal Windows profile.
+  CI-only test: insert a unique expandable PATH entry, append Proofline path,
+  assert idempotence and fresh-process visibility, restore exact raw registry
+  value and value kind. Refuses execution outside GitHub Actions Windows.
 #>
 [CmdletBinding()]
-param([ValidateSet('Check','ReadUserPath')][string]$Mode = 'Check')
+param([ValidateSet('Check', 'ReadUserPath')][string]$Mode = 'Check')
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -20,35 +19,65 @@ if ($env:GITHUB_ACTIONS -cne 'true' -or [string]::IsNullOrWhiteSpace($env:RUNNER
     throw 'Refusing PATH registry test outside GitHub Actions Windows runner.'
 }
 
+function Get-RawUserPath {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false)
+    if ($null -eq $key) { return @{ exists = $false; value = ''; kind = 'ExpandString' } }
+    try {
+        if ('Path' -notin @($key.GetValueNames())) {
+            return @{ exists = $false; value = ''; kind = 'ExpandString' }
+        }
+        $kind = $key.GetValueKind('Path')
+        $raw = $key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        if ($raw -isnot [string]) { throw 'User PATH has an unexpected registry type.' }
+        return @{ exists = $true; value = $raw; kind = $kind.ToString() }
+    }
+    finally { $key.Dispose() }
+}
+
 if ($Mode -eq 'ReadUserPath') {
-    $freshPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if ($null -eq $freshPath) { $freshPath = '' }
-    [Console]::Out.Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($freshPath)))
+    $fresh = Get-RawUserPath
+    $data = ConvertTo-Json -Compress -InputObject $fresh
+    [Console]::Out.Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($data)))
     exit 0
 }
 
 . (Join-Path (Split-Path -Parent $PSScriptRoot) 'install.ps1')
-$original = [Environment]::GetEnvironmentVariable('Path', 'User')
+$original = Get-RawUserPath
 $directory = Join-Path $env:RUNNER_TEMP ('proofline-path-ci-' + [guid]::NewGuid().ToString('N'))
-$expected = Get-ProoflineUpdatedUserPath $original $directory
-if ($null -eq $expected) {
-    throw 'Fresh randomized CI directory was already in User PATH.'
-}
+$token = '%PROOFLINE_CI_TEST_ROOT%\bin'
+$seed = if ([string]::IsNullOrEmpty($original.value)) { $token }
+else { $original.value.TrimEnd(';') + ';' + $token }
+$expected = Get-ProoflineUpdatedUserPath $seed $directory
+if ($null -eq $expected) { throw 'Fresh randomized CI directory was already in User PATH.' }
 [IO.Directory]::CreateDirectory($directory) | Out-Null
+
+$seeded = $false
 $ok = $false
-$restoreOk = $false
+$restored = $false
 try {
-    Add-ProoflineUserPath $directory
-    $after = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if ($after -cne $expected) {
-        throw 'User PATH did not persist expected entry.'
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+    try {
+        $key.SetValue('Path', $seed, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+        $seeded = $true
     }
-    if ($null -ne (Get-ProoflineUpdatedUserPath $after $directory)) {
-        throw 'User PATH idempotence function returned a duplicate entry.'
-    }
+    finally { $key.Dispose() }
+
     Add-ProoflineUserPath $directory
-    if ([Environment]::GetEnvironmentVariable('Path', 'User') -cne $expected) {
-        throw 'Second PATH update mutated the registry value.'
+    $after = Get-RawUserPath
+    if ($after.value -cne $expected -or $after.kind -cne 'ExpandString') {
+        throw 'Installer did not preserve expandable PATH entry and its type.'
+    }
+    if (-not $after.value.Contains($token)) {
+        throw 'Installer expanded or removed the existing %VARIABLE% token.'
+    }
+    if ($null -ne (Get-ProoflineUpdatedUserPath $after.value $directory)) {
+        throw 'PATH duplicate-detection unexpectedly added a second entry.'
+    }
+
+    Add-ProoflineUserPath $directory
+    $repeat = Get-RawUserPath
+    if ($repeat.value -cne $expected -or $repeat.kind -cne 'ExpandString') {
+        throw 'Second PATH update mutated the raw registry value or its type.'
     }
 
     $engine = (Get-Process -Id $PID).Path
@@ -56,34 +85,42 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Fresh PowerShell process failed to read User PATH: $LASTEXITCODE"
     }
-    $fresh = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(($encoded -join '').Trim()))
-    if ($fresh -cne $expected) {
-        throw 'Fresh PowerShell process observed a different User PATH.'
+    $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(($encoded -join '').Trim()))
+    $fresh = ConvertFrom-Json -InputObject $json
+    if ($fresh.value -cne $expected -or $fresh.kind -cne 'ExpandString') {
+        throw 'Fresh process did not see the correct raw User PATH and registry kind.'
     }
-    Write-Host 'PASS new PowerShell process sees persistent User PATH entry.'
-    Write-Host 'PASS repeated PATH update does not duplicate entry.'
+
+    Write-Host 'PASS raw expandable PATH text and REG_EXPAND_SZ preserved.'
+    Write-Host 'PASS repeated PATH update did not create duplicates.'
+    Write-Host 'PASS fresh PowerShell process observed persisted User PATH.'
     $ok = $true
 }
 finally {
-    # Restore only if the test's exact value is still present. In case of an
-    # unexpected concurrent edit, do not overwrite it with an older snapshot.
-    $current = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if ($current -ceq $expected) {
-        [Environment]::SetEnvironmentVariable('Path', $original, 'User')
-        $restored = [Environment]::GetEnvironmentVariable('Path', 'User')
-        $normalizedOriginal = if ($null -eq $original) { '' } else { $original }
-        $normalizedRestored = if ($null -eq $restored) { '' } else { $restored }
-        $restoreOk = ($normalizedRestored -ceq $normalizedOriginal)
-        if (-not $restoreOk) {
-            Write-Warning 'Could not verify original CI User PATH value was restored.'
+    if ($seeded) {
+        $current = Get-RawUserPath
+        # Restore only the exact test values; do not overwrite other edits.
+        if ($current.kind -ceq 'ExpandString' -and
+            $current.value -in @($seed, $expected)) {
+            $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+            try {
+                if ($original.exists) {
+                    $originalKind = [Enum]::Parse([Microsoft.Win32.RegistryValueKind], $original.kind)
+                    $key.SetValue('Path', $original.value, $originalKind)
+                }
+                else { $key.DeleteValue('Path', $false) }
+            }
+            finally { $key.Dispose() }
+            Send-ProoflineEnvironmentChange
+            $check = Get-RawUserPath
+            $restored = ($check.exists -eq $original.exists -and
+                $check.value -ceq $original.value -and $check.kind -ceq $original.kind)
         }
-    }
-    else {
-        Write-Warning 'User PATH changed unexpectedly during CI; refusing to overwrite concurrent edits.'
+        else { Write-Warning 'User PATH changed concurrently; refusing to overwrite it.' }
     }
     Remove-Item -LiteralPath $directory -Recurse -Force -ErrorAction SilentlyContinue
 }
-if (-not $ok -or -not $restoreOk) {
-    throw 'CI User PATH persistence check failed or did not restore original value.'
+if (-not $ok -or -not $restored) {
+    throw 'CI User PATH persistence failed or original raw PATH was not restored.'
 }
-Write-Host 'CI User PATH persistence and restore: PASS'
+Write-Host 'CI User PATH persistence, expandability and restore: PASS'

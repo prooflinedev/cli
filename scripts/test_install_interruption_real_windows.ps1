@@ -142,10 +142,17 @@ function Make-InstrumentedInstaller([string]$Source, [string]$Destination, [stri
         $Checkpoint + ''', [Text.Encoding]::ASCII)'
     $abort = $mark + "`n" + '                Stop-Process -Id $PID -Force -ErrorAction Stop'
     if ($Checkpoint -eq 'after-journal') {
-        $target = '            Write-ProoflineAtomicRecord $pending $record' +
-            "`n" + '            try {'
-        $replacement = '            Write-ProoflineAtomicRecord $pending $record' +
-            "`n" + '            ' + $abort + "`n" + '            try {'
+        $target = '        Write-ProoflineAtomicRecord $pending $record' +
+            "`n" + '        try {'
+        $replacement = '        Write-ProoflineAtomicRecord $pending $record' +
+            "`n" + '        ' + $abort + "`n" + '        try {'
+    }
+    elseif ($Checkpoint -eq 'fresh-partial-stage' -or $Checkpoint -eq 'upgrade-partial-stage') {
+        $target = '                $stream.Write($binary, 0, $binary.Length)' +
+            "`n" + '                $stream.Flush($true)'
+        $replacement = '                $stream.Write($binary, 0, [Math]::Min(32, $binary.Length))' +
+            "`n" + '                $stream.Flush($true)' +
+            "`n" + '                ' + $abort
     }
     elseif ($Checkpoint -eq 'after-switch' -or $Checkpoint -eq 'corrupt-after-switch') {
         $target = '                Invoke-ProoflineReplaceWithRetry $stage $destination $paths.api $hash $oldReceipt.sha256' +
@@ -159,15 +166,16 @@ function Make-InstrumentedInstaller([string]$Source, [string]$Destination, [stri
     }
     elseif ($Checkpoint -eq 'after-receipt') {
         $target = '                Write-ProoflineReceipt $receipt $ReleaseVersion $hash' +
-            "`n" + '                Clear-ProoflineUpgradeFiles $paths $pending $hash'
+            "`n" + '                try { Clear-ProoflineUpgradeFiles $paths $pending $hash }'
         $replacement = '                Write-ProoflineReceipt $receipt $ReleaseVersion $hash' +
-            "`n" + '                ' + $abort + "`n" + '                Clear-ProoflineUpgradeFiles $paths $pending $hash'
+            "`n" + '                ' + $abort +
+            "`n" + '                try { Clear-ProoflineUpgradeFiles $paths $pending $hash }'
     }
     elseif ($Checkpoint -eq 'fresh-after-journal') {
-        $target = '            Write-ProoflineAtomicRecord $pending $record' +
-            "`n" + '        }' + "`n" + '        try {'
-        $replacement = '            Write-ProoflineAtomicRecord $pending $record' +
-            "`n" + '            ' + $abort + "`n" + '        }' + "`n" + '        try {'
+        $target = '        Write-ProoflineAtomicRecord $pending $record' +
+            "`n" + '        try {'
+        $replacement = '        Write-ProoflineAtomicRecord $pending $record' +
+            "`n" + '        ' + $abort + "`n" + '        try {'
     }
     elseif ($Checkpoint -eq 'fresh-after-stage') {
         $target = '            Assert-ProoflineExeVersion $stage $ReleaseVersion' +
@@ -199,15 +207,17 @@ $root = Join-Path ([IO.Path]::GetTempPath()) ('proofline-real-interruption-' + [
 $cache = Join-Path $root 'cache'
 [IO.Directory]::CreateDirectory($cache) | Out-Null
 $scenarios = @(
-    'after-journal', 'after-switch', 'corrupt-after-switch', 'after-receipt',
-    'fresh-after-journal', 'fresh-after-stage', 'fresh-after-move', 'fresh-after-receipt'
+    'after-journal', 'upgrade-partial-stage', 'after-switch', 'corrupt-after-switch', 'after-receipt',
+    'fresh-after-journal', 'fresh-partial-stage', 'fresh-after-stage', 'fresh-after-move', 'fresh-after-receipt'
 )
 $expected = @{
     'after-journal' = '0.5.1'
+    'upgrade-partial-stage' = '0.5.1'
     'after-switch' = '0.5.2'
     'corrupt-after-switch' = '0.5.1'
     'after-receipt' = '0.5.2'
     'fresh-after-journal' = 'absent'
+    'fresh-partial-stage' = 'absent'
     'fresh-after-stage' = 'absent'
     'fresh-after-move' = '0.5.1'
     'fresh-after-receipt' = '0.5.1'
@@ -274,13 +284,13 @@ try {
         if ([IO.File]::Exists($activeFile)) {
             $activeDigest = (Get-FileHash -LiteralPath $activeFile -Algorithm SHA256).Hash
         }
-        if ($checkpoint -in @('fresh-after-journal', 'fresh-after-stage')) {
+        if ($checkpoint -in @('fresh-after-journal', 'fresh-partial-stage', 'fresh-after-stage')) {
             Require ($null -eq $activeDigest) 'Fresh install published executable before intended checkpoint.'
         }
         elseif ($checkpoint -in @('fresh-after-move', 'fresh-after-receipt')) {
             Require ($null -ne $activeDigest) 'Fresh install did not publish executable before checkpoint.'
         }
-        elseif ($checkpoint -eq 'after-journal') {
+        elseif ($checkpoint -in @('after-journal', 'upgrade-partial-stage')) {
             Require ($activeDigest -ceq $oldDigest) 'Journal checkpoint unexpectedly changed old executable.'
         }
         elseif ($checkpoint -eq 'corrupt-after-switch') {
@@ -309,6 +319,63 @@ try {
             $unclaimed = @(Get-ChildItem -LiteralPath $directory -Force |
                 Where-Object { $_.Name -match '^\.proofline-staged-[a-f0-9]{32}\.exe$' })
             Require ($unclaimed.Count -eq 0) 'Fresh-install recovery left a staged executable.'
+            if ($checkpoint -eq 'fresh-partial-stage') {
+                $evidence = @(Get-ChildItem -LiteralPath $directory -Force |
+                    Where-Object { $_.Name -match '^\.proofline-staged-[a-f0-9]{32}\.exe\.incomplete
+        }
+        else {
+            $digest = Assert-Installed $directory $expected[$checkpoint] ($checkpoint -eq 'corrupt-after-switch')
+            if ($isFresh) {
+                Require ($null -ne $digest) 'First-install recovery failed to finalize new executable.'
+            }
+            elseif ($expected[$checkpoint] -eq '0.5.1') {
+                Require ($digest -ceq $oldDigest) 'Rollback did not preserve original executable bytes.'
+            }
+            else {
+                Require ($digest -cne $oldDigest) 'Recovery did not install the different new executable.'
+            }
+            Write-Host "PASS $checkpoint; fresh process recovered to v$($expected[$checkpoint])."
+        }
+        $results += [pscustomobject]@{
+            checkpoint = $checkpoint
+            workerExitCode = $workerExit
+            recoveryExitCode = $recoverExit
+            recoveredVersion = $expected[$checkpoint]
+            recoveredSha256 = $digest
+        }
+    }
+
+    Require ([Environment]::GetEnvironmentVariable('Path', 'User') -ceq $pathBefore) 'User PATH was modified.'
+    $passed = $true
+}
+catch {
+    Write-Warning "FAIL real installer interruption test: $($_.Exception.ToString())"
+}
+finally {
+    if ($passed -and -not $KeepFiles) {
+        try {
+            Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop
+            $cleanup = $true
+        }
+        catch {
+            Write-Warning "Could not delete disposable test directory: $($_.Exception.Message)"
+            $passed = $false
+        }
+    }
+}
+Write-Host "Completed $($results.Count) of $($scenarios.Count) interruption scenarios."
+if ($passed) {
+    Write-Host 'Real Windows installer interruption integration: PASS'
+    if ($KeepFiles) { Write-Host "Retained test evidence at $root" }
+    else { Write-Host "Cleaned isolated test directory: $cleanup" }
+}
+else {
+    Write-Warning "Failure evidence preserved at: $root"
+    exit 1
+}
+ })
+                Require ($evidence.Count -eq 1) 'Incomplete first-install bytes were not preserved.'
+            }
             Write-Host "PASS $checkpoint; fresh process removed interrupted first-install files."
         }
         else {

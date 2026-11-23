@@ -12,13 +12,13 @@ On Linux and macOS, install the CLI with `curl -fsSL https://proofline.sh/cli | 
 
 ### Windows installation
 
-On **Windows x64**, run the PowerShell installer from a checked-out copy of this repository:
+On **Windows x64**, run the PowerShell installer from a checked-out copy of this repository. The effective PowerShell execution policy must permit local scripts; inspect it with `Get-ExecutionPolicy -List`. If your organization permits a per-process change, use `Set-ExecutionPolicy -Scope Process RemoteSigned` in the terminal running these commands. Do not override an organization-enforced policy: consult your administrator instead.
 
 ```powershell
 powershell.exe -NoProfile -File .\install.ps1
 ```
 
-It downloads the official release and `SHA256SUMS` from `https://proofline.sh`, validates the archive, verifies `proofline.exe --version`, and installs for the **current user** in `%LOCALAPPDATA%\Programs\Proofline\bin` without administrator rights. By default it adds that directory to the user PATH; open a new terminal to run `proofline login`. It does not handle login or credentials.
+It downloads the official release and `SHA256SUMS` from `https://proofline.sh`, validates the archive, verifies `proofline.exe --version`, and installs for the **current user** in `%LOCALAPPDATA%\Programs\Proofline\bin` without administrator rights. By default it appends that directory to the user PATH while preserving expandable registry entries. Open a new terminal and run `Get-Command proofline -All` to check which executable has precedence. If an older copy is found first, run the new executable using its absolute path (for example, `& "$env:LOCALAPPDATA\Programs\Proofline\bin\proofline.exe" login`) or correct the stale PATH entry. The installer does not handle login or credentials.
 
 To pin a version or install in a disposable folder without updating PATH:
 
@@ -26,11 +26,11 @@ To pin a version or install in a disposable folder without updating PATH:
 powershell.exe -NoProfile -File .\install.ps1 -Version 0.5.2 -InstallDir "$env:TEMP\proofline-test-bin" -NoModifyPath
 ```
 
-Re-running the installer with the same verified version is a no-op. Upgrading an installer-managed version preserves the previous executable and uses a pending recovery record; an unmanaged or inconsistent existing installation is not overwritten. No administrator privileges or machine-level PATH changes are required.
+Re-running the installer with the same verified version does not replace the executable or receipt, but User PATH may still be updated unless `-NoModifyPath` is selected. Upgrading an installer-managed version preserves the previous executable and uses a pending recovery record; an unmanaged or inconsistent existing installation is not overwritten. No administrator privileges or machine-level PATH changes are required.
 
 The installer script is currently distributed **in this repository**, not via a verified Windows one-liner on `proofline.sh`. Alternatively, manually download `proofline-x86_64-pc-windows-msvc.tar.gz` and its `SHA256SUMS` from the same official release, verify the SHA-256 with `Get-FileHash`, extract `proofline.exe` and place it on PATH.
 
-Windows `proofline update` (self-update invoked from the CLI) remains unsupported; re-run `install.ps1` to upgrade an installer-managed installation.
+Windows `proofline update` (self-update invoked from the CLI) remains unsupported; re-run `install.ps1` to upgrade an installer-managed installation. After a process interruption, a later installer run uses a pending journal to complete or recover a recognized transaction. A partial first-install or pre-switch stage can be retained with an `.incomplete` suffix for diagnostics without blocking a new attempt. Errors that cannot be safely classified preserve evidence and may require manual recovery.
 
 The installer verifies the archive against the official SHA-256 manifest. Because both are fetched from the same HTTPS release origin, this establishes download consistency rather than independent cryptographic publisher authentication.
 
@@ -44,7 +44,7 @@ powershell.exe -NoProfile -File .\scripts\test_install_upgrade_real_windows.ps1
 powershell.exe -NoProfile -File .\scripts\test_install_interruption_real_windows.ps1
 ```
 
-Run the same commands with `pwsh.exe` to verify PowerShell 7. The last two tests download pinned official releases; all test installations use disposable paths and do not modify User PATH. The separate `scripts/test_install_user_path_ci_windows.ps1` test intentionally runs **only on GitHub Actions Windows runners**, where it verifies registry persistence and restores the original User PATH value.
+Run the same commands with `pwsh.exe` to verify PowerShell 7. The interruption test additionally covers hard termination during partially written stages. The last two tests download pinned official releases; all test installations use disposable paths and do not modify User PATH. The separate `scripts/test_install_user_path_ci_windows.ps1` test intentionally runs **only on GitHub Actions Windows runners**, where it verifies registry persistence and restores the original User PATH value.
 
 On Linux, coding agents that omit `DBUS_SESSION_BUS_ADDRESS` and `XDG_RUNTIME_DIR`
 can still use the stored sign-in when the standard `/run/user/<uid>/bus` socket

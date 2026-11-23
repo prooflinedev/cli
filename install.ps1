@@ -56,6 +56,8 @@ function Get-ProoflineOfficialBytes([string]$RelativePath, [int]$MaximumLength) 
     $cancellation = [Threading.CancellationTokenSource]::new()
     $cancellation.CancelAfter(120000)
     try {
+        # Bound the complete response, including any stalled body reads.
+        $downloadClock = [Diagnostics.Stopwatch]::StartNew()
         $uri = [Uri]($script:ProoflineOrigin + $RelativePath)
         for ($redirect = 0; $redirect -le 3; $redirect++) {
             $response = $client.GetAsync($uri, [Net.Http.HttpCompletionOption]::ResponseHeadersRead, $cancellation.Token).GetAwaiter().GetResult()
@@ -83,7 +85,20 @@ function Get-ProoflineOfficialBytes([string]$RelativePath, [int]$MaximumLength) 
                 try {
                     $buffer = [byte[]]::new(65536)
                     while ($true) {
-                        $count = $inputStream.ReadAsync($buffer, 0, $buffer.Length, $cancellation.Token).GetAwaiter().GetResult()
+                        $remaining = [int][Math]::Max(0, 120000 - $downloadClock.ElapsedMilliseconds)
+                        if ($remaining -eq 0) {
+                            $response.Dispose()
+                            throw 'Release download exceeded its 120-second deadline.'
+                        }
+                        $read = $inputStream.ReadAsync($buffer, 0, $buffer.Length, $cancellation.Token)
+                        # HttpClient.Timeout stops after headers with ResponseHeadersRead.
+                        # On .NET Framework, stream cancellation may be ignored; bound
+                        # the actual wait and close the response on timeout.
+                        if (-not $read.Wait($remaining)) {
+                            $response.Dispose()
+                            throw 'Release download exceeded its 120-second deadline.'
+                        }
+                        $count = $read.GetAwaiter().GetResult()
                         if ($count -eq 0) { break }
                         if ($outputStream.Length + $count -gt $MaximumLength) {
                             throw 'Release download exceeds the permitted size.'
@@ -267,14 +282,71 @@ function Get-ProoflineUpdatedUserPath([string]$Current, [string]$Directory) {
     return $result
 }
 
+function Get-ProoflineUserPathRecord {
+    # Environment.GetEnvironmentVariable('Path', 'User') expands REG_EXPAND_SZ.
+    # Read raw text and the registry kind to avoid flattening %VARIABLE% entries.
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false)
+    if ($null -eq $key) {
+        return @{ value = ''; kind = [Microsoft.Win32.RegistryValueKind]::ExpandString; exists = $false }
+    }
+    try {
+        if ('Path' -notin @($key.GetValueNames())) {
+            return @{ value = ''; kind = [Microsoft.Win32.RegistryValueKind]::ExpandString; exists = $false }
+        }
+        $kind = $key.GetValueKind('Path')
+        if ($kind -notin @([Microsoft.Win32.RegistryValueKind]::String,
+                          [Microsoft.Win32.RegistryValueKind]::ExpandString)) {
+            throw 'User PATH registry value has an unsupported type; change it manually.'
+        }
+        $value = $key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        if ($value -isnot [string]) { throw 'User PATH registry value is not text.' }
+        return @{ value = $value; kind = $kind; exists = $true }
+    }
+    finally { $key.Dispose() }
+}
+
+function Send-ProoflineEnvironmentChange {
+    # RegistryKey.SetValue retains REG_EXPAND_SZ but does not notify other
+    # processes. Notify the shell as Environment.SetEnvironmentVariable does.
+    if (-not ('ProoflineEnvironmentNotifier' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class ProoflineEnvironmentNotifier {
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr SendMessageTimeout(IntPtr hwnd, uint msg,
+        IntPtr wParam, string lParam, uint flags, uint timeout, out IntPtr result);
+}
+'@
+    }
+    $result = [IntPtr]::Zero
+    $sent = [ProoflineEnvironmentNotifier]::SendMessageTimeout(
+        [IntPtr]65535, 0x1a, [IntPtr]::Zero, 'Environment', 0x2, 5000, [ref]$result)
+    if ($sent -eq [IntPtr]::Zero) {
+        Write-Warning 'User PATH was saved, but the environment-change notification was not acknowledged. Open a new terminal.'
+    }
+}
+
 function Add-ProoflineUserPath([string]$Directory) {
-    $current = [Environment]::GetEnvironmentVariable('Path', 'User')
-    $result = Get-ProoflineUpdatedUserPath $current $Directory
+    $previous = Get-ProoflineUserPathRecord
+    $result = Get-ProoflineUpdatedUserPath $previous.value $Directory
     if ($null -eq $result) {
         Write-Host 'User PATH already contains the Proofline directory.'
         return
     }
-    [Environment]::SetEnvironmentVariable('Path', $result, 'User')
+    $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+    try {
+        # Avoid an obvious lost update if another process changed PATH since
+        # our read. This is not a cross-process atomic registry compare/swap.
+        $fresh = Get-ProoflineUserPathRecord
+        if ($fresh.value -cne $previous.value -or
+            $fresh.kind -ne $previous.kind -or $fresh.exists -ne $previous.exists) {
+            throw 'User PATH changed concurrently; retry the installer or add the directory manually.'
+        }
+        $key.SetValue('Path', $result, $previous.kind)
+    }
+    finally { $key.Dispose() }
+    Send-ProoflineEnvironmentChange
     Write-Host 'Added Proofline to your user PATH. Open a new terminal to use it.'
 }
 
@@ -444,16 +516,28 @@ function Get-ProoflineTransactionPaths([string]$Directory, [string]$Id) {
     }
 }
 
-function Clear-ProoflineUpgradeFiles([hashtable]$Paths, [string]$Pending, [string]$NewHash) {
-    # Deleting every matching ".proofline-staged-*.exe" would remove files
-    # belonging to unrelated attempts. A schema-2 journal's validated ID
-    # identifies precisely one stage belonging to this transaction.
+function Clear-ProoflineUpgradeFiles(
+    [hashtable]$Paths, [string]$Pending, [string]$NewHash,
+    [switch]$PreserveIncompleteStage
+) {
+    # Only delete transaction-owned artifacts derived from a validated ID.
     foreach ($key in @('old', 'api', 'stage')) {
         Assert-ProoflineNoReparse $Paths[$key]
     }
     if ([IO.File]::Exists($Paths.stage) -and
         (Get-ProoflineSha256 $Paths.stage) -cne $NewHash) {
-        throw 'Pending upgrade stage has unexpected contents; preserving transaction evidence.'
+        if (-not $PreserveIncompleteStage) {
+            throw 'Pending upgrade stage has unexpected contents; preserving transaction evidence.'
+        }
+        # Before switching, the installed old executable is still intact.
+        # Quarantine an incomplete stage instead of permanently blocking retry.
+        $evidence = $Paths.stage + '.incomplete'
+        Assert-ProoflineNoReparse $evidence
+        if ([IO.File]::Exists($evidence)) {
+            throw 'Incomplete-stage evidence path already exists; preserving the journal.'
+        }
+        [IO.File]::Move($Paths.stage, $evidence)
+        Write-Warning "Unverified interrupted upgrade stage preserved at $evidence"
     }
     foreach ($key in @('old', 'api', 'stage')) {
         if ([IO.File]::Exists($Paths[$key])) { [IO.File]::Delete($Paths[$key]) }
@@ -481,25 +565,37 @@ function Recover-ProoflinePending([string]$Directory) {
         if ($record.schema -eq 3) {
             $stage = [IO.Path]::Combine($Directory, ('.proofline-staged-' + $record.id + '.exe'))
             Assert-ProoflineNoReparse $stage
-            if ([IO.File]::Exists($stage) -and
-                (Get-ProoflineSha256 $stage) -cne $record.sha256) {
-                throw 'Interrupted first-install stage differs from verified release; preserving journal.'
-            }
         }
         if (-not [IO.File]::Exists($destination)) {
             if ([IO.File]::Exists($receipt)) {
                 throw 'Interrupted first installation has a receipt but no executable.'
             }
             if ($null -ne $stage -and [IO.File]::Exists($stage)) {
-                [IO.File]::Delete($stage)
+                if ((Get-ProoflineSha256 $stage) -cne $record.sha256) {
+                    # No executable was published. Keep incomplete bytes for
+                    # diagnosis, but remove the transaction's blocking journal.
+                    $evidence = $stage + '.incomplete'
+                    Assert-ProoflineNoReparse $evidence
+                    if ([IO.File]::Exists($evidence)) {
+                        throw 'Incomplete-stage evidence path already exists; preserving journal.'
+                    }
+                    [IO.File]::Move($stage, $evidence)
+                    Write-Warning "Unverified first-install stage preserved at $evidence"
+                }
+                else { [IO.File]::Delete($stage) }
             }
             [IO.File]::Delete($pending)
             return
         }
+        if ($null -ne $stage -and [IO.File]::Exists($stage) -and
+            (Get-ProoflineSha256 $stage) -cne $record.sha256) {
+            throw 'Published first-install executable has an unverified stage; preserving journal.'
+        }
         if ((Get-ProoflineSha256 $destination) -cne $record.sha256) {
             throw 'Interrupted first install has an unrecognized executable; preserving journal.'
         }
-        Assert-ProoflineExeVersion $destination $record.version
+        # Do not execute an existing image whose hash is trusted only against
+        # mutable local metadata. Smoke tests run on verified download stages.
         if ([IO.File]::Exists($receipt)) {
             Assert-ProoflineRecord $receipt $record.version $record.sha256
         }
@@ -518,22 +614,30 @@ function Recover-ProoflinePending([string]$Directory) {
     if ([IO.File]::Exists($destination)) { $activeHash = Get-ProoflineSha256 $destination }
 
     if ($activeHash -ceq $record.newSha256) {
+        $finalized = $false
         try {
-            Assert-ProoflineExeVersion $destination $record.newVersion
+            # A local journal hash is not sufficient authority to execute
+            # an existing image. Validate bytes and write the matching receipt.
             Write-ProoflineReceipt $receipt $record.newVersion $record.newSha256
-            Clear-ProoflineUpgradeFiles $paths $pending $record.newSha256
+            $finalized = $true
+        }
+        catch {
+            Write-Warning "New executable is present but cannot be finalized: $($_.Exception.Message)"
+        }
+        if ($finalized) {
+            # Cleaning old files is not part of the successful version switch.
+            # Preserve the new executable and journal if cleanup must be retried.
+            try { Clear-ProoflineUpgradeFiles $paths $pending $record.newSha256 }
+            catch { Write-Warning "Upgrade finalized; cleanup will be retried: $($_.Exception.Message)" }
             Write-Host "Finalized interrupted Proofline $($record.newVersion) upgrade."
             return
-        } catch {
-            Write-Warning "New executable is present but cannot be finalized: $($_.Exception.Message)"
-            # Try verified old copy below rather than claiming the upgrade worked.
         }
     }
 
     if ($activeHash -ceq $record.oldSha256) {
-        Assert-ProoflineExeVersion $destination $record.oldVersion
         Write-ProoflineReceipt $receipt $record.oldVersion $record.oldSha256
-        Clear-ProoflineUpgradeFiles $paths $pending $record.newSha256
+        try { Clear-ProoflineUpgradeFiles $paths $pending $record.newSha256 -PreserveIncompleteStage }
+        catch { Write-Warning "Verified previous installation retained; cleanup will be retried: $($_.Exception.Message)" }
         Write-Host "Previous Proofline $($record.oldVersion) installation remains usable."
         return
     }
@@ -567,7 +671,8 @@ function Recover-ProoflinePending([string]$Directory) {
         if ((Get-ProoflineSha256 $destination) -cne $record.oldSha256) {
             throw 'Restored executable digest differs from previous release.'
         }
-        Assert-ProoflineExeVersion $destination $record.oldVersion
+        # Recovery copy was checked against the recorded hash; do not execute
+        # a pre-existing local image during repair.
         Write-ProoflineReceipt $receipt $record.oldVersion $record.oldSha256
         Clear-ProoflineUpgradeFiles $paths $pending $record.newSha256
         Write-Host "Restored verified Proofline $($record.oldVersion) after interrupted upgrade."
@@ -692,7 +797,8 @@ function Install-ProoflineArchive(
             if ((Get-ProoflineSha256 $destination) -cne $oldReceipt.sha256) {
                 throw 'Existing Proofline executable does not match its installer-managed receipt.'
             }
-            Assert-ProoflineExeVersion $destination $oldReceipt.version
+            # Existing binaries are not executed merely because a local
+            # receipt contains a matching hash. Only verified downloads run.
             if ($oldReceipt.version -ceq $ReleaseVersion -and
                 $oldReceipt.sha256 -ceq $hash) {
                 Write-Host "Proofline $ReleaseVersion is already installed; nothing was changed."
@@ -705,17 +811,27 @@ function Install-ProoflineArchive(
         $stage = [IO.Path]::Combine($directory, ('.proofline-staged-' + $id + '.exe'))
         Assert-ProoflineNoReparse $stage
         if ($null -eq $oldReceipt) {
-            # Write the schema-3 journal BEFORE creating the stage. If killed
-            # during a write, recovery retains incomplete bytes as evidence;
-            # it only deletes a stage whose digest matches the verified one.
             $record = ConvertTo-Json -Compress -InputObject ([ordered]@{
                 schema = 3
                 id = $id
                 version = $ReleaseVersion
                 sha256 = $hash
             })
-            Write-ProoflineAtomicRecord $pending $record
         }
+        else {
+            # Journal BEFORE creating the staged image or previous-version
+            # copy. A killed preparation then has an exact transaction ID
+            # with which to clean up owned artifacts.
+            $record = ConvertTo-Json -Compress -InputObject ([ordered]@{
+                schema = 2
+                id = $id
+                oldVersion = $oldReceipt.version
+                oldSha256 = $oldReceipt.sha256
+                newVersion = $ReleaseVersion
+                newSha256 = $hash
+            })
+        }
+        Write-ProoflineAtomicRecord $pending $record
         try {
             $stream = [IO.File]::Open($stage, [IO.FileMode]::CreateNew,
                 [IO.FileAccess]::Write, [IO.FileShare]::None)
@@ -744,15 +860,6 @@ function Install-ProoflineArchive(
             if ((Get-ProoflineSha256 $paths.old) -cne $oldReceipt.sha256) {
                 throw 'Could not preserve a verified previous executable; upgrade aborted.'
             }
-            $record = ConvertTo-Json -Compress -InputObject ([ordered]@{
-                schema = 2
-                id = $id
-                oldVersion = $oldReceipt.version
-                oldSha256 = $oldReceipt.sha256
-                newVersion = $ReleaseVersion
-                newSha256 = $hash
-            })
-            Write-ProoflineAtomicRecord $pending $record
             try {
                 Invoke-ProoflineReplaceWithRetry $stage $destination $paths.api $hash $oldReceipt.sha256
                 if ((Get-ProoflineSha256 $destination) -cne $hash) {
@@ -760,7 +867,8 @@ function Install-ProoflineArchive(
                 }
                 Assert-ProoflineExeVersion $destination $ReleaseVersion
                 Write-ProoflineReceipt $receipt $ReleaseVersion $hash
-                Clear-ProoflineUpgradeFiles $paths $pending $hash
+                try { Clear-ProoflineUpgradeFiles $paths $pending $hash }
+                catch { Write-Warning "Verified upgrade retained; cleanup will be retried: $($_.Exception.Message)" }
                 Write-Host "Upgraded Proofline $($oldReceipt.version) to $ReleaseVersion."
                 return $destination
             }

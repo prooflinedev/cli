@@ -94,7 +94,9 @@ try {
 
     # Test-only shadow function: fake PE fixtures are not runnable and must
     # NEVER be started. Production installer calls the original version checker.
+    $script:smokeCount = 0
     function Assert-ProoflineExeVersion([string]$Path, [string]$Version) {
+        $script:smokeCount++
         $digest = Get-ProoflineSha256 $Path
         $expected = switch ($Version) {
             '0.5.1' { $script:oldHash; break }
@@ -123,7 +125,7 @@ try {
         Require (-not [IO.File]::Exists((Join-Path $dir '.proofline-install.pending.json'))) 'Fresh pending record remains.'
         Require (-not [IO.File]::Exists((Join-Path $dir 'proofline.exe'))) 'Interrupted install unexpectedly published an executable.'
     }
-    Check 'interrupted fresh install refuses an unverified stage' {
+    Check 'interrupted first-install stage is quarantined and retry can proceed' {
         $dir = Join-Path $root 'fresh-tampered'
         [IO.Directory]::CreateDirectory($dir) | Out-Null
         $id = [guid]::NewGuid().ToString('N')
@@ -133,9 +135,13 @@ try {
         Write-ProoflineAtomicRecord $journal (ConvertTo-Json -Compress -InputObject ([ordered]@{
             schema = 3; id = $id; version = '0.5.1'; sha256 = $script:oldHash
         }))
-        Must-Throw { Invoke-ProoflinePendingRepair $dir }
-        Require ([IO.File]::Exists($journal)) 'Journal vanished despite unrecognized stage.'
-        Require ([IO.File]::Exists($stage)) 'Unverified stage was silently discarded.'
+        Invoke-ProoflinePendingRepair $dir
+        Require (-not [IO.File]::Exists($journal)) 'Incomplete first install blocked further attempts.'
+        Require (-not [IO.File]::Exists($stage)) 'Incomplete bytes remained at executable stage path.'
+        Require ([IO.File]::ReadAllText($stage + '.incomplete') -ceq 'INCOMPLETE_DOWNLOAD') 'Untrusted bytes not retained for diagnosis.'
+        Require (-not [IO.File]::Exists((Join-Path $dir 'proofline.exe'))) 'Untrusted stage was installed.'
+        [void](Install-ProoflineArchive $script:oldArchive $script:oldSums '0.5.1' $dir)
+        Assert-ProoflineRecord (Join-Path $dir '.proofline-install.receipt.json') '0.5.1' $script:oldHash
     }
     Check 'interrupted fresh install finalizes verified published executable' {
         $dir = Join-Path $root 'fresh-published'
@@ -181,7 +187,9 @@ try {
     Check 'repeat upgrade is idempotent' {
         $dir = PrepareOld 'repeat'
         [void](Install-ProoflineArchive $script:newArchive $script:newSums '0.5.2' $dir)
+        $before = $script:smokeCount
         [void](Install-ProoflineArchive $script:newArchive $script:newSums '0.5.2' $dir)
+        Require ($script:smokeCount -eq $before) 'No-op installation executed the pre-existing local executable.'
         Require ((Get-ProoflineSha256 (Active 'repeat')) -ceq $script:newHash) 'Repeat changed active bytes.'
         Assert-ProoflineRecord (Receipt 'repeat') '0.5.2' $script:newHash
     }
@@ -195,20 +203,25 @@ try {
         Require ((Get-ProoflineSha256 (Active 'pre-switch-stage')) -ceq $script:oldHash) 'Old executable changed.'
         Assert-ProoflineRecord (Receipt 'pre-switch-stage') '0.5.1' $script:oldHash
     }
-    Check 'untrusted pre-switch stage is preserved with the journal' {
+    Check 'interrupted upgrade stage is quarantined without blocking retry' {
         $dir = PrepareOld 'tampered-stage'
         $paths = MakePending $dir
         [IO.File]::WriteAllText($paths.stage, 'NOT_THE_VERIFIED_CANDIDATE', [Text.Encoding]::ASCII)
-        Must-Throw { Invoke-ProoflinePendingRepair $dir }
-        Require ([IO.File]::Exists((Pending 'tampered-stage'))) 'Unknown staged data lost its pending record.'
-        Require ([IO.File]::Exists($paths.stage)) 'Unknown staged data was deleted.'
+        Invoke-ProoflinePendingRepair $dir
+        Require (-not [IO.File]::Exists((Pending 'tampered-stage'))) 'Pre-switch retry is still blocked.'
+        Require (-not [IO.File]::Exists($paths.stage)) 'Unverified stage remained available for execution.'
+        Require ([IO.File]::ReadAllText($paths.stage + '.incomplete') -ceq 'NOT_THE_VERIFIED_CANDIDATE') 'Quarantined evidence is missing.'
         Require ((Get-ProoflineSha256 (Active 'tampered-stage')) -ceq $script:oldHash) 'Old executable was changed.'
+        [void](Install-ProoflineArchive $script:newArchive $script:newSums '0.5.2' $dir)
+        Assert-ProoflineRecord (Receipt 'tampered-stage') '0.5.2' $script:newHash
     }
     Check 'new active detected and finalized after restart' {
         $dir = PrepareOld 'finalize'
         $paths = MakePending $dir
         [IO.File]::WriteAllBytes((Active 'finalize'), (Get-ProoflineTarExecutable $script:newArchive))
+        $before = $script:smokeCount
         Invoke-ProoflinePendingRepair $dir
+        Require ($script:smokeCount -eq $before) 'Recovery executed pre-existing executable verified only by local journal.'
         Require ((Get-ProoflineSha256 (Active 'finalize')) -ceq $script:newHash) 'New active hash was lost.'
         Assert-ProoflineRecord (Receipt 'finalize') '0.5.2' $script:newHash
         Require (-not [IO.File]::Exists((Pending 'finalize'))) 'Pending journal not cleared.'
@@ -221,6 +234,53 @@ try {
         Require ((Get-ProoflineSha256 (Active 'rollback')) -ceq $script:oldHash) 'Old binary not restored.'
         Assert-ProoflineRecord (Receipt 'rollback') '0.5.1' $script:oldHash
         Require (-not [IO.File]::Exists((Pending 'rollback'))) 'Pending record remains after successful recovery.'
+    }
+    Check 'crash before upgrade stage creation has a recoverable journal' {
+        $dir = PrepareOld 'preparation'
+        $paths = MakePending $dir
+        [IO.File]::Delete($paths.old)
+        # The upgrade can now be killed after journaling but before creating
+        # a stage or a verified old backup.
+        Invoke-ProoflinePendingRepair $dir
+        Require (-not [IO.File]::Exists((Pending 'preparation'))) 'Upgrade preparation record blocked retry.'
+        Require ((Get-ProoflineSha256 (Active 'preparation')) -ceq $script:oldHash) 'Previous executable changed.'
+        [void](Install-ProoflineArchive $script:newArchive $script:newSums '0.5.2' $dir)
+        Require ((Get-ProoflineSha256 (Active 'preparation')) -ceq $script:newHash) 'Upgrade could not retry.'
+    }
+    Check 'verified normal upgrade is never undone by cleanup failure' {
+        $dir = PrepareOld 'cleanup-normal'
+        $originalCleanup = (Get-Item Function:\Clear-ProoflineUpgradeFiles).ScriptBlock
+        try {
+            Set-Item Function:\Clear-ProoflineUpgradeFiles -Value {
+                throw 'Simulated cleanup deletion failure after verified upgrade.'
+            }
+            [void](Install-ProoflineArchive $script:newArchive $script:newSums '0.5.2' $dir)
+        }
+        finally { Set-Item Function:\Clear-ProoflineUpgradeFiles -Value $originalCleanup }
+        Require ((Get-ProoflineSha256 (Active 'cleanup-normal')) -ceq $script:newHash) 'Cleanup failure rolled back a verified upgrade.'
+        Assert-ProoflineRecord (Receipt 'cleanup-normal') '0.5.2' $script:newHash
+        Require ([IO.File]::Exists((Pending 'cleanup-normal'))) 'Cleanup failure lost retry journal.'
+        Invoke-ProoflinePendingRepair $dir
+        Require (-not [IO.File]::Exists((Pending 'cleanup-normal'))) 'Retried cleanup did not clear the journal.'
+        Require ((Get-ProoflineSha256 (Active 'cleanup-normal')) -ceq $script:newHash) 'Retried cleanup changed the verified executable.'
+    }
+    Check 'verified recovered upgrade is never undone by cleanup failure' {
+        $dir = PrepareOld 'cleanup-recovery'
+        [void](MakePending $dir)
+        [IO.File]::WriteAllBytes((Active 'cleanup-recovery'), (Get-ProoflineTarExecutable $script:newArchive))
+        $originalCleanup = (Get-Item Function:\Clear-ProoflineUpgradeFiles).ScriptBlock
+        try {
+            Set-Item Function:\Clear-ProoflineUpgradeFiles -Value {
+                throw 'Simulated cleanup deletion failure during recovery.'
+            }
+            Invoke-ProoflinePendingRepair $dir
+        }
+        finally { Set-Item Function:\Clear-ProoflineUpgradeFiles -Value $originalCleanup }
+        Assert-ProoflineRecord (Receipt 'cleanup-recovery') '0.5.2' $script:newHash
+        Require ((Get-ProoflineSha256 (Active 'cleanup-recovery')) -ceq $script:newHash) 'Cleanup failure restored old executable.'
+        Require ([IO.File]::Exists((Pending 'cleanup-recovery'))) 'Recovery cleanup failure lost its journal.'
+        Invoke-ProoflinePendingRepair $dir
+        Require (-not [IO.File]::Exists((Pending 'cleanup-recovery'))) 'Recovery cleanup did not finish on retry.'
     }
     Check 'ambiguous state refuses and preserves evidence' {
         $dir = PrepareOld 'ambiguous'
