@@ -2,6 +2,25 @@
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// A Windows discovery child would inherit the captured output pipe and keep
+/// the reader waiting, so a captured run with no cache records no attempt.
+#[cfg(windows)]
+#[test]
+fn captured_windows_invocation_leaves_discovery_to_a_console_run() {
+    let directory = tempfile::tempdir().unwrap();
+    // `output()` pipes stdout and stderr, as `$(...)` or a CI step does.
+    let version = Command::new(env!("CARGO_BIN_EXE_proofline"))
+        .arg("--version")
+        .env_remove("PROOFLINE_NO_UPDATE_CHECK")
+        .env("LOCALAPPDATA", directory.path())
+        .output()
+        .unwrap();
+    assert!(version.status.success());
+    // The lock proves the decision ran; the missing cache proves it said no.
+    assert!(directory.path().join("proofline/update.lock").exists());
+    assert!(!directory.path().join("proofline/update.json").exists());
+}
+
 #[test]
 fn cached_update_preserves_schema_help_and_source_installation() {
     let directory = tempfile::tempdir().unwrap();

@@ -81,7 +81,9 @@ fn write_cache(path: &Path, cache: &Cache) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Reads only local state; discovery continues in a child with closed streams.
+/// Reads only local state. A due check continues in a child with closed
+/// streams only when `may_detach` allows it: on Windows both stdout and stderr
+/// must be consoles, so a redirected run leaves the check to a later one.
 /// Call before starting the runtime, including for help and version invocations.
 pub fn on_invocation() {
     if std::env::var_os("PROOFLINE_NO_UPDATE_CHECK").is_some_and(|value| value == "1") {
@@ -99,7 +101,7 @@ pub fn on_invocation() {
         return;
     };
     let interactive = std::io::stderr().is_terminal() && std::io::stdout().is_terminal();
-    if let Ok(Some(notice)) = prepare_check(&path, &args, interactive, start_check) {
+    if let Ok(Some(notice)) = prepare_check(&path, &args, interactive, may_detach(), start_check) {
         crate::say(&notice);
     } else {
         // Missing or failed advisory discovery never changes the command result.
@@ -150,6 +152,7 @@ fn prepare_check(
     path: &Path,
     args: &[std::ffi::OsString],
     interactive: bool,
+    detach: bool,
     launch: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<Option<String>> {
     let directory = path.parent().context("update cache has no directory")?;
@@ -171,7 +174,8 @@ fn prepare_check(
         latest: None,
     });
     let notice = suggestion(&cache, args, interactive);
-    if cache.checked <= now() && now().saturating_sub(cache.checked) < DAY {
+    // Without a detachable child, leave the attempt to a later invocation.
+    if !detach || (cache.checked <= now() && now().saturating_sub(cache.checked) < DAY) {
         return Ok(notice);
     }
     // Record the attempt first, so an offline machine does not fork on every command.
@@ -186,6 +190,26 @@ fn prepare_check(
         // Keep any known notice if optional discovery cannot start.
     }
     Ok(notice)
+}
+
+/// Whether a discovery child can outlive this invocation unnoticed. A Windows
+/// child inherits every inheritable handle (rust-lang/rust#54760), including
+/// this process's redirected stdout and stderr, so whoever reads the output
+/// (`$(...)`, a pipe, a CI runner, an MCP host) would wait for the checker to
+/// exit. Std limits inheritance only through unstable or unsafe APIs, so on
+/// Windows discovery waits for an invocation whose output is a console.
+fn may_detach() -> bool {
+    detachable(
+        cfg!(windows),
+        std::io::stdout().is_terminal(),
+        std::io::stderr().is_terminal(),
+    )
+}
+
+/// One redirected stream is enough to hold a reader: `$o = proofline ...`
+/// captures only stdout while stderr stays on the console.
+const fn detachable(windows: bool, stdout_is_console: bool, stderr_is_console: bool) -> bool {
+    !windows || (stdout_is_console && stderr_is_console)
 }
 
 fn checker_command(executable: &Path) -> Command {

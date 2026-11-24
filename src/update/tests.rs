@@ -92,13 +92,48 @@ fn installer_directory_and_bounded_cache() {
     )
     .unwrap();
     // A fresh cached result schedules no child, and survives the next invocation.
-    prepare_check(&cache, &["--json".into()], true, || {
+    prepare_check(&cache, &["--json".into()], true, true, || {
         anyhow::bail!("a fresh cache must not launch discovery")
     })
     .unwrap();
     assert_eq!(read_cache(&cache).unwrap().latest.as_deref(), Some("9.1.0"));
     fs::write(&cache, vec![b' '; 1025]).unwrap();
     assert!(read_cache(&cache).is_err());
+}
+
+#[test]
+fn windows_detaches_only_when_both_output_streams_are_consoles() {
+    // `$o = proofline ...` pipes stdout while stderr stays on the console.
+    assert!(!detachable(true, false, true));
+    assert!(!detachable(true, true, false));
+    assert!(!detachable(true, false, false));
+    assert!(detachable(true, true, true));
+    for (stdout, stderr) in [(false, false), (false, true), (true, false), (true, true)] {
+        assert!(detachable(false, stdout, stderr));
+    }
+}
+
+#[test]
+fn an_invocation_that_cannot_detach_leaves_discovery_to_the_next_one() {
+    let directory = tempfile::tempdir().unwrap();
+    let cache = directory.path().join("update.json");
+    // `prepare_check` ignores launch errors, so only a panic proves no launch.
+    let notice = prepare_check(&cache, &["status".into()], false, false, || {
+        unreachable!("an invocation that cannot detach must not launch discovery")
+    })
+    .unwrap();
+    assert!(notice.is_none());
+    // No attempt is recorded, so the next invocation that can detach still checks.
+    assert!(read_cache(&cache).is_err());
+    let mut launched = false;
+    // Only `detach` decides: a redirected (non-interactive) run still checks.
+    prepare_check(&cache, &["status".into()], false, true, || {
+        launched = true;
+        Ok(())
+    })
+    .unwrap();
+    assert!(launched);
+    assert!(read_cache(&cache).is_ok());
 }
 
 #[tokio::test]
@@ -229,7 +264,10 @@ async fn detached_discovery_is_serialized_and_notices_arrive_on_the_next_invocat
                 .env(CACHE, &path)
                 .env(ADDRESS, address);
             let notice = tokio::task::spawn_blocking(move || {
-                prepare_check(&path, &["status".into()], true, || spawn_check(worker))
+                // Output is piped to the test, as under `$(...)` or a CI runner.
+                prepare_check(&path, &["status".into()], true, may_detach(), || {
+                    spawn_check(worker)
+                })
             })
             .await
             .unwrap()
@@ -296,6 +334,14 @@ async fn detached_discovery_is_serialized_and_notices_arrive_on_the_next_invocat
                 .unwrap()
                 .contains("run 'proofline update'")
         );
+    }
+    if cfg!(windows) {
+        // A Windows child would hold the piped output open, so these
+        // invocations neither start discovery nor record an attempt.
+        assert_eq!(received.load(Ordering::SeqCst), 0);
+        assert!(read_cache(&cache).is_err());
+        server.abort();
+        return;
     }
     tokio::time::timeout(Duration::from_secs(5), async {
         while received.load(Ordering::SeqCst) == 0 {
