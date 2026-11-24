@@ -555,6 +555,36 @@ async fn local_selection_uploads_only_selected_bytes_and_refuses_before_http() {
 }
 
 #[tokio::test]
+async fn an_azure_storage_connection_string_refuses_before_http() {
+    let key = format!(
+        "{}==",
+        "Az09+/".chars().cycle().take(86).collect::<String>()
+    );
+    // A tracked file, so the default selection includes the change, and not a
+    // .env path, so only the credential shape can refuse it.
+    let checkout = Checkout::new(&[("appsettings.json", "{\n}\n")]).await;
+    checkout
+        .write(
+            "appsettings.json",
+            &format!(
+                "{{\n  \"Storage\": \"DefaultEndpointsProtocol=https;AccountName=acme;AccountKey={key};EndpointSuffix=core.windows.net\"\n}}\n"
+            ),
+        )
+        .await;
+    let index = checkout.index().await;
+    let server = Server::start(true).await;
+    let output = checkout.review(&server, &[], &[]).await;
+    assert_refusal(
+        &output,
+        "an Azure Storage account key at \"appsettings.json\":2 (new line)",
+        &key,
+    );
+    server.assert_no_requests();
+    assert_eq!(checkout.index().await, index);
+    server.close().await;
+}
+
+#[tokio::test]
 async fn added_context_deleted_and_quoted_content_refuses_before_http() {
     let github = format!("ghp_{}", "A".repeat(36));
     let private = "-----BEGIN RSA PRIVATE KEY-----";

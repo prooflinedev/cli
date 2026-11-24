@@ -344,6 +344,23 @@ mod tests {
                 '8',
                 "a Proofline token",
             ),
+            (
+                &["AccountKey=", "accountkey="][..],
+                86,
+                "Az09+/",
+                '!',
+                "an Azure Storage account key",
+            ),
+            (
+                &["glpat-"][..],
+                20,
+                "Az09_-",
+                '.',
+                "a GitLab personal access token",
+            ),
+            (&["npm_"][..], 36, "Az09", '_', "an npm access token"),
+            (&["pypi-"][..], 85, "Az09_-", '.', "a PyPI API token"),
+            (&["hf_"][..], 34, "Az09", '_', "a Hugging Face access token"),
         ];
         for (prefixes, minimum, alphabet, invalid, label) in cases {
             let body: String = alphabet.chars().cycle().take(minimum).collect();
@@ -379,6 +396,18 @@ mod tests {
             }
         }
         assert_eq!(secret_shape("-----BEGIN CERTIFICATE-----"), None);
+    }
+
+    #[test]
+    fn identifiers_and_placeholders_near_credential_prefixes_have_no_secret_shape() {
+        for text in [
+            "npm_config_registry",
+            "self.hf_model",
+            "AccountKey=<your-key>",
+            "AccountKey=${STORAGE_KEY}",
+        ] {
+            assert_eq!(secret_shape(text), None, "{text}");
+        }
     }
 
     #[test]
