@@ -385,6 +385,81 @@ async fn findings_timeout_applies_only_to_waiting_and_never_panics() {
     }
 }
 
+/// A wait reads again after a read that fails on Proofline's side, including
+/// a `Retry-After` too long for the read's own retries, and completes with
+/// the review. A refusal still ends the wait at once.
+#[tokio::test]
+async fn a_wait_reads_again_after_a_failed_read_and_stops_at_a_refusal() {
+    for (status, retry_after, code, reads) in [
+        (StatusCode::BAD_GATEWAY, None, 0, 2),
+        (StatusCode::SERVICE_UNAVAILABLE, Some("120"), 0, 2),
+        (StatusCode::TOO_MANY_REQUESTS, Some("61"), 0, 2),
+        (StatusCode::UNAUTHORIZED, None, 1, 1),
+        (StatusCode::NOT_FOUND, None, 1, 1),
+    ] {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&requests);
+        let app = Router::new().route(
+            &format!("/api/v1/organizations/{ORG}/reviews/{SELECTED_REVIEW}"),
+            get(move || {
+                let observed = Arc::clone(&observed);
+                async move {
+                    if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+                        let mut response =
+                            (status, Json(json!({ "title": "unavailable" }))).into_response();
+                        if let Some(seconds) = retry_after {
+                            response.headers_mut().insert(
+                                header::RETRY_AFTER,
+                                header::HeaderValue::from_static(seconds),
+                            );
+                        }
+                        return response;
+                    }
+                    Json(json!({
+                        "id": SELECTED_REVIEW,
+                        "kind": "PULL_REQUEST",
+                        "status": "COMPLETED",
+                        "assessment_count": 1,
+                        "assessments": [{
+                            "id": "0190f3a0-0000-7000-8000-000000000044",
+                            "environment_display_name": "production",
+                            "status": "COMPLETED",
+                            "findings": [],
+                            "checks": { "receipt_recorded": true, "status": "READY", "families": [] },
+                        }],
+                    }))
+                    .into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let output = cli(
+            &origin,
+            &[
+                "findings",
+                "--review",
+                SELECTED_REVIEW,
+                "--json",
+                "--wait",
+                "--timeout",
+                "30",
+            ],
+        )
+        .await;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(code), "{status}: {stderr}");
+        assert_eq!(requests.load(Ordering::SeqCst), reads, "{status}");
+        if code == 0 {
+            assert!(stderr.contains("checking again"), "{stderr}");
+            let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(document["outcome"], "COMPLETED");
+        }
+        server.abort();
+    }
+}
+
 #[tokio::test]
 async fn asynchronous_pull_request_acknowledgment_respects_json_without_polling() {
     for existing in [false, true] {

@@ -1225,7 +1225,10 @@ async fn read_review(
 ) -> anyhow::Result<(serde_json::Value, ReviewDetail, Option<Outcome>)> {
     let mut delay = FIRST_POLL_SECONDS;
     loop {
-        let (raw, detail) = api.review(review_id).await?;
+        let Some((raw, detail)) = polled(api.review(review_id).await, deadline, &mut delay).await?
+        else {
+            continue;
+        };
         outcome::same_review(&detail, review_id)?;
         if sarif {
             sarif::validate_subject(&detail, review_id)?;
@@ -1343,6 +1346,36 @@ fn unavailable(error: &anyhow::Error) -> bool {
             ApiError::Problem { status, .. } => *status >= 500,
             ApiError::Protocol { .. } | ApiError::Renewal { .. } => false,
         })
+}
+
+/// A poll's answer, or `None` once a read that failed on Proofline's side (it
+/// could not be reached, failed, or limited the rate past the read's own
+/// retries) has been reported and the next poll's pause has passed. One bad
+/// gateway must not end a wait that the next read would finish. Without a
+/// deadline, or once it has passed, the failure ends the wait as before.
+pub(crate) async fn polled<T, E: Into<anyhow::Error>>(
+    result: Result<T, E>,
+    deadline: Option<tokio::time::Instant>,
+    delay: &mut u64,
+) -> anyhow::Result<Option<T>> {
+    let error = match result {
+        Ok(answer) => return Ok(Some(answer)),
+        Err(error) => error.into(),
+    };
+    let now = tokio::time::Instant::now();
+    let limited = error.downcast_ref::<ApiError>().and_then(ApiError::status) == Some(429);
+    let Some(deadline) = deadline.filter(|deadline| now < *deadline) else {
+        return Err(error);
+    };
+    if !unavailable(&error) && !limited {
+        return Err(error);
+    }
+    say(&format!(
+        "proofline: {error:#}; checking again in {delay} seconds."
+    ));
+    tokio::time::sleep(Duration::from_secs(*delay).min(deadline - now)).await;
+    *delay = (*delay * 2).min(LONGEST_POLL_SECONDS);
+    Ok(None)
 }
 
 /// `ci review` once its inputs are read. In GitHub Actions without
@@ -1491,10 +1524,13 @@ async fn wait_for_head_review(
     let request_at = started + REQUEST_AFTER;
     let mut delay = FIRST_POLL_SECONDS;
     loop {
-        let found = latest(api, repository_id, commit, |item| {
+        let listed = latest(api, repository_id, commit, |item| {
             item.kind == "PULL_REQUEST" && item.head_commit_sha.as_deref() == Some(commit)
         })
-        .await?;
+        .await;
+        let Some(found) = polled(listed, Some(deadline), &mut delay).await? else {
+            continue;
+        };
         if found.is_some() {
             return Ok(found);
         }
@@ -2104,7 +2140,8 @@ mod tests {
     /// half its lifetime, with a newly issued identity, so the wait reads under the first and
     /// completes under the second, and the job still asks for one review. A
     /// renewal the console refuses ends the same wait before it asks, as a
-    /// failure (exit 1); one it cannot serve ends it as unavailable (exit 4).
+    /// failure (exit 1); one it cannot serve is tried again at each poll and
+    /// ends the wait at its deadline as unavailable (exit 4).
     #[tokio::test(start_paused = true)]
     async fn a_wait_renews_its_credential_and_a_refused_renewal_ends_it() {
         let reviews = format!("GET /api/v1/organizations/{ORG}/reviews");
@@ -2147,7 +2184,7 @@ mod tests {
             assert_eq!(unavailable(&error), exit_four, "{status}: {error:#}");
             assert_eq!(review_requests(&received), 0, "{status}: {received:?}");
             let last = received.iter().map(|(_, at, ..)| *at).max().unwrap();
-            assert!(last < REQUEST_AFTER, "{status}: {last:?}");
+            assert_eq!(last < REQUEST_AFTER, !exit_four, "{status}: {last:?}");
         }
     }
 
