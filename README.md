@@ -25,6 +25,10 @@ To register MCP without a prompt, run `proofline agent install CLIENT --yes`. Su
 
 Native knowledge, plan, fix and configuration commands send the selected organization as `organization_id` in each MCP tool call. With `PROOFLINE_TOKEN`, select an authorized UUID using `--org ORGANIZATION_ID` or `PROOFLINE_ORGANIZATION_ID`; the flag takes precedence. A stored device sign-in uses its approved organization and refuses a different selection. For example, `proofline --org ORGANIZATION_ID wiki list --repo owner/name` and `proofline --org ORGANIZATION_ID config get` target that organization with a shared MCP OAuth credential. Selection grants no authority: the server checks each call, and a foreign target returns its refusal with a nonzero exit. MCP OAuth credentials remain limited to MCP and cannot use REST commands. The raw `proofline mcp` bridge preserves the caller's messages and per-call target unchanged.
 
+### Debug output
+
+Set `PROOFLINE_DEBUG=1` to print each HTTP and MCP request the CLI makes to standard error: its method and path, then its status, duration and size, or the error that ended it, and each retry with its wait. Any value other than empty or `0` turns it on, and it works for Git hooks and the MCP bridge, which take no flags. Headers, request bodies and response bodies are never printed, so the output holds no token or code, but paths and query strings are, so a CI log keeps the organization ID and any search text. Standard output is unchanged, so `--json` stays parseable.
+
 ## Reviews, history, and reruns
 
 `proofline review --path src/main.rs` reviews only that file's local changes against the normal merge-base. The path is literal and repository-relative; the command refuses directories, globs, and `..`. Combine it with `--staged` to read the index, or `--include-untracked` to select a new, non-ignored file. The command preserves the real index and applies the usual secret preflight. You cannot combine `--path` with pushed-commit, range, or pull-request review.
