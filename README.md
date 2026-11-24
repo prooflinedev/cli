@@ -27,7 +27,7 @@ Native knowledge, plan, fix and configuration commands send the selected organiz
 
 ### Debug output
 
-Set `PROOFLINE_DEBUG=1` to print each HTTP and MCP request the CLI makes to standard error: its method and path, then its status, duration and size, or the error that ended it, and each retry with its wait. Any value other than empty or `0` turns it on, and it works for Git hooks and the MCP bridge, which take no flags. Headers, request bodies and response bodies are never printed, so the output holds no token or code, but paths and query strings are, so a CI log keeps the organization ID and any search text. Standard output is unchanged, so `--json` stays parseable.
+Pass `--debug`, or set `PROOFLINE_DEBUG=1`, to print each request the CLI makes to Proofline to standard error: its method and path, then its status, duration and size, or the error that ended it, and each retry with its wait. Update downloads are not included. The variable is off when empty or `0`, `false`, `no`, `off`, `n` or `f`, and on for any other value; it reaches Git hooks and the MCP bridge, which take no flags. Headers, request bodies and response bodies are never printed, so the output holds no token or code, but paths and query strings are, so a CI log keeps the organization ID and any search text. Standard output is unchanged, so `--json` stays parseable.
 
 ## Reviews, history, and reruns
 
