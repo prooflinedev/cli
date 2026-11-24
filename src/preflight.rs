@@ -1,7 +1,5 @@
 //! Local refusals before any patch bytes leave the checkout.
 
-use std::borrow::Cow;
-
 use crate::git::{LocalChanges, PatchPaths};
 
 #[derive(Debug, thiserror::Error)]
@@ -285,18 +283,6 @@ const TOKEN_SHAPES: &[TokenShape] = &[
         minimum: 52,
         body: base32,
     },
-    // https://learn.microsoft.com/en-us/azure/storage/common/storage-configure-connection-string
-    // A real key is 88
-    // characters including its `==` padding; the rule requires only the 86
-    // base64 characters before it and does not check the padding. Connection
-    // string keywords are case-insensitive, but only these two casings are
-    // covered, because `has_token` matches prefixes exactly.
-    TokenShape {
-        kind: AZURE_ACCOUNT_KEY_KIND,
-        prefixes: &["AccountKey=", "accountkey="],
-        minimum: 86,
-        body: base64,
-    },
     // https://docs.gitlab.com/user/profile/personal_access_tokens/
     // `glpat-` followed by 20 characters.
     TokenShape {
@@ -334,9 +320,6 @@ const TOKEN_SHAPES: &[TokenShape] = &[
     },
 ];
 
-/// The kind of the row that the Azurite exception applies to.
-const AZURE_ACCOUNT_KEY_KIND: &str = "an Azure Storage account key";
-
 /// Azurite's well-known development account key for `devstoreaccount1`, which
 /// Microsoft publishes under "Use a well-known storage account and key" at
 /// <https://learn.microsoft.com/en-us/azure/storage/common/storage-connect-azurite>.
@@ -344,30 +327,46 @@ const AZURE_ACCOUNT_KEY_KIND: &str = "an Azure Storage account key";
 const AZURITE_ACCOUNT_KEY: &str =
     "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==";
 
-/// `text` with each exact occurrence of [`AZURITE_ACCOUNT_KEY`] blanked by as
-/// many spaces, so other offsets are unchanged. An occurrence inside a longer
-/// key is a different key, so it stays: a base64 byte before it, or a base64
-/// or `=` byte after it, extends the key. A `=` before it ends a keyword such
-/// as `AccountKey=`, because padding only ends a key.
-fn without_azurite_key(text: &str) -> Cow<'_, str> {
+/// The connection-string keyword that names a storage account key. Keywords
+/// are ASCII case-insensitive, so it is compared that way, in place.
+const ACCOUNT_KEY_KEYWORD: &[u8] = b"accountkey=";
+
+/// The base64 characters of a storage account key before its `==` padding.
+const ACCOUNT_KEY_LENGTH: usize = 86;
+
+/// An Azure Storage account key: the `AccountKey=` keyword in any ASCII case,
+/// followed by at least 86 base64 characters. A real key is 88 characters
+/// including its `==` padding, which is not checked. Every candidate but the
+/// exact Azurite key counts. Source:
+/// <https://learn.microsoft.com/en-us/azure/storage/common/storage-configure-connection-string>.
+fn has_account_key(text: &str) -> bool {
     let bytes = text.as_bytes();
-    let mut exempt = Cow::Borrowed(text);
-    for (start, key) in text.match_indices(AZURITE_ACCOUNT_KEY) {
-        let end = start + key.len();
-        let extended_before = start
-            .checked_sub(1)
-            .and_then(|index| bytes.get(index))
-            .is_some_and(|byte| base64(*byte));
-        let extended_after = bytes
-            .get(end)
-            .is_some_and(|byte| base64(*byte) || *byte == b'=');
-        if !extended_before && !extended_after {
-            exempt
-                .to_mut()
-                .replace_range(start..end, &" ".repeat(key.len()));
-        }
-    }
-    exempt
+    bytes
+        .windows(ACCOUNT_KEY_KEYWORD.len())
+        .enumerate()
+        .filter(|(_, window)| window.eq_ignore_ascii_case(ACCOUNT_KEY_KEYWORD))
+        .map(|(start, _)| start + ACCOUNT_KEY_KEYWORD.len())
+        .any(|key| {
+            bytes
+                .iter()
+                .skip(key)
+                .take(ACCOUNT_KEY_LENGTH)
+                .take_while(|byte| base64(**byte))
+                .count()
+                == ACCOUNT_KEY_LENGTH
+                && !is_azurite_key(bytes, key)
+        })
+}
+
+/// Whether the key at `start` is exactly [`AZURITE_ACCOUNT_KEY`]: the same
+/// bytes, not extended by a base64 or `=` byte after them. A candidate always
+/// follows the keyword's `=`, so no left boundary check is needed.
+fn is_azurite_key(bytes: &[u8], start: usize) -> bool {
+    let end = start + AZURITE_ACCOUNT_KEY.len();
+    let extended_after = bytes
+        .get(end)
+        .is_some_and(|byte| base64(*byte) || *byte == b'=');
+    bytes.get(start..end) == Some(AZURITE_ACCOUNT_KEY.as_bytes()) && !extended_after
 }
 
 /// Literal private-key markers and distinctive credential prefixes. This
@@ -378,20 +377,12 @@ fn secret_shape(text: &str) -> Option<&'static str> {
     {
         return Some("a private-key marker");
     }
-    let exempt = without_azurite_key(text);
     TOKEN_SHAPES
         .iter()
-        .find(|shape| {
-            // Only an account key can be the Azurite key. Every other family
-            // reads the original text, so a token that overlaps it still counts.
-            let text = if shape.kind == AZURE_ACCOUNT_KEY_KIND {
-                &*exempt
-            } else {
-                text
-            };
-            has_token(text, shape.prefixes, shape.minimum, shape.body)
-        })
+        .find(|shape| has_token(text, shape.prefixes, shape.minimum, shape.body))
         .map(|shape| shape.kind)
+        // After every token shape, so their labels keep priority.
+        .or_else(|| has_account_key(text).then_some("an Azure Storage account key"))
 }
 
 #[cfg(test)]
@@ -450,7 +441,7 @@ mod tests {
                 "a Proofline token",
             ),
             (
-                &["AccountKey=", "accountkey="][..],
+                &["AccountKey=", "accountkey=", "ACCOUNTKEY=", "accountKey="][..],
                 86,
                 "Az09+/",
                 '!',
@@ -466,14 +457,14 @@ mod tests {
             // As for `ghs_`, the other base64 alphabet's punctuation is
             // invalid in each base64 family.
             (
-                &["AccountKey=", "accountkey="][..],
+                &["AccountKey=", "accountkey=", "ACCOUNTKEY=", "accountKey="][..],
                 86,
                 "Az09+/",
                 '-',
                 "an Azure Storage account key",
             ),
             (
-                &["AccountKey=", "accountkey="][..],
+                &["AccountKey=", "accountkey=", "ACCOUNTKEY=", "accountKey="][..],
                 86,
                 "Az09+/",
                 '_',
@@ -574,6 +565,11 @@ mod tests {
                 format!("AccountKey={AZURITE_ACCOUNT_KEY}="),
                 azure,
                 "a `=` byte after the padding",
+            ),
+            (
+                format!("AccountKey={AZURITE_ACCOUNT_KEY};AccountKey={AZURITE_ACCOUNT_KEY};"),
+                None,
+                "two exact Azurite keys on one line",
             ),
             (
                 format!("ghp_{AZURITE_ACCOUNT_KEY}"),
