@@ -284,7 +284,7 @@ const TOKEN_SHAPES: &[TokenShape] = &[
         body: base32,
     },
     // https://docs.gitlab.com/user/profile/personal_access_tokens/
-    // `glpat-` followed by 20 characters.
+    // A token is `glpat-` followed by 20 characters; the rule requires at least 20.
     TokenShape {
         kind: "a GitLab personal access token",
         prefixes: &["glpat-"],
@@ -292,7 +292,7 @@ const TOKEN_SHAPES: &[TokenShape] = &[
         body: base64url,
     },
     // https://docs.npmjs.com/about-access-tokens
-    // `npm_` followed by 36 alphanumerics.
+    // A token is `npm_` followed by 36 alphanumerics; the rule requires at least 36.
     TokenShape {
         kind: "an npm access token",
         prefixes: &["npm_"],
@@ -589,6 +589,32 @@ mod tests {
         ] {
             assert_eq!(secret_shape(&text), expected, "{case}");
         }
+    }
+
+    /// "Az09+/" cycled to 86 base64 characters, plus `==`: a non-Azurite key.
+    fn real_account_key() -> String {
+        format!(
+            "{}==",
+            "Az09+/".chars().cycle().take(86).collect::<String>()
+        )
+    }
+
+    #[test]
+    fn a_field_name_ending_in_account_key_holds_an_account_key() {
+        // Suffix matching is deliberate: names such as `StorageAccountKey`
+        // hold real keys, so no boundary is required before the keyword.
+        let text = format!("StorageAccountKey={}", real_account_key());
+        assert_eq!(secret_shape(&text), Some("an Azure Storage account key"));
+    }
+
+    #[test]
+    fn a_token_label_takes_priority_over_an_account_key_on_the_same_line() {
+        let text = format!(
+            "AccountName=acme;AccountKey={}; token=ghp_{}",
+            real_account_key(),
+            "S".repeat(36)
+        );
+        assert_eq!(secret_shape(&text), Some("a GitHub token"));
     }
 
     #[test]
