@@ -4337,6 +4337,24 @@
         ],
         "type": "object"
       },
+      "ModelWarning": {
+        "description": "Why a review started now would run without its model.",
+        "properties": {
+          "cause": {
+            "description": "Proofline's sentence naming the fix.",
+            "type": "string"
+          },
+          "reason_code": {
+            "description": "`MODEL_<cause>`, the same code a finished review's read carries.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason_code",
+          "cause"
+        ],
+        "type": "object"
+      },
       "NotAssessedView": {
         "properties": {
           "environment_display_name": {
@@ -6433,6 +6451,17 @@
             "description": "True when this head already carried a review and that one is\n returned. Clicking twice does not run twice.",
             "type": "boolean"
           },
+          "model_warning": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelWarning"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Why this review runs without its model and checks fixed rules only,\n for a caller that started it without reading the offer's warning."
+          },
           "review_id": {
             "description": "The review that owns the live head, new or existing.",
             "format": "uuid",
@@ -7205,7 +7234,7 @@
   },
   "info": {
     "title": "Proofline Review API",
-    "version": "9.2.0"
+    "version": "9.3.0"
   },
   "openapi": "3.1.0",
   "paths": {
