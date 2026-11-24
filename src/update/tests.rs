@@ -372,3 +372,44 @@ fn installed_symlink_is_reported_as_a_symlink() {
         assert!(error.contains("symbolic link"), "{executable:?}: {error}");
     }
 }
+
+#[test]
+fn preflight_exemption_matches_only_top_level_subcommand() {
+    let to_args = |items: &[&str]| -> Vec<std::ffi::OsString> {
+        items.iter().map(std::ffi::OsString::from).collect()
+    };
+
+    assert!(is_exempt(&to_args(&["preflight"])));
+    assert!(is_exempt(&to_args(&[
+        "--base-url",
+        "http://127.0.0.1:1",
+        "--org",
+        "00000000-0000-0000-0000-000000000001",
+        "--ca-cert",
+        "/tmp/ca.pem",
+        "preflight",
+        "--json",
+    ])));
+    assert!(is_exempt(&to_args(&[
+        "--base-url=http://127.0.0.1:1",
+        "preflight",
+    ])));
+    assert!(is_exempt(&to_args(&["--ca-cert", "-", "preflight"])));
+    assert!(is_exempt(&to_args(&["--base-url", "-", "preflight"])));
+    assert!(!is_exempt(&to_args(&[
+        "review",
+        "--local",
+        "--path",
+        "preflight",
+    ])));
+    assert!(!is_exempt(&to_args(&["--ca-cert", "preflight", "status"])));
+    assert!(!is_exempt(&to_args(&["--help", "preflight"])));
+    assert!(!is_exempt(&to_args(&["-h", "preflight"])));
+    assert!(!is_exempt(&to_args(&["--version", "preflight"])));
+    assert!(!is_exempt(&to_args(&["-V", "preflight"])));
+    assert!(!is_exempt(&to_args(&["-hV", "preflight"])));
+    assert!(!is_exempt(&to_args(&["-Vh", "preflight"])));
+    assert!(!is_exempt(&to_args(&["--unknown", "preflight"])));
+    assert!(!is_exempt(&to_args(&["--ca-cert", "--help", "preflight"])));
+    assert!(!is_exempt(&to_args(&["--base-url", "-V", "preflight"])));
+}

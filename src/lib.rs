@@ -158,7 +158,12 @@ enum Command {
     /// request's current head.
     Review(ReviewArgs),
     /// Inspect the checkout's local patch and check for sensitive files or
-    /// credentials offline, without signing in or uploading any patch bytes.
+    /// credentials without signing in or contacting Proofline.
+    ///
+    /// Working-tree mode stages changes into a scratch index, which may run
+    /// configured Git clean filters or user-configured Git hooks; pass
+    /// `--staged` to inspect the existing index without staging working-tree
+    /// files.
     Preflight(PreflightArgs),
     /// Stop your own pending or running local patch, pushed-commit or named-file review.
     Stop(StopArgs),
@@ -445,6 +450,9 @@ pub enum Verdict {
 
 /// Runs one command. `token` is `PROOFLINE_TOKEN`, read by the caller.
 pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdict> {
+    if let Command::Preflight(args) = &cli.command {
+        return run_preflight(args).await;
+    }
     if let Some(path) = &cli.ca_cert {
         tls::trust(path)?;
     }
@@ -461,7 +469,6 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
             completions(*shell, &mut std::io::stdout().lock())?;
             return Ok(Verdict::Done);
         }
-        Command::Preflight(args) => return run_preflight(args).await,
         Command::Update => return update::install().await.map(|()| Verdict::Done),
         Command::UpdateCheck => {
             update::check().await;
@@ -475,7 +482,7 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
             completions(shell, &mut std::io::stdout().lock())?;
             Ok(Verdict::Done)
         }
-        Command::Preflight(args) => run_preflight(&args).await,
+        Command::Preflight(_) => unreachable!("preflight returns before TLS setup"),
         Command::Update => update::install().await.map(|()| Verdict::Done),
         Command::UpdateCheck => {
             update::check().await;
@@ -1085,7 +1092,7 @@ struct PreflightReport {
 }
 
 /// Inspects local changes and runs the full secret/sensitive-path preflight
-/// locally without signing in or making any network calls.
+/// locally without signing in or contacting Proofline.
 async fn run_preflight(args: &PreflightArgs) -> anyhow::Result<Verdict> {
     let selection = if args.staged {
         git::LocalSelection::Staged
@@ -1094,7 +1101,7 @@ async fn run_preflight(args: &PreflightArgs) -> anyhow::Result<Verdict> {
     } else {
         git::LocalSelection::Tracked
     };
-    let changes = git::local_changes(
+    let changes = git::local_changes_offline(
         std::path::Path::new("."),
         &args.remote,
         selection,

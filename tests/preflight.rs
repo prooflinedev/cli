@@ -9,11 +9,13 @@ use tokio::process::Command;
 
 struct TempRepo {
     dir: TempDir,
+    cache: TempDir,
 }
 
 impl TempRepo {
     async fn new(_label: &str) -> Self {
         let dir = TempDir::new().expect("create temp dir");
+        let cache = TempDir::new().expect("create cache dir");
         run_git(dir.path(), &["init", "-b", "main"]).await;
         run_git(dir.path(), &["config", "user.email", "dev@example.com"]).await;
         run_git(dir.path(), &["config", "user.name", "Dev"]).await;
@@ -35,11 +37,15 @@ impl TempRepo {
             ],
         )
         .await;
-        Self { dir }
+        Self { dir, cache }
     }
 
     fn path(&self) -> &Path {
         self.dir.path()
+    }
+
+    fn cache_path(&self) -> &Path {
+        self.cache.path()
     }
 
     fn write(&self, rel: &str, content: &str) {
@@ -53,10 +59,18 @@ impl TempRepo {
     async fn run_cli(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_proofline"))
             .current_dir(self.dir.path())
-            // Unreachable origin and empty token prove preflight never needs auth or HTTP.
+            // Unreachable origin, empty token, and update checks left enabled prove
+            // preflight stays offline without opting out via PROOFLINE_NO_UPDATE_CHECK.
             .env_remove("PROOFLINE_TOKEN")
+            .env_remove("PROOFLINE_NO_UPDATE_CHECK")
+            .env("HOME", self.cache.path())
+            .env("XDG_CACHE_HOME", self.cache.path())
+            .env("LOCALAPPDATA", self.cache.path())
+            .env(
+                "PROOFLINE_CA_CERT",
+                self.cache.path().join("missing-ca.pem"),
+            )
             .env("PROOFLINE_BASE_URL", "http://127.0.0.1:1")
-            .env("PROOFLINE_NO_UPDATE_CHECK", "1")
             .args(args)
             .output()
             .await
@@ -106,6 +120,10 @@ async fn preflight_passes_offline_for_clean_changes_in_text_and_json() {
     assert_eq!(report["paths"], serde_json::json!(["app.rs"]));
     assert!(report["patch_bytes"].as_u64().unwrap_or(0) > 0);
     assert_eq!(report["findings"].as_array().map(Vec::len), Some(0));
+    assert!(
+        !repo.cache_path().join("proofline").exists(),
+        "preflight must not trigger startup update discovery or touch the update cache"
+    );
 }
 
 #[tokio::test]
@@ -209,4 +227,137 @@ async fn preflight_respects_allow_path_and_staged_selection() {
     assert!(allowed_out.status.success());
     let allowed_report: Value = serde_json::from_slice(&allowed_out.stdout).expect("valid json");
     assert_eq!(allowed_report["passed"], true);
+}
+
+#[tokio::test]
+async fn preflight_does_not_lazy_fetch_missing_blobs_in_partial_clone() {
+    let root = TempDir::new().expect("create temp dir");
+    let origin = root.path().join("origin.git");
+    let seed = root.path().join("seed");
+    let partial = root.path().join("partial");
+    let cache = root.path().join("cache");
+    std::fs::create_dir_all(&origin).expect("create origin dir");
+    std::fs::create_dir_all(&seed).expect("create seed dir");
+    std::fs::create_dir_all(&cache).expect("create cache dir");
+
+    run_git(&origin, &["init", "--bare", "-b", "main"]).await;
+    run_git(&origin, &["config", "uploadpack.allowFilter", "true"]).await;
+
+    run_git(&seed, &["init", "-b", "main"]).await;
+    run_git(&seed, &["config", "user.email", "dev@example.com"]).await;
+    run_git(&seed, &["config", "user.name", "Dev"]).await;
+    std::fs::write(seed.join("app.rs"), "fn main() { /* v1 */ }\n").expect("write v1");
+    run_git(&seed, &["add", "app.rs"]).await;
+    run_git(&seed, &["commit", "-m", "v1"]).await;
+    let base_sha = run_git(&seed, &["rev-parse", "HEAD"]).await;
+    std::fs::write(seed.join("app.rs"), "fn main() { /* v2 */ }\n").expect("write v2");
+    run_git(&seed, &["add", "app.rs"]).await;
+    run_git(&seed, &["commit", "-m", "v2"]).await;
+    run_git(
+        &seed,
+        &["remote", "add", "origin", origin.to_str().expect("utf8")],
+    )
+    .await;
+    run_git(&seed, &["push", "origin", "main"]).await;
+
+    // Blobless clone has v2's blob in the working tree, but NOT v1's blob.
+    let origin_url = format!("file://{}", origin.display());
+    run_git(
+        root.path(),
+        &[
+            "clone",
+            "--filter=blob:none",
+            &origin_url,
+            partial.to_str().expect("utf8"),
+        ],
+    )
+    .await;
+    // Point origin/main back at v1 so diffing against base requires v1's missing blob.
+    run_git(
+        &partial,
+        &["update-ref", "refs/remotes/origin/main", base_sha.trim()],
+    )
+    .await;
+    std::fs::write(partial.join("app.rs"), "fn main() { /* v3 */ }\n").expect("write v3");
+    run_git(&partial, &["add", "app.rs"]).await;
+
+    let out = Command::new(env!("CARGO_BIN_EXE_proofline"))
+        .current_dir(&partial)
+        .env_remove("PROOFLINE_TOKEN")
+        .env_remove("PROOFLINE_NO_UPDATE_CHECK")
+        .env("HOME", &cache)
+        .env("XDG_CACHE_HOME", &cache)
+        .env("LOCALAPPDATA", &cache)
+        .env("PROOFLINE_BASE_URL", "http://127.0.0.1:1")
+        .args(["preflight", "--staged"])
+        .output()
+        .await
+        .expect("run proofline binary");
+
+    assert!(
+        !out.status.success(),
+        "preflight must fail offline instead of lazily fetching the missing base blob; stdout: {}, stderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("diff") && stderr.contains("failed"),
+        "expected propagated git missing-object error, got: {stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn preflight_does_not_run_post_index_change_or_fsmonitor_hooks() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let repo = TempRepo::new("no-hooks").await;
+    let marker = repo.cache_path().join("hook-ran");
+    let hook_path = repo.path().join(".git/hooks/post-index-change");
+    std::fs::write(
+        &hook_path,
+        format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+    )
+    .expect("write post-index-change hook");
+    std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod hook");
+
+    let fsmonitor_marker = repo.cache_path().join("fsmonitor-ran");
+    let fsmonitor_hook = repo.cache_path().join("fsmonitor.sh");
+    std::fs::write(
+        &fsmonitor_hook,
+        format!(
+            "#!/bin/sh\ntouch '{}'\nprintf '\\0'\n",
+            fsmonitor_marker.display()
+        ),
+    )
+    .expect("write fsmonitor hook");
+    std::fs::set_permissions(&fsmonitor_hook, std::fs::Permissions::from_mode(0o755))
+        .expect("chmod fsmonitor hook");
+    run_git(
+        repo.path(),
+        &[
+            "config",
+            "core.fsmonitor",
+            fsmonitor_hook.to_str().expect("utf8"),
+        ],
+    )
+    .await;
+
+    repo.write("app.rs", "fn main() { println!(\"changed\"); }\n");
+    let out = repo.run_cli(&["preflight"]).await;
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !marker.exists(),
+        "preflight must not execute repository hooks when writing the scratch index"
+    );
+    assert!(
+        !fsmonitor_marker.exists(),
+        "preflight must not execute core.fsmonitor hooks"
+    );
 }

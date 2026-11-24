@@ -76,8 +76,17 @@ pub(crate) fn patch_paths(changes: &LocalChanges) -> Vec<String> {
         .collect()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScanMode {
+    First,
+    All,
+}
+
 pub(crate) fn check(changes: &LocalChanges, allowed: &[String]) -> Result<(), PreflightError> {
-    if let Some(first) = scan(changes, allowed)?.into_iter().next() {
+    if let Some(first) = scan_with_mode(changes, allowed, ScanMode::First)?
+        .into_iter()
+        .next()
+    {
         return Err(first.into_error());
     }
     Ok(())
@@ -88,6 +97,14 @@ pub(crate) fn check(changes: &LocalChanges, allowed: &[String]) -> Result<(), Pr
 pub(crate) fn scan(
     changes: &LocalChanges,
     allowed: &[String],
+) -> Result<Vec<Finding>, PreflightError> {
+    scan_with_mode(changes, allowed, ScanMode::All)
+}
+
+fn scan_with_mode(
+    changes: &LocalChanges,
+    allowed: &[String],
+    mode: ScanMode,
 ) -> Result<Vec<Finding>, PreflightError> {
     for path in allowed {
         if path.starts_with('/') || path.split('/').any(|part| matches!(part, "" | "." | "..")) {
@@ -101,7 +118,10 @@ pub(crate) fn scan(
     for (patch_line, line) in changes.patch.lines().enumerate() {
         if line.starts_with("diff --git ") {
             let file = paths.next().ok_or(PreflightError::InvalidPatch)?;
-            environment_paths(file, allowed, &mut findings);
+            environment_paths(file, allowed, mode, &mut findings);
+            if mode == ScanMode::First && !findings.is_empty() {
+                return Ok(findings);
+            }
             current = Some(file);
             hunk = None;
             continue;
@@ -116,11 +136,18 @@ pub(crate) fn scan(
                 "patch line",
                 line,
                 allowed,
+                mode,
                 &mut findings,
             )?;
+            if mode == ScanMode::First && !findings.is_empty() {
+                return Ok(findings);
+            }
             hunk = Some(hunk_lines(line)?);
         } else if let Some(lines) = &mut hunk {
-            inspect_hunk(file, lines, line, allowed, &mut findings)?;
+            inspect_hunk(file, lines, line, allowed, mode, &mut findings)?;
+            if mode == ScanMode::First && !findings.is_empty() {
+                return Ok(findings);
+            }
         }
     }
     if paths.next().is_some() {
@@ -129,7 +156,12 @@ pub(crate) fn scan(
     Ok(findings)
 }
 
-fn environment_paths(file: &PatchPaths, allowed: &[String], findings: &mut Vec<Finding>) {
+fn environment_paths(
+    file: &PatchPaths,
+    allowed: &[String],
+    mode: ScanMode,
+    findings: &mut Vec<Finding>,
+) {
     let mut reported: Option<&str> = None;
     for path in [&file.old, &file.new]
         .iter()
@@ -147,6 +179,9 @@ fn environment_paths(file: &PatchPaths, allowed: &[String], findings: &mut Vec<F
             findings.push(Finding::EnvironmentPath {
                 path: path.to_owned(),
             });
+            if mode == ScanMode::First {
+                return;
+            }
         }
     }
 }
@@ -181,6 +216,7 @@ fn inspect_hunk(
     lines: &mut Lines,
     line: &str,
     allowed: &[String],
+    mode: ScanMode,
     findings: &mut Vec<Finding>,
 ) -> Result<(), PreflightError> {
     if let Some(text) = line.strip_prefix('+') {
@@ -190,6 +226,7 @@ fn inspect_hunk(
             "new line",
             text,
             allowed,
+            mode,
             findings,
         )?;
         lines.new = next_line(lines.new)?;
@@ -200,6 +237,7 @@ fn inspect_hunk(
             "base line",
             text,
             allowed,
+            mode,
             findings,
         )?;
         lines.old = next_line(lines.old)?;
@@ -210,6 +248,7 @@ fn inspect_hunk(
             "new line",
             text,
             allowed,
+            mode,
             findings,
         )?;
         lines.old = next_line(lines.old)?;
@@ -230,18 +269,22 @@ fn inspect(
     coordinate: &'static str,
     text: &str,
     allowed: &[String],
+    mode: ScanMode,
     findings: &mut Vec<Finding>,
 ) -> Result<(), PreflightError> {
     let path = path.ok_or(PreflightError::InvalidPatch)?;
-    if !is_allowed(path, allowed)
-        && let Some(kind) = secret_shape(text)
-    {
-        findings.push(Finding::Secret {
-            path: path.to_owned(),
-            line,
-            coordinate,
-            kind,
-        });
+    if !is_allowed(path, allowed) {
+        for kind in secret_shapes(text) {
+            findings.push(Finding::Secret {
+                path: path.to_owned(),
+                line,
+                coordinate,
+                kind,
+            });
+            if mode == ScanMode::First {
+                break;
+            }
+        }
     }
     Ok(())
 }
@@ -273,26 +316,33 @@ fn base64_data(byte: u8) -> bool {
 }
 
 /// Azure Storage account keys are 64-byte secrets encoded as 88 base64
-/// characters (86 base64 data bytes followed by `==`) after `AccountKey=`.
+/// characters (86 base64 data bytes followed by `==`) after a case-insensitive
+/// `AccountKey=` connection-string field.
 fn has_azure_storage_key(text: &str) -> bool {
-    const PREFIX: &str = "AccountKey=";
+    const PREFIX: &[u8] = b"AccountKey=";
     const DATA_LEN: usize = 86;
     const KEY_LEN: usize = DATA_LEN + 2;
 
-    text.match_indices(PREFIX).any(|(start, prefix)| {
-        let Some(suffix) = text.get(start + prefix.len()..) else {
-            return false;
-        };
-        let bytes = suffix.as_bytes();
-        if bytes.len() < KEY_LEN {
-            return false;
-        }
-        bytes[..DATA_LEN].iter().all(|byte| base64_data(*byte))
-            && bytes[DATA_LEN..KEY_LEN] == *b"=="
-            && bytes
-                .get(KEY_LEN)
-                .is_none_or(|next| !base64_data(*next) && *next != b'=')
-    })
+    let bytes = text.as_bytes();
+    bytes
+        .windows(PREFIX.len())
+        .enumerate()
+        .any(|(start, window)| {
+            if !window.eq_ignore_ascii_case(PREFIX) {
+                return false;
+            }
+            let Some(suffix) = bytes.get(start + PREFIX.len()..) else {
+                return false;
+            };
+            if suffix.len() < KEY_LEN {
+                return false;
+            }
+            suffix[..DATA_LEN].iter().all(|byte| base64_data(*byte))
+                && suffix[DATA_LEN..KEY_LEN] == *b"=="
+                && suffix
+                    .get(KEY_LEN)
+                    .is_none_or(|next| !base64_data(*next) && *next != b'=')
+        })
 }
 
 fn has_token(text: &str, prefixes: &[&str], minimum: usize, body: fn(u8) -> bool) -> bool {
@@ -411,19 +461,29 @@ const TOKEN_SHAPES: &[TokenShape] = &[
 
 /// Literal private-key markers and distinctive credential prefixes. This
 /// check refuses the original bytes; it never rewrites the reviewed patch.
-fn secret_shape(text: &str) -> Option<&'static str> {
+fn secret_shapes(text: &str) -> Vec<&'static str> {
+    let mut kinds = Vec::new();
     if (text.contains("-----BEGIN ") || text.contains("-----END "))
         && (text.contains("PRIVATE KEY-----") || text.contains("PRIVATE KEY BLOCK-----"))
     {
-        return Some("a private-key marker");
+        kinds.push("a private-key marker");
     }
     if has_azure_storage_key(text) {
-        return Some("an Azure Storage account key");
+        kinds.push("an Azure Storage account key");
     }
-    TOKEN_SHAPES
-        .iter()
-        .find(|shape| has_token(text, shape.prefixes, shape.minimum, shape.body))
-        .map(|shape| shape.kind)
+    for shape in TOKEN_SHAPES {
+        if has_token(text, shape.prefixes, shape.minimum, shape.body)
+            && !kinds.contains(&shape.kind)
+        {
+            kinds.push(shape.kind);
+        }
+    }
+    kinds
+}
+
+#[cfg(test)]
+fn secret_shape(text: &str) -> Option<&'static str> {
+    secret_shapes(text).into_iter().next()
 }
 
 #[cfg(test)]
@@ -556,6 +616,14 @@ mod tests {
             secret_shape(&format!("AccountKey={key}==")),
             Some("an Azure Storage account key")
         );
+        assert_eq!(
+            secret_shape(&format!("accountkey={key}==;")),
+            Some("an Azure Storage account key")
+        );
+        assert_eq!(
+            secret_shape(&format!("ACCOUNTKEY={key}==;")),
+            Some("an Azure Storage account key")
+        );
         // Short, missing padding, trailing extra base64 byte, or placeholder must pass.
         let short_key: String = key.chars().take(85).collect();
         assert_eq!(secret_shape(&format!("AccountKey={short_key}==;")), None);
@@ -641,5 +709,93 @@ mod tests {
                 path != "infra/storage.tf"
             }
         }));
+    }
+
+    #[test]
+    fn scan_reports_every_credential_family_on_a_single_line() {
+        use super::{Finding, scan};
+        use crate::git::{LocalChanges, PatchPaths};
+
+        let gitlab = format!("glpat-{}", "a".repeat(20));
+        let npm = format!("npm_{}", "b".repeat(36));
+        let patch = [
+            "diff --git a/ci.env.sh b/ci.env.sh".to_owned(),
+            "--- /dev/null".to_owned(),
+            "+++ b/ci.env.sh".to_owned(),
+            "@@ -0,0 +1 @@".to_owned(),
+            format!("+GL={gitlab} NPM={npm}"),
+            String::new(),
+        ]
+        .join("\n");
+        let changes = LocalChanges {
+            base_commit_sha: "a".repeat(40),
+            patch,
+            paths: vec![PatchPaths {
+                old: None,
+                new: Some("ci.env.sh".to_owned()),
+            }],
+        };
+
+        let findings = scan(&changes, &[]).expect("patch parses cleanly");
+        assert_eq!(
+            findings,
+            vec![
+                Finding::Secret {
+                    path: "ci.env.sh".to_owned(),
+                    line: 1,
+                    coordinate: "new line",
+                    kind: "a GitLab personal access token",
+                },
+                Finding::Secret {
+                    path: "ci.env.sh".to_owned(),
+                    line: 1,
+                    coordinate: "new line",
+                    kind: "an npm access token",
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn check_returns_earlier_refusal_before_later_patch_parse_error() {
+        use super::{PreflightError, check};
+        use crate::git::{LocalChanges, PatchPaths};
+
+        let gitlab = format!("glpat-{}", "a".repeat(20));
+        let patch = [
+            "diff --git a/first.rs b/first.rs".to_owned(),
+            "--- /dev/null".to_owned(),
+            "+++ b/first.rs".to_owned(),
+            "@@ -0,0 +1 @@".to_owned(),
+            format!("+const TOKEN: &str = \"{gitlab}\";"),
+            "diff --git a/second.rs b/second.rs".to_owned(),
+            "@@ broken @@".to_owned(),
+            String::new(),
+        ]
+        .join("\n");
+        let changes = LocalChanges {
+            base_commit_sha: "a".repeat(40),
+            patch,
+            paths: vec![
+                PatchPaths {
+                    old: None,
+                    new: Some("first.rs".to_owned()),
+                },
+                PatchPaths {
+                    old: None,
+                    new: Some("second.rs".to_owned()),
+                },
+            ],
+        };
+
+        assert!(matches!(
+            check(&changes, &[]),
+            Err(PreflightError::Secret {
+                ref path,
+                line: 1,
+                kind: "a GitLab personal access token",
+                ..
+            }) if path == "first.rs"
+        ));
     }
 }
