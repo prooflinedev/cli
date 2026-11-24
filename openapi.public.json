@@ -2042,7 +2042,7 @@
             "type": "array"
           },
           "finding_count": {
-            "description": "How many findings this review's assessments recorded, across all of them.",
+            "description": "How many findings this review's assessments recorded, across all of\n them, with the supported findings its KIAN assessments published.",
             "format": "int64",
             "type": "integer"
           },
@@ -5793,7 +5793,7 @@
             "type": "array"
           },
           "finding_count": {
-            "description": "How many findings this review's assessments recorded, across all of them.",
+            "description": "How many findings this review's assessments recorded, across all of\n them, with the supported findings its KIAN assessments published.",
             "format": "int64",
             "type": "integer"
           },

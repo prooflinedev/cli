@@ -22,6 +22,7 @@ pub mod render;
 mod result;
 mod sarif;
 mod scan;
+mod setup;
 mod severity;
 pub mod text;
 mod tls;
@@ -111,13 +112,20 @@ enum Command {
     /// Read a plan or start and inspect its approved implementation.
     #[command(subcommand)]
     Plan(knowledge::PlanCommand),
-    /// Open browser onboarding; cloud trust requires browser sign-in.
+    /// Open browser onboarding, or read setup and its instructions from a shell.
+    ///
+    /// Without a subcommand, opens the GitHub App installation in a browser;
+    /// cloud trust requires browser sign-in.
+    #[command(args_conflicts_with_subcommands = true)]
     Setup {
+        /// Print the address instead of opening a browser.
         #[arg(long)]
         print: bool,
         /// GitHub organization slug; omit to open the authorized organization selector.
         #[arg(long)]
         organization: Option<String>,
+        #[command(subcommand)]
+        command: Option<setup::Command>,
     },
     /// Rerun the original immutable review subject.
     Rerun(tools::RerunArgs),
@@ -454,8 +462,20 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
             Ok(Verdict::Done)
         }
         Command::Setup {
+            command: Some(command),
+            ..
+        } => {
+            if let Some((name, arguments)) = command.request() {
+                config::call(origin, token, cli.org, name, arguments).await
+            } else {
+                write!(std::io::stdout().lock(), "{}", setup::GUIDE)?;
+                Ok(Verdict::Done)
+            }
+        }
+        Command::Setup {
             print,
             organization,
+            command: None,
         } => {
             let url = organization.as_deref().map_or_else(
                 || origin.join(["orgs"]),

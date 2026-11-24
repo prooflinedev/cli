@@ -119,10 +119,21 @@ pub(crate) async fn run(
     org: Option<Uuid>,
     command: Command,
 ) -> anyhow::Result<Verdict> {
+    let (name, arguments) = command.request().await?;
+    call(origin, token, org, name, arguments).await
+}
+
+/// Calls one hosted configuration or setup tool and prints its result as JSON.
+pub(crate) async fn call(
+    origin: Origin,
+    token: Option<SecretString>,
+    org: Option<Uuid>,
+    name: &'static str,
+    arguments: Value,
+) -> anyhow::Result<Verdict> {
     let credential = credentials::load(&origin, token, org)
         .await
         .with_context(|| format!("sign in for configuration with `{LOGIN}`"))?;
-    let (name, arguments) = command.request().await?;
     let value = match mcp::call(&Http::new(origin)?, &credential, name, arguments).await {
         // MCP admission refuses a sign-in without `reviews:read` before any
         // tool runs, so no tool refusal names the missing scope.

@@ -8,6 +8,8 @@ This repository is the published distribution of the Proofline CLI. `openapi.pub
 
 On Linux and macOS, install the CLI with `curl -fsSL https://proofline.sh/cli | sh`, then run `proofline login`. Run `proofline setup` to open the browser organization selector. Pass `--organization NAME` to open that GitHub organization's installation page, or `--print` to only print its address. Cloud trust and connection changes still require a signed-in administrator browser.
 
+A coding agent can continue setup from its shell without an MCP restart. `proofline setup guide` prints the instructions and needs no sign-in. `proofline setup status` prints the current setup step, readiness and blockers, and `proofline setup candidates [--query NAME]` lists the repositories and deployments an answer may name. Both print the hosted MCP tool result as JSON and need `setup:write`, like `proofline config get`. The agent saves answers with the [configuration commands](#configuration).
+
 `proofline completions SHELL` prints a completion script for `zsh`, `bash`, `fish`, `powershell`, or `elvish` without signing in or making a network call. For example, add `source <(proofline completions zsh)` to `~/.zshrc`.
 
 ### Windows installation

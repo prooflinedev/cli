@@ -15,7 +15,7 @@
 set -eu
 
 PROOFLINE_CLI=https://proofline.sh/cli
-PROOFLINE_INSTALLER_VERSION=0.5.5
+PROOFLINE_INSTALLER_VERSION=0.6.0
 PROOFLINE_SETUP_MIN_VERSION=0.1.8
 
 say() {
@@ -149,11 +149,15 @@ main() {
         refuse "could not configure $client; earlier steps remain installed; fix the reported problem and rerun this command"
     done
     say "opening Proofline setup; sign in with GitHub and install the GitHub App for your team"
+    # A shell with no browser, such as a coding agent's on a remote host, still
+    # reaches sign-in: the address is printed for the person to open.
     "$directory/proofline" setup ||
-      refuse "could not open setup; visit https://proofline.sh/orgs and rerun this command after installing the GitHub App"
+      say "no browser opened here; open https://proofline.sh/orgs in a browser to install the GitHub App"
     "$directory/proofline" login --scope reviews:read --scope findings:read --scope guidance:read --scope reviews:request --scope setup:write --scope org:configure ||
-      refuse "CLI sign-in did not finish; the CLI and MCP entries remain installed; rerun this command to sign in"
-    say "restart your coding agent or reload its MCP servers, then ask it to set up Proofline"
+      refuse "CLI sign-in did not finish; the CLI and MCP entries remain installed; rerun this command to sign in, then run '$directory/proofline setup guide' to continue setup"
+    say "signed in; to continue setup in this session, run this and follow what it prints:"
+    say "  $directory/proofline setup guide"
+    say "a coding agent can follow it from its shell now; restart the agent or reload MCP only to use Proofline's MCP tools"
   else
     say "run 'proofline login' to sign in"
   fi
