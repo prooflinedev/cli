@@ -292,7 +292,7 @@ const TOKEN_SHAPES: &[TokenShape] = &[
     // string keywords are case-insensitive, but only these two casings are
     // covered, because `has_token` matches prefixes exactly.
     TokenShape {
-        kind: "an Azure Storage account key",
+        kind: AZURE_ACCOUNT_KEY_KIND,
         prefixes: &["AccountKey=", "accountkey="],
         minimum: 86,
         body: base64,
@@ -333,6 +333,9 @@ const TOKEN_SHAPES: &[TokenShape] = &[
         body: base64url,
     },
 ];
+
+/// The kind of the row that the Azurite exception applies to.
+const AZURE_ACCOUNT_KEY_KIND: &str = "an Azure Storage account key";
 
 /// Azurite's well-known development account key for `devstoreaccount1`, which
 /// Microsoft publishes under "Use a well-known storage account and key" at
@@ -375,10 +378,19 @@ fn secret_shape(text: &str) -> Option<&'static str> {
     {
         return Some("a private-key marker");
     }
-    let text = without_azurite_key(text);
+    let exempt = without_azurite_key(text);
     TOKEN_SHAPES
         .iter()
-        .find(|shape| has_token(&text, shape.prefixes, shape.minimum, shape.body))
+        .find(|shape| {
+            // Only an account key can be the Azurite key. Every other family
+            // reads the original text, so a token that overlaps it still counts.
+            let text = if shape.kind == AZURE_ACCOUNT_KEY_KIND {
+                &*exempt
+            } else {
+                text
+            };
+            has_token(text, shape.prefixes, shape.minimum, shape.body)
+        })
         .map(|shape| shape.kind)
 }
 
@@ -451,8 +463,40 @@ mod tests {
                 '.',
                 "a GitLab personal access token",
             ),
+            // As for `ghs_`, the other base64 alphabet's punctuation is
+            // invalid in each base64 family.
+            (
+                &["AccountKey=", "accountkey="][..],
+                86,
+                "Az09+/",
+                '-',
+                "an Azure Storage account key",
+            ),
+            (
+                &["AccountKey=", "accountkey="][..],
+                86,
+                "Az09+/",
+                '_',
+                "an Azure Storage account key",
+            ),
+            (
+                &["glpat-"][..],
+                20,
+                "Az09_-",
+                '+',
+                "a GitLab personal access token",
+            ),
+            (
+                &["glpat-"][..],
+                20,
+                "Az09_-",
+                '/',
+                "a GitLab personal access token",
+            ),
             (&["npm_"][..], 36, "Az09", '_', "an npm access token"),
             (&["pypi-"][..], 85, "Az09_-", '.', "a PyPI API token"),
+            (&["pypi-"][..], 85, "Az09_-", '+', "a PyPI API token"),
+            (&["pypi-"][..], 85, "Az09_-", '/', "a PyPI API token"),
             (&["hf_"][..], 34, "Az09", '_', "a Hugging Face access token"),
         ];
         for (prefixes, minimum, alphabet, invalid, label) in cases {
@@ -530,6 +574,11 @@ mod tests {
                 format!("AccountKey={AZURITE_ACCOUNT_KEY}="),
                 azure,
                 "a `=` byte after the padding",
+            ),
+            (
+                format!("ghp_{AZURITE_ACCOUNT_KEY}"),
+                Some("a GitHub token"),
+                "a GitHub token that overlaps the key",
             ),
             (
                 format!("{azurite} token={github}"),
