@@ -485,6 +485,10 @@ impl Api {
             if !retryable || attempt == READ_ATTEMPTS || wait > MAX_RETRY_AFTER {
                 return Err(self.http.problem(&reply));
             }
+            debug::log(format_args!(
+                "retry {attempt} of {} in {wait} s",
+                READ_ATTEMPTS - 1
+            ));
             tokio::time::sleep(Duration::from_secs(wait)).await;
             delay = (delay * 2).min(MAX_RETRY_AFTER);
         }
