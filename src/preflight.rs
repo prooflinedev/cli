@@ -1,5 +1,7 @@
 //! Local refusals before any patch bytes leave the checkout.
 
+use std::borrow::Cow;
+
 use crate::git::{LocalChanges, PatchPaths};
 
 #[derive(Debug, thiserror::Error)]
@@ -185,6 +187,16 @@ fn base32(byte: u8) -> bool {
     byte.is_ascii_uppercase() || matches!(byte, b'2'..=b'7')
 }
 
+/// The RFC 4648 base64 alphabet, without `=` padding.
+fn base64(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/')
+}
+
+/// The RFC 4648 URL- and filename-safe base64 alphabet, without `=` padding.
+fn base64url(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
+}
+
 fn has_token(text: &str, prefixes: &[&str], minimum: usize, body: fn(u8) -> bool) -> bool {
     prefixes.iter().any(|prefix| {
         text.match_indices(*prefix).any(|(start, prefix)| {
@@ -273,7 +285,87 @@ const TOKEN_SHAPES: &[TokenShape] = &[
         minimum: 52,
         body: base32,
     },
+    // https://learn.microsoft.com/en-us/azure/storage/common/storage-configure-connection-string
+    // A real key is 88
+    // characters including its `==` padding; the rule requires only the 86
+    // base64 characters before it and does not check the padding. Connection
+    // string keywords are case-insensitive, but only these two casings are
+    // covered, because `has_token` matches prefixes exactly.
+    TokenShape {
+        kind: "an Azure Storage account key",
+        prefixes: &["AccountKey=", "accountkey="],
+        minimum: 86,
+        body: base64,
+    },
+    // https://docs.gitlab.com/user/profile/personal_access_tokens/
+    // `glpat-` followed by 20 characters.
+    TokenShape {
+        kind: "a GitLab personal access token",
+        prefixes: &["glpat-"],
+        minimum: 20,
+        body: base64url,
+    },
+    // https://docs.npmjs.com/about-access-tokens
+    // `npm_` followed by 36 alphanumerics.
+    TokenShape {
+        kind: "an npm access token",
+        prefixes: &["npm_"],
+        minimum: 36,
+        body: alphanumeric,
+    },
+    // https://huggingface.co/docs/hub/security-tokens documents only the `hf_`
+    // prefix. The length and alphabet are not vendor-documented: a measured
+    // token had 34 letters after `hf_`, matching the gitleaks rule.
+    // Alphanumeric keeps the rule a superset of that shape if the format adds
+    // digits.
+    TokenShape {
+        kind: "a Hugging Face access token",
+        prefixes: &["hf_"],
+        minimum: 34,
+        body: alphanumeric,
+    },
+    // https://docs.pypi.org/api/tokens/
+    // `pypi-` followed by a base64url body.
+    TokenShape {
+        kind: "a PyPI API token",
+        prefixes: &["pypi-"],
+        minimum: 85,
+        body: base64url,
+    },
 ];
+
+/// Azurite's well-known development account key for `devstoreaccount1`, which
+/// Microsoft publishes under "Use a well-known storage account and key" at
+/// <https://learn.microsoft.com/en-us/azure/storage/common/storage-connect-azurite>.
+/// It authorizes only the local emulator, so an exact occurrence is no secret.
+const AZURITE_ACCOUNT_KEY: &str =
+    "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==";
+
+/// `text` with each exact occurrence of [`AZURITE_ACCOUNT_KEY`] blanked by as
+/// many spaces, so other offsets are unchanged. An occurrence inside a longer
+/// key is a different key, so it stays: a base64 byte before it, or a base64
+/// or `=` byte after it, extends the key. A `=` before it ends a keyword such
+/// as `AccountKey=`, because padding only ends a key.
+fn without_azurite_key(text: &str) -> Cow<'_, str> {
+    let bytes = text.as_bytes();
+    let mut exempt = Cow::Borrowed(text);
+    for (start, key) in text.match_indices(AZURITE_ACCOUNT_KEY) {
+        let end = start + key.len();
+        let extended_before = start
+            .checked_sub(1)
+            .and_then(|index| bytes.get(index))
+            .is_some_and(|byte| base64(*byte));
+        let extended_after = bytes
+            .get(end)
+            .is_some_and(|byte| base64(*byte) || *byte == b'=');
+        if !extended_before && !extended_after {
+            exempt
+                .to_mut()
+                .replace_range(start..end, &" ".repeat(key.len()));
+        }
+    }
+    exempt
+}
 
 /// Literal private-key markers and distinctive credential prefixes. This
 /// check refuses the original bytes; it never rewrites the reviewed patch.
@@ -283,15 +375,16 @@ fn secret_shape(text: &str) -> Option<&'static str> {
     {
         return Some("a private-key marker");
     }
+    let text = without_azurite_key(text);
     TOKEN_SHAPES
         .iter()
-        .find(|shape| has_token(text, shape.prefixes, shape.minimum, shape.body))
+        .find(|shape| has_token(&text, shape.prefixes, shape.minimum, shape.body))
         .map(|shape| shape.kind)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::secret_shape;
+    use super::{AZURITE_ACCOUNT_KEY, secret_shape};
 
     #[test]
     fn credential_families_refuse_minimum_bodies_but_accept_short_or_invalid_ones() {
@@ -405,8 +498,51 @@ mod tests {
             "self.hf_model",
             "AccountKey=<your-key>",
             "AccountKey=${STORAGE_KEY}",
+            "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;",
         ] {
             assert_eq!(secret_shape(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn the_azurite_exception_covers_only_the_exact_key() {
+        let azurite = format!(
+            "DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey={AZURITE_ACCOUNT_KEY};BlobEndpoint=http://127.0.0.1:10000/devstoreaccount1;"
+        );
+        let github = format!("ghp_{}", "S".repeat(36));
+        let real = format!(
+            "{}==",
+            "Az09+/".chars().cycle().take(86).collect::<String>()
+        );
+        let azure = Some("an Azure Storage account key");
+        for (text, expected, case) in [
+            (
+                format!("AccountKey=X{AZURITE_ACCOUNT_KEY}"),
+                azure,
+                "a base64 byte before the key",
+            ),
+            (
+                format!("AccountKey={AZURITE_ACCOUNT_KEY}A"),
+                azure,
+                "a base64 byte after the padding",
+            ),
+            (
+                format!("AccountKey={AZURITE_ACCOUNT_KEY}="),
+                azure,
+                "a `=` byte after the padding",
+            ),
+            (
+                format!("{azurite} token={github}"),
+                Some("a GitHub token"),
+                "a GitHub token on the same line",
+            ),
+            (
+                format!("{azurite} AccountName=acme;AccountKey={real};"),
+                azure,
+                "a real account key on the same line",
+            ),
+        ] {
+            assert_eq!(secret_shape(&text), expected, "{case}");
         }
     }
 
