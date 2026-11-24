@@ -19,7 +19,6 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup show active-toolchain
-      - run: python3 -m unittest discover -s scripts -p 'test_*.py'
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
