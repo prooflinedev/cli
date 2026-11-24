@@ -34,6 +34,9 @@ pub enum ApiError {
         origin: String,
         status: u16,
         detail: String,
+        /// The problem's `code` extension member, the cause the server
+        /// names for a refusal a caller acts on.
+        code: Option<String>,
     },
     #[error("could not reach {origin}: {reason}")]
     Transport { origin: String, reason: String },
@@ -133,12 +136,21 @@ impl ApiError {
             Self::Transport { .. } | Self::Protocol { .. } | Self::Renewal { .. } => None,
         }
     }
+
+    /// The refusal's `code`, such as `repository_write_access_required`.
+    pub fn code(&self) -> Option<&str> {
+        match self {
+            Self::Problem { code, .. } => code.as_deref(),
+            Self::Transport { .. } | Self::Protocol { .. } | Self::Renewal { .. } => None,
+        }
+    }
 }
 
 #[derive(Deserialize)]
 struct Problem {
     title: Option<String>,
     detail: Option<String>,
+    code: Option<String>,
 }
 
 /// A response that arrived with an HTTP status, and its bounded body.
@@ -320,6 +332,7 @@ impl Http {
 
     pub fn problem(&self, reply: &Reply) -> ApiError {
         let parsed = serde_json::from_slice::<Problem>(&reply.body).ok();
+        let code = parsed.as_ref().and_then(|problem| problem.code.clone());
         let detail = parsed
             .and_then(|problem| problem.detail.or(problem.title))
             .map_or_else(
@@ -336,6 +349,7 @@ impl Http {
             origin: self.origin.to_string(),
             status: reply.status.as_u16(),
             detail,
+            code,
         }
     }
 

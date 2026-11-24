@@ -65,6 +65,21 @@ pub(crate) fn request(args: &ScanArgs) -> anyhow::Result<ScanRequest> {
 
 const SCAN_SIGN_IN: &str = "this sign-in cannot request scans; run `proofline login --scope reviews:read --scope findings:read --scope reviews:request --scope scans:request`, and have the token's repositories include this one";
 
+/// The scan request's 403, explained by the cause its problem `code` names.
+/// Only a refusal without a known code is the sign-in's: signing in again
+/// cannot raise the organization's limit or grant GitHub write access.
+fn scan_refused(error: ApiError) -> anyhow::Error {
+    match error.code() {
+        Some("on_demand_scans_off") => anyhow::anyhow!(
+            "{error}. Ask an organization administrator to raise the on-demand scan limit in review settings."
+        ),
+        Some("repository_write_access_required") => {
+            anyhow::anyhow!("{error}. Ask a repository administrator on GitHub for write access.")
+        }
+        _ => anyhow::Error::new(error).context(SCAN_SIGN_IN),
+    }
+}
+
 pub(crate) async fn run(
     api: &Api,
     args: &ScanArgs,
@@ -91,9 +106,7 @@ pub(crate) async fn run(
     ));
     let response = match api.request_scan(repository_id, request).await {
         Ok(response) => response,
-        Err(error) if error.status() == Some(403) => {
-            return Err(anyhow::Error::new(error).context(SCAN_SIGN_IN));
-        }
+        Err(error) if error.status() == Some(403) => return Err(scan_refused(error)),
         // The scan may have started, so the caller gets the one retry that
         // cannot start a second one, and an exit code that says "unknown".
         Err(error) if uncertain(&error) => {

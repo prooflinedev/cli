@@ -15,7 +15,7 @@
 set -eu
 
 PROOFLINE_CLI=https://proofline.sh/cli
-PROOFLINE_INSTALLER_VERSION=0.7.0
+PROOFLINE_INSTALLER_VERSION=0.8.0
 PROOFLINE_SETUP_MIN_VERSION=0.1.8
 
 say() {
@@ -139,9 +139,25 @@ main() {
   mv -f "$directory/.proofline.$$" "$directory/proofline"
 
   say "installed $("$directory/proofline" --version) at $directory/proofline"
+  binary=proofline
   case ":${PATH:-}:" in
     *":$directory:"*) ;;
-    *) say "$directory is not on PATH; add it to run proofline by name" ;;
+    *)
+      binary=$directory/proofline
+      say "$directory is not on PATH; add it to run proofline by name"
+      # The file the login shell reads when a terminal opens. Terminal on macOS
+      # starts Bash as a login shell, which skips ~/.bashrc.
+      # The tilde is shown to the reader, not expanded.
+      # shellcheck disable=SC2088
+      case "${SHELL:-}:$(uname -s)" in
+        */zsh:*) profile='~/.zshrc' ;;
+        */bash:Darwin) profile='~/.bash_profile' ;;
+        */bash:*) profile='~/.bashrc' ;;
+        *) profile="your shell's startup file" ;;
+      esac
+      say "add this line to $profile, and run it here to use proofline in this terminal:"
+      say "  export PATH=\"$directory:\$PATH\""
+      ;;
   esac
   if [ "$setup" = true ]; then
     for client in claude-code cursor codex; do
@@ -159,7 +175,7 @@ main() {
     say "  $directory/proofline setup guide"
     say "a coding agent can follow it from its shell now; restart the agent or reload MCP only to use Proofline's MCP tools"
   else
-    say "run 'proofline login' to sign in"
+    say "run '$binary login' to sign in"
   fi
 }
 

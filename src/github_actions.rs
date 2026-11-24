@@ -123,12 +123,14 @@ pub(crate) fn current_run_id() -> Option<i64> {
 }
 
 /// The completed run a `workflow_run` job follows: the run that triggered it,
-/// its head commit and its latest attempt.
+/// its head commit, its latest attempt and how that attempt concluded, such as
+/// `success`, `failure` or `cancelled`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProducingRun {
     pub head_sha: String,
     pub id: i64,
     pub attempt: Option<i64>,
+    pub conclusion: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -141,6 +143,7 @@ struct WorkflowRun {
     head_sha: String,
     id: i64,
     run_attempt: Option<i64>,
+    conclusion: Option<String>,
 }
 
 const WORKFLOW_RUN_UNREADABLE: &str =
@@ -159,6 +162,7 @@ impl ProducingRun {
             head_sha: run.head_sha,
             id: run.id,
             attempt: run.run_attempt,
+            conclusion: run.conclusion,
         })
     }
 }

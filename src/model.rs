@@ -442,6 +442,11 @@ pub struct CommitDeploy {
     /// deploy again. Absent from older servers, which read as false.
     #[serde(default)]
     pub rolled_back: bool,
+    /// Whether the deploy's verification ended, so a check it has not
+    /// recorded never will be. Absent from older servers, which read as
+    /// false and leave a missing check to the wait.
+    #[serde(default)]
+    pub verification_ended: bool,
 }
 
 /// The deploy a rollback restores, when the read names one, and the deploys

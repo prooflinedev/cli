@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use anyhow::bail;
 use clap::{Args, ValueEnum};
+use uuid::Uuid;
 
 use crate::api::Api;
 use crate::github_actions::ProducingRun;
@@ -31,6 +32,29 @@ const FAILED_READS: u32 = 5;
 /// 20-minute or hour check also lasts until that check is due.
 const DEFAULT_TIMEOUT_MINUTES: u64 = 30;
 
+/// The deploy states this CLI knows. The server may add one in a minor
+/// release, and a caller must read one it does not know as not established
+/// (#39845).
+const KNOWN_STATES: [&str; 9] = [
+    "VERIFIED",
+    "VERIFIED_UNTIL_SUPERSEDED",
+    "SUPERSEDED",
+    "INCOMPLETE",
+    "UNRECORDED",
+    "NOT_YET_DUE",
+    "UNVERIFIED",
+    "FAILED",
+    "INACTIVE",
+];
+
+/// Minutes a `workflow_run` reader waits for a deploy of the completed run
+/// when that run did not succeed and no selected deploy is recorded. Proofline
+/// records a deploy when it admits the GitHub `deployment_status` delivery
+/// that its job's end sends, before the run completes and starts the reader,
+/// and a queued delivery waits only a Pub/Sub pull; the bound leaves minutes
+/// for a backlog.
+const UNSUCCESSFUL_RUN_MINUTES: u64 = 5;
+
 #[derive(Debug, Args)]
 pub(crate) struct CiDeployArgs {
     /// Full commit SHA the job deployed. Defaults to `COMMIT_SHA`, then the
@@ -42,6 +66,12 @@ pub(crate) struct CiDeployArgs {
     /// Only deploys to this GitHub Environment.
     #[arg(long, value_name = "NAME")]
     environment: Option<String>,
+    /// Only deploys recorded in this Proofline environment: a deploy's
+    /// `environment_id` in `--json`, not the GitHub Environment name that
+    /// `--environment` matches. A GitHub deployment recorded in two
+    /// Proofline environments is a deploy in each, and this tells them apart.
+    #[arg(long, value_name = "UUID")]
+    environment_id: Option<Uuid>,
     /// Only deploys of this GitHub deployment task, such as `deploy:web`.
     #[arg(long, value_name = "TASK")]
     task: Option<String>,
@@ -74,6 +104,10 @@ pub(crate) struct CiDeployArgs {
     json: bool,
     #[command(flatten)]
     pub(crate) repository: RepositoryArgs,
+    /// How the completed run that `--run` defaulted to concluded, from the
+    /// `workflow_run` payload.
+    #[arg(skip)]
+    followed_conclusion: Option<String>,
 }
 
 /// The four checks of a deploy, in order.
@@ -119,7 +153,19 @@ impl CiDeployArgs {
         if self.run.is_none() {
             self.run = Some(produced.id);
             self.attempt = produced.attempt;
+            self.followed_conclusion.clone_from(&produced.conclusion);
         }
+    }
+
+    /// The conclusion of the followed run when it did not succeed, which
+    /// shortens the wait for a deploy to [`UNSUCCESSFUL_RUN_MINUTES`]: a run
+    /// that failed at build, was cancelled or skipped its deploy job deploys
+    /// nothing. A run that succeeded, a payload that names no conclusion and
+    /// an explicit `--run` keep the whole wait.
+    fn unsuccessful_run(&self) -> Option<&str> {
+        self.followed_conclusion
+            .as_deref()
+            .filter(|conclusion| *conclusion != "success")
     }
 
     /// A deploying run cannot read its landing until the run finishes.
@@ -155,10 +201,13 @@ impl CiDeployArgs {
         let matches = |wanted: Option<&str>, value: Option<&str>| {
             wanted.is_none_or(|wanted| value == Some(wanted))
         };
-        matches(
-            self.environment.as_deref(),
-            deploy.github_environment.as_deref(),
-        ) && matches(self.task.as_deref(), deploy.deployment_task.as_deref())
+        self.environment_id
+            .is_none_or(|id| deploy.environment_id == id)
+            && matches(
+                self.environment.as_deref(),
+                deploy.github_environment.as_deref(),
+            )
+            && matches(self.task.as_deref(), deploy.deployment_task.as_deref())
             && self
                 .deployment
                 .is_none_or(|id| deploy.github_deployment_ids.contains(&id))
@@ -184,9 +233,15 @@ enum Reading {
     /// The deploy has no verification, as when it landed while deploy checks
     /// were off, so no check of it will be recorded.
     Unverified,
+    /// The deploy's verification ended without recording the named check,
+    /// so it never will. A running verification's overdue check still waits.
+    Ended,
     /// A check through the named one is not `HEALTHY`, or the deploy names a
     /// gap.
     NotEstablished,
+    /// The named check is recorded, but the deploy reads a state this CLI
+    /// does not know, so its checks are not read as no regression.
+    UnknownState,
     /// Every check through the named one recorded `HEALTHY` and the deploy
     /// names no gap.
     NoRegression,
@@ -209,8 +264,12 @@ fn result_and_gaps(deploy: &CommitDeploy, at: Until) -> (Option<&str>, &[String]
 
 /// A failure or recorded regression decides first. A deploy that can no
 /// longer record the named check, because a later deploy replaced it before
-/// then or it has no verification, ends the wait for it. Otherwise every check
-/// through the requested checkpoint must be healthy and gap-free.
+/// then, it has no verification or its verification ended without it, ends
+/// the wait for it. Otherwise every check through the requested checkpoint
+/// must be healthy and gap-free, and the deploy's state one the CLI knows: a
+/// state a newer server added may mean what no check here shows. A known state
+/// with a later check still to come, or a later one that did not record
+/// `HEALTHY`, leaves the requested check to be read on its own.
 fn judge(deploy: &CommitDeploy, until: Until) -> Reading {
     let regressed = deploy
         .checkpoints
@@ -231,7 +290,14 @@ fn judge(deploy: &CommitDeploy, until: Until) -> Reading {
         return Reading::Superseded;
     }
     if result_and_gaps(deploy, until).0.is_none() {
-        return Reading::Waiting;
+        return if deploy.verification_ended {
+            Reading::Ended
+        } else {
+            Reading::Waiting
+        };
+    }
+    if !KNOWN_STATES.contains(&deploy.state.as_str()) {
+        return Reading::UnknownState;
     }
     let healthy = through()
         .all(|checkpoint| matches!(result_and_gaps(deploy, checkpoint), (Some("HEALTHY"), [])));
@@ -275,6 +341,10 @@ pub(crate) async fn wait(
     let started = tokio::time::Instant::now();
     let started_unix = i64::try_from(crate::device::now()).unwrap_or(i64::MAX);
     let mut deadline = poll_deadline(args.timeout_minutes()?)?;
+    let unsuccessful = match args.unsuccessful_run() {
+        Some(conclusion) => Some((conclusion, poll_deadline(UNSUCCESSFUL_RUN_MINUTES)?)),
+        None => None,
+    };
     let (name, repository_id) = connected_repository(api, &args.repository).await?;
     let checkpoint = args.until.api_name();
     let mut delay = FIRST_POLL_SECONDS;
@@ -321,8 +391,14 @@ pub(crate) async fn wait(
         if args.waits_until_due() {
             deadline = deadline.max(due(&selected, args.until, started, started_unix));
         }
+        // An unsuccessful run's wait for its first selected deploy is short;
+        // once one is recorded, the wait for its check is today's.
+        let ended_run = unsuccessful
+            .filter(|_| selected.is_empty())
+            .map(|(conclusion, short)| (conclusion, deadline.min(short)));
+        let ends_at = ended_run.map_or(deadline, |(_, short)| short);
         let now = tokio::time::Instant::now();
-        let verdict = conclude(&readings, now >= deadline);
+        let verdict = conclude(&readings, now >= ends_at);
         if let Some(id) = reader_run
             && verdict != Some(Verdict::Regressed)
             && selected.iter().zip(&readings).any(|(deploy, reading)| {
@@ -346,19 +422,25 @@ pub(crate) async fn wait(
                 .copied()
                 .zip(readings.iter().copied())
                 .collect();
-            let waited = deadline
+            let waited = ends_at
                 .saturating_duration_since(started)
                 .as_secs()
                 .div_ceil(60);
-            say(&ending(
-                verdict,
-                &judged,
-                read.deploys.len(),
-                &name,
-                commit,
-                checkpoint,
-                waited,
-            ));
+            let ended = match (ended_run, args.run) {
+                (Some((conclusion, _)), Some(run)) => {
+                    no_deploy_from_run(run, conclusion, &name, commit, waited)
+                }
+                _ => ending(
+                    verdict,
+                    &judged,
+                    read.deploys.len(),
+                    &name,
+                    commit,
+                    checkpoint,
+                    waited,
+                ),
+            };
+            say(&ended);
             return Ok(verdict);
         }
         if selected.is_empty() {
@@ -371,7 +453,7 @@ pub(crate) async fn wait(
                 count(selected.len())
             ));
         }
-        delay = pause(delay, deadline, now).await;
+        delay = pause(delay, ends_at, now).await;
     }
 }
 
@@ -519,8 +601,8 @@ fn rollback_line(rollback: &CommitDeployRollback) -> String {
 }
 
 /// The line the job ends with. When every deploy that is not established was
-/// replaced before the check, or every one has no checks, it says so and names
-/// their pages.
+/// replaced before the check, has no checks, or ended its checks without the
+/// named one, it says so and names their pages.
 fn ending(
     verdict: Verdict,
     judged: &[(&CommitDeploy, Reading)],
@@ -538,7 +620,7 @@ fn ending(
             causes(judged)
         ),
         _ if readings.is_empty() && recorded > 0 => format!(
-            "Proofline recorded {} of {name} at {commit}, and none matches --environment, --task, --deployment, --run or --attempt after {minutes} minutes. The result is not established.",
+            "Proofline recorded {} of {name} at {commit}, and none matches --environment-id, --environment, --task, --deployment, --run or --attempt after {minutes} minutes. The result is not established.",
             count(recorded)
         ),
         _ if readings.is_empty() => format!(
@@ -547,10 +629,19 @@ fn ending(
         _ if readings.contains(&Reading::Waiting) => format!(
             "The {checkpoint} check was not recorded after {minutes} minutes. The result is not established."
         ),
+        _ if readings.contains(&Reading::UnknownState) => format!(
+            "A deploy of {name} at {commit} reads a state this version of the CLI does not know: {}. Its checks are not read as no regression until the CLI is updated. The result is not established.",
+            unknown_states(judged)
+        ),
         _ if only(&readings, Reading::Superseded) => format!(
             "A later deploy replaced {} of {name} at {commit} before the {checkpoint} check, so that check will not be recorded{}. The result is not established.",
             this(&readings, Reading::Superseded),
             pages(judged, Reading::Superseded)
+        ),
+        _ if only(&readings, Reading::Ended) => format!(
+            "The deploy checks of {} of {name} at {commit} ended without recording the {checkpoint} check, so it will not be recorded{}. The result is not established.",
+            this(&readings, Reading::Ended),
+            pages(judged, Reading::Ended)
         ),
         _ if only(&readings, Reading::Unverified) => format!(
             "Proofline has no deploy checks of {} of {name} at {commit}, as when deploy checks were off at its landing{}. The result is not established.",
@@ -561,6 +652,21 @@ fn ending(
             "A check through {checkpoint} did not record HEALTHY, or a deploy names a gap. The result is not established."
         ),
     }
+}
+
+/// The line an unsuccessful run's reader ends with when the run recorded no
+/// deploy that the job selects.
+fn no_deploy_from_run(
+    run: i64,
+    conclusion: &str,
+    name: &str,
+    commit: &str,
+    minutes: u64,
+) -> String {
+    format!(
+        "Run {run} concluded {} and recorded no deploy of {name} at {commit} that this job selects; Proofline waited {minutes} minutes for one. The result is not established.",
+        text::one_line(conclusion)
+    )
 }
 
 /// Each regressed deploy and what decided it: its failure, and every
@@ -586,6 +692,17 @@ fn causes(judged: &[(&CommitDeploy, Reading)]) -> String {
             };
             format!("{} {cause}", label(deploy))
         })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// Each deploy that reads a state the CLI does not know, by its label and
+/// that state.
+fn unknown_states(judged: &[(&CommitDeploy, Reading)]) -> String {
+    judged
+        .iter()
+        .filter(|(_, reading)| *reading == Reading::UnknownState)
+        .map(|(deploy, _)| format!("{} reads {}", label(deploy), text::one_line(&deploy.state)))
         .collect::<Vec<_>>()
         .join("; ")
 }
@@ -636,7 +753,6 @@ mod tests {
     use clap::Parser as _;
     use secrecy::SecretString;
     use serde_json::{Value, json};
-    use uuid::Uuid;
 
     use super::*;
     use crate::api::Http;
@@ -738,6 +854,15 @@ mod tests {
         flags: &[&str],
         answers: Vec<(u16, Value)>,
     ) -> (anyhow::Result<Verdict>, usize, Duration) {
+        run_args(reader_run, &args(flags), answers).await
+    }
+
+    /// [`run`] with `args` already built, as when they follow a payload.
+    async fn run_args(
+        reader_run: Option<i64>,
+        args: &CiDeployArgs,
+        answers: Vec<(u16, Value)>,
+    ) -> (anyhow::Result<Verdict>, usize, Duration) {
         // A paused clock jumps to the next timer whenever the runtime waits,
         // even on a loopback socket about to answer, which would fire the
         // client's request timeout. A 10 ms ticker bounds each jump.
@@ -751,7 +876,7 @@ mod tests {
         let organization: Uuid = ORG.parse().unwrap();
         let api = Api::new(http, SecretString::from("plp_stored"), organization);
         let started = tokio::time::Instant::now();
-        let verdict = wait(&api, &args(flags), COMMIT, reader_run).await;
+        let verdict = wait(&api, args, COMMIT, reader_run).await;
         let took = started.elapsed();
         ticker.abort();
         let reads = *reads.lock().unwrap();
@@ -777,6 +902,24 @@ mod tests {
         later_gap["checkpoints"][1]["gaps"] = json!(["SIGNAL_NO_DATA"]);
         let mut unverified = deploy("deploy", &[1], &[], &[]);
         unverified["state"] = json!("UNVERIFIED");
+        // A verification that ended after its 20-minute check: its hour check
+        // will never be recorded, while the checks it did record stay readable.
+        let mut finished = deploy("deploy", &[1], &["HEALTHY", "HEALTHY"], &[]);
+        finished["state"] = json!("UNRECORDED");
+        finished["verification_ended"] = json!(true);
+        let mut finished_regressed = deploy("deploy", &[1], &["HEALTHY", "REGRESSED"], &[]);
+        finished_regressed["verification_ended"] = json!(true);
+        // A state a newer server added is not read as no regression, while a
+        // known state with a later check that did not record `HEALTHY` still
+        // lets a healthy earlier check be read (#39845).
+        let mut unknown = healthy.clone();
+        unknown["state"] = json!("ROLLING_OUT");
+        let mut unknown_regressed = deploy("deploy", &[1], &["HEALTHY", "REGRESSED"], &[]);
+        unknown_regressed["state"] = json!("ROLLING_OUT");
+        let mut other_regressed = deploy("deploy:api", &[1], &["HEALTHY", "REGRESSED"], &[]);
+        other_regressed["state"] = json!("INCOMPLETE");
+        let mut later_incomplete = deploy("deploy", &[1], &["HEALTHY", "INCOMPLETE"], &[]);
+        later_incomplete["state"] = json!("INCOMPLETE");
         for (case, flags, answer, ended) in [
             (
                 "healthy",
@@ -862,10 +1005,85 @@ mod tests {
                 recorded(&[unverified]),
                 Verdict::NotComplete,
             ),
+            (
+                "checks ended before the hour check",
+                &["--until", "1h"][..],
+                recorded(std::slice::from_ref(&finished)),
+                Verdict::NotComplete,
+            ),
+            (
+                "checks ended after the 20-minute check",
+                &["--until", "20m"][..],
+                recorded(std::slice::from_ref(&finished)),
+                Verdict::Done,
+            ),
+            (
+                "checks ended after a regression",
+                &["--until", "1h"][..],
+                recorded(&[finished_regressed]),
+                Verdict::Regressed,
+            ),
+            (
+                "unknown state",
+                &[][..],
+                recorded(std::slice::from_ref(&unknown)),
+                Verdict::NotComplete,
+            ),
+            (
+                "unknown state that regressed",
+                &[][..],
+                recorded(&[unknown_regressed]),
+                Verdict::Regressed,
+            ),
+            (
+                "unknown state beside another deploy's regression",
+                &[][..],
+                recorded(&[unknown.clone(), other_regressed]),
+                Verdict::Regressed,
+            ),
+            (
+                "later incomplete check on a known state",
+                &[][..],
+                recorded(&[later_incomplete]),
+                Verdict::Done,
+            ),
         ] {
             let (verdict, reads, _) = run(None, flags, vec![answer]).await;
             assert_eq!(verdict.unwrap(), ended, "{case}");
             assert_eq!(reads, 1, "{case}");
+        }
+        // The known states are the public contract's, so a state the server
+        // adds fails here until the CLI reads it.
+        let contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("OUT_DIR"),
+            "/openapi.public.json"
+        )))
+        .unwrap();
+        let mut documented: Vec<&str> =
+            contract["components"]["schemas"]["DeployCoverageState"]["oneOf"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|state| state["const"].as_str().unwrap())
+                .collect();
+        let mut known = KNOWN_STATES.to_vec();
+        documented.sort_unstable();
+        known.sort_unstable();
+        assert_eq!(known, documented);
+        let unknown: CommitDeploy = serde_json::from_value(unknown).unwrap();
+        let mut output = Vec::new();
+        write_lines(&mut output, &unknown, Until::Landing).unwrap();
+        let ended = ending(
+            Verdict::NotComplete,
+            &[(&unknown, judge(&unknown, Until::Landing))],
+            1,
+            "acme/app",
+            COMMIT,
+            "LANDING",
+            0,
+        );
+        for shown in [String::from_utf8(output).unwrap(), ended] {
+            assert!(shown.contains("ROLLING_OUT"), "{shown}");
         }
         let mut output = Vec::new();
         write_lines(
@@ -875,6 +1093,26 @@ mod tests {
         )
         .unwrap();
         let output = String::from_utf8(output).unwrap();
+        // The ended verification's lines and last line name the missing
+        // check and the deploy.
+        let mut printed = Vec::new();
+        let finished: CommitDeploy = serde_json::from_value(finished).unwrap();
+        write_lines(&mut printed, &finished, Until::Hour1).unwrap();
+        let printed = String::from_utf8(printed).unwrap();
+        assert!(printed.contains("HOUR_1 NOT_RECORDED"), "{printed}");
+        let last = ending(
+            Verdict::NotComplete,
+            &[(&finished, Reading::Ended)],
+            1,
+            "acme/app",
+            COMMIT,
+            "HOUR_1",
+            30,
+        );
+        assert!(
+            last.contains("HOUR_1") && last.contains("https://console.proofline.example/deploys/1"),
+            "{last}"
+        );
         let mut lines = output.lines();
         assert!(
             lines
@@ -1007,6 +1245,129 @@ mod tests {
             assert!(took >= Duration::from_secs(180), "{case}: {took:?}");
             assert!(took < Duration::from_secs(190), "{case}: {took:?}");
         }
+
+        // A running verification's overdue hour check reads `UNRECORDED` as
+        // an ended one's does, but can still be recorded, so the wait reads
+        // until the timeout. So does an ended deploy beside another deploy
+        // whose running verification can still record its check.
+        let mut overdue = deploy("deploy:web", &[1], &["HEALTHY", "HEALTHY"], &[]);
+        overdue["state"] = json!("UNRECORDED");
+        overdue["verification_ended"] = json!(false);
+        let mut finished = overdue.clone();
+        finished["deployment_task"] = json!("deploy:api");
+        finished["verification_ended"] = json!(true);
+        for (case, answer) in [
+            (
+                "overdue while running",
+                recorded(std::slice::from_ref(&overdue)),
+            ),
+            (
+                "ended beside a running deploy",
+                recorded(&[finished, overdue]),
+            ),
+        ] {
+            let (verdict, reads, took) =
+                run(None, &["--until", "1h", "--timeout", "3"], vec![answer]).await;
+            assert_eq!(verdict.unwrap(), Verdict::NotComplete, "{case}");
+            assert!(reads > 2, "{case}: {reads}");
+            assert!(took >= Duration::from_secs(180), "{case}: {took:?}");
+        }
+
+        // A reader following a run that did not succeed stops waiting for a
+        // deploy after 5 minutes, at the 9th read. A deploy that run landed
+        // is read as from any run, and once it is recorded its check gets
+        // the whole wait. A run that succeeded, a payload without its
+        // conclusion and an explicit --run wait the whole 30 minutes.
+        let followed = |conclusion: Option<&str>, flags: &[&str]| {
+            let payload = json!({ "workflow_run": {
+                "head_sha": COMMIT, "id": 7, "run_attempt": 1, "conclusion": conclusion,
+            } });
+            let mut followed = args(flags);
+            followed.follow(
+                &ProducingRun::parse(payload.to_string().as_bytes()).unwrap(),
+                false,
+            );
+            followed
+        };
+        let none = recorded(&[]);
+        let unchecked = recorded(&[deploy("deploy", &[1], &[], &[])]);
+        let landed = recorded(&[deploy("deploy", &[1], &["HEALTHY"], &[])]);
+        for (case, conclusion, flags, answers, ended, polls, minutes) in [
+            (
+                "failed, no deploy",
+                Some("failure"),
+                &[][..],
+                vec![none.clone()],
+                Verdict::NotComplete,
+                9,
+                5,
+            ),
+            (
+                "cancelled, other run's deploy",
+                Some("cancelled"),
+                &[][..],
+                vec![recorded(&[{
+                    let mut other = deploy("deploy", &[1], &["HEALTHY"], &[]);
+                    other["workflow_run_id"] = json!(8);
+                    other
+                }])],
+                Verdict::NotComplete,
+                9,
+                5,
+            ),
+            (
+                "failed, landed deploy",
+                Some("failure"),
+                &[][..],
+                vec![none.clone(), landed.clone()],
+                Verdict::Done,
+                2,
+                0,
+            ),
+            (
+                "failed, check pending",
+                Some("failure"),
+                &[][..],
+                vec![unchecked.clone()],
+                Verdict::NotComplete,
+                34,
+                30,
+            ),
+            (
+                "succeeded, no deploy yet",
+                Some("success"),
+                &[][..],
+                vec![none.clone()],
+                Verdict::NotComplete,
+                34,
+                30,
+            ),
+            (
+                "no conclusion",
+                None,
+                &[][..],
+                vec![none.clone()],
+                Verdict::NotComplete,
+                34,
+                30,
+            ),
+            (
+                "explicit --run",
+                Some("failure"),
+                &["--run", "7"][..],
+                vec![none.clone()],
+                Verdict::NotComplete,
+                34,
+                30,
+            ),
+        ] {
+            let (verdict, reads, took) =
+                run_args(None, &followed(conclusion, flags), answers).await;
+            assert_eq!(verdict.unwrap(), ended, "{case}");
+            assert_eq!(reads, polls, "{case}");
+            assert_eq!(took.as_secs() / 60, minutes, "{case}: {took:?}");
+        }
+        assert!(no_deploy_from_run(7, "failure", "acme/app", COMMIT, 5).contains("failure"));
 
         // Without --timeout, a wait for the hour check lasts until the check
         // is due, 50 minutes from now, past the 30-minute floor.
@@ -1241,6 +1602,57 @@ mod tests {
                 assert_eq!(reads, answers.len(), "{case}");
             }
         }
+
+        // One GitHub deployment recorded in two Proofline environments, A
+        // healthy and B regressed: the copies share the commit, GitHub
+        // Environment, task, run, attempt and deployment ID, and only
+        // `environment_id` tells them apart. Selecting A exits 0 and B exits
+        // 3, while an unfiltered job still exits 3 and an environment with no
+        // copy waits for its deadline.
+        let a = "0190f3a0-0000-7000-8000-0000000000a1";
+        let b = "0190f3a0-0000-7000-8000-0000000000b2";
+        let copy = |environment: &str, results: &[&str]| {
+            let mut deploy = deploy("deploy", &[1], results, &[]);
+            deploy["environment_id"] = json!(environment);
+            deploy["github_deployment_ids"] = json!([101]);
+            deploy
+        };
+        let shared = recorded(&[copy(a, &["HEALTHY"]), copy(b, &["REGRESSED"])]);
+        for (flags, ended) in [
+            (
+                &["--environment-id", a, "--run", "7", "--attempt", "1"][..],
+                Verdict::Done,
+            ),
+            (
+                &["--environment-id", b, "--deployment", "101"][..],
+                Verdict::Regressed,
+            ),
+            (&[][..], Verdict::Regressed),
+            (
+                &[
+                    "--environment-id",
+                    "0190f3a0-0000-7000-8000-0000000000c3",
+                    "--timeout",
+                    "1",
+                ][..],
+                Verdict::NotComplete,
+            ),
+        ] {
+            let (verdict, reads, _) = run(None, flags, vec![shared.clone()]).await;
+            assert_eq!(verdict.unwrap(), ended, "{flags:?}");
+            assert_eq!(reads > 1, ended == Verdict::NotComplete, "{flags:?}");
+        }
+        assert!(
+            Cli::try_parse_from([
+                "proofline",
+                "ci",
+                "deploy",
+                "--environment-id",
+                "production"
+            ])
+            .is_err(),
+            "a malformed UUID is refused before any read"
+        );
 
         // A `workflow_run` reader follows the completed run: its head, run
         // and attempt, so a newer run's deploy is never taken as its own. An
