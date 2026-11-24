@@ -586,6 +586,11 @@ mod tests {
                 azure,
                 "a real account key on the same line",
             ),
+            (
+                format!("AccountName=acme;AccountKey={real}; {azurite}"),
+                azure,
+                "a real account key before an Azurite key on the same line",
+            ),
         ] {
             assert_eq!(secret_shape(&text), expected, "{case}");
         }
