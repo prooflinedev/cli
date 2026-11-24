@@ -2,15 +2,16 @@
 //! timeouts, no redirects, and bounded retries for reads.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use reqwest::{Method, StatusCode, header};
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use url::Url;
+use url::{Position, Url};
 use uuid::Uuid;
 
+use crate::debug;
 use crate::github_actions::Renewal;
 use crate::model::{
     CommitDeployVerifications, CommitReviewRequest, CommitReviewResponse, CoverageUploadRequest,
@@ -223,8 +224,34 @@ impl Http {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<(Reply, Option<u64>), ApiError> {
-        let response = request
-            .send()
+        let (client, request) = request.build_split();
+        let request = request.map_err(|error| self.transport(&error))?;
+        debug::log(format_args!(
+            "→ {} {}",
+            request.method(),
+            &request.url()[Position::BeforePath..]
+        ));
+        let started = Instant::now();
+        let result = self.exchange(&client, request).await;
+        let elapsed = started.elapsed().as_millis();
+        match &result {
+            Ok((reply, _)) => debug::log(format_args!(
+                "← {} in {elapsed} ms ({} bytes)",
+                reply.status.as_u16(),
+                reply.body.len()
+            )),
+            Err(error) => debug::log(format_args!("← failed after {elapsed} ms: {error}")),
+        }
+        result
+    }
+
+    async fn exchange(
+        &self,
+        client: &reqwest::Client,
+        request: reqwest::Request,
+    ) -> Result<(Reply, Option<u64>), ApiError> {
+        let response = client
+            .execute(request)
             .await
             .map_err(|error| self.transport(&error))?;
         let status = response.status();

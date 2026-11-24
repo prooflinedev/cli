@@ -8,6 +8,7 @@ pub mod api;
 mod config;
 mod coverage;
 pub mod credentials;
+mod debug;
 mod deploy;
 pub mod device;
 pub mod git;
