@@ -20,6 +20,7 @@ param(
     [string]$FixtureDir,
     [string]$DriverRoot,
     [string]$TestToken,
+    [switch]$LatestOutage,
     [switch]$KeepFiles
 )
 
@@ -180,6 +181,20 @@ if ($Mode -eq 'Worker' -or $Mode -eq 'Recover') {
     }
     . $validatedCopy
     if ($Mode -eq 'Recover') {
+        if ($LatestOutage) {
+            # Invoke the real entrypoint so moving repair after /cli/latest
+            # fails the test even if standalone repair remains correct.
+            function Get-ProoflineLatestVersion {
+                throw 'INTENTIONAL_LATEST_LOOKUP_UNAVAILABLE'
+            }
+            try { Invoke-ProoflineInstaller $null $CaseDir $false }
+            catch {
+                if ($_.Exception.Message -cne 'INTENTIONAL_LATEST_LOOKUP_UNAVAILABLE') { throw }
+                Write-Output 'LATEST_LOOKUP_FAILED_AFTER_RECOVERY'
+                exit 17
+            }
+            throw 'Latest lookup outage unexpectedly completed.'
+        }
         Invoke-ProoflinePendingRepair $CaseDir
         Write-Output 'RECOVERY_COMPLETED'
         exit 0
@@ -315,6 +330,18 @@ function Make-InstrumentedInstaller([string]$Source, [string]$Destination, [stri
     Require ($text.Contains($target)) "Production installer checkpoint '$Checkpoint' changed."
     Require (($text.Split([string[]]@($target), [StringSplitOptions]::None).Count) -eq 2) "Checkpoint '$Checkpoint' is not unique."
     $instrumented = $text.Replace($target, $replacement)
+    # Parse generated scripts before starting any worker. Source-only
+    # validation cannot catch malformed injection templates.
+    $tokens = $null
+    $parseErrors = $null
+    [void][System.Management.Automation.Language.Parser]::ParseInput(
+        $instrumented, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors.Count -gt 0) {
+        $details = @($parseErrors | ForEach-Object {
+            "line $($_.Extent.StartLineNumber): $($_.Message)"
+        }) -join '; '
+        throw "Generated $Checkpoint installer failed syntax preflight: $details"
+    }
     [IO.File]::WriteAllText($Destination, $instrumented, [Text.UTF8Encoding]::new($false))
 }
 
@@ -448,12 +475,19 @@ try {
             '" -Mode Recover -CaseDir "' + $directory +
             '" -InstallerCopy "' + $originalInstaller +
             '" -DriverRoot "' + $root + '" -TestToken ' + $testToken
+        if ($checkpoint -eq 'after-switch') { $recoverArgs += ' -LatestOutage' }
         $recovery = Invoke-HiddenPowerShell $recoverArgs "recovery worker ($checkpoint)"
         $recoverExit = $recovery.ExitCode
         [IO.File]::WriteAllText($recoverStdout, $recovery.Output)
         [IO.File]::WriteAllText($recoverStderr, $recovery.ErrorOutput)
         $recoverOutput = $recovery.Output + $recovery.ErrorOutput
-        Require ($recoverExit -eq 0) "Fresh recovery process failed for $checkpoint; output: $recoverOutput"
+        if ($checkpoint -eq 'after-switch') {
+            Require ($recoverExit -eq 17 -and
+                $recoverOutput.Contains('LATEST_LOOKUP_FAILED_AFTER_RECOVERY')) "Unpinned latest-outage recovery failed at $checkpoint; exit $recoverExit; output: $recoverOutput"
+        }
+        else {
+            Require ($recoverExit -eq 0) "Fresh recovery process failed for $checkpoint; output: $recoverOutput"
+        }
         $digest = $null
         if ($expected[$checkpoint] -eq 'absent') {
             Require (-not [IO.File]::Exists($activeFile)) 'Interrupted fresh install unexpectedly published an executable.'

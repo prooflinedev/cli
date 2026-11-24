@@ -12,11 +12,25 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path (Split-Path -Parent $PSScriptRoot) 'install.ps1')
 $archive = (Resolve-Path -LiteralPath $ArchivePath).Path
 $executable = (Resolve-Path -LiteralPath $ExecutablePath).Path
-$archiveLength = ([IO.FileInfo]::new($archive)).Length
-if ($archiveLength -le 0 -or $archiveLength -gt $script:MaxArchiveBytes) {
-    throw "Packaged Windows archive violates installer compressed-size limit: $archiveLength bytes."
+# Open the archive just once and deny replacement, ensuring the size bound
+# applies to precisely the stream whose bytes the parser will consume.
+$stream = [IO.File]::Open($archive, [IO.FileMode]::Open,
+    [IO.FileAccess]::Read, [IO.FileShare]::Read)
+try {
+    $length = $stream.Length
+    if ($length -le 0 -or $length -gt $script:MaxArchiveBytes) {
+        throw "Packaged Windows archive violates installer compressed-size limit: $length bytes."
+    }
+    $compressed = [byte[]]::new([int]$length)
+    $offset = 0
+    while ($offset -lt $compressed.Length) {
+        $count = $stream.Read($compressed, $offset, $compressed.Length - $offset)
+        if ($count -le 0) { throw 'Packaged Windows archive truncated during read.' }
+        $offset += $count
+    }
 }
-$payload = Get-ProoflineTarExecutable ([IO.File]::ReadAllBytes($archive))
+finally { $stream.Dispose() }
+$payload = Get-ProoflineTarExecutable $compressed
 if ($payload.Length -le 0) {
     throw 'Packaged Windows archive has no installable executable.'
 }

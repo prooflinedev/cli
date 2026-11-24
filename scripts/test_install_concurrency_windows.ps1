@@ -25,6 +25,17 @@ if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
 if ($Mode -eq 'Hold') {
     if ([string]::IsNullOrWhiteSpace($CaseDir)) { throw 'Holder needs CaseDir.' }
     $folder = [IO.Path]::GetFullPath($CaseDir)
+    $driver = Split-Path -Parent $folder
+    if ([IO.Path]::GetDirectoryName($driver) -ine [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([char]'\') -or
+        [IO.Path]::GetFileName($driver) -cnotmatch '\Aproofline-concurrent-[0-9a-f]{32}\z' -or
+        [IO.Path]::GetFileName($folder) -cne 'bin') {
+        throw 'Holder refused a directory outside the disposable test sandbox.'
+    }
+    foreach ($path in @($driver, $folder)) {
+        if (([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Holder refused a reparse-point test directory.'
+        }
+    }
     $marker = Join-Path $folder '.proofline-test-only'
     if ($HoldToken -cnotmatch '\A[0-9a-f]{32}\z') {
         throw 'Refusing to hold lock without a valid test token.'
@@ -51,17 +62,6 @@ if ($Mode -eq 'Hold') {
     # Hold the *production* installer lock, not a separately manufactured
     # FileShare.None handle. Otherwise the test passes even if the installer
     # accidentally weakens its own lock sharing policy.
-    $driver = Split-Path -Parent $folder
-    if ([IO.Path]::GetDirectoryName($driver) -ine [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([char]'\') -or
-        [IO.Path]::GetFileName($driver) -cnotmatch '\Aproofline-concurrent-[0-9a-f]{32}\z' -or
-        [IO.Path]::GetFileName($folder) -cne 'bin') {
-        throw 'Holder refused a directory outside the disposable test sandbox.'
-    }
-    foreach ($path in @($driver, $folder)) {
-        if (([IO.File]::GetAttributes($path) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw 'Holder refused a reparse-point test directory.'
-        }
-    }
     . (Join-Path (Split-Path -Parent $PSScriptRoot) 'install.ps1')
     $script:holderOriginalReceipt = (Get-Item Function:\Read-ProoflineReceipt).ScriptBlock
     $script:holderReady = Join-Path $folder '.holder-ready'

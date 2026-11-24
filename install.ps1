@@ -739,9 +739,31 @@ function Restore-ProoflinePendingBackup([string]$Pending) {
     foreach ($path in @($Pending, $backup)) { Assert-ProoflineNoReparse $path }
     if (-not [IO.File]::Exists($backup)) { return }
     if ([IO.File]::Exists($Pending)) {
-        [void](Read-ProoflinePending $Pending)
-        # The canonical journal is verified. A transiently locked backup
-        # must not prevent rollback; leave it for transaction cleanup.
+        try {
+            # A valid canonical journal is authoritative, including 'passed'.
+            [void](Read-ProoflinePending $Pending)
+        }
+        catch {
+            # Fall back only after validating the backup, preserve corrupt
+            # canonical evidence, and use normal digest-checked recovery.
+            $failure = $_.Exception.Message
+            [void](Read-ProoflinePending $backup)
+            $evidence = $Pending + '.invalid-' + [guid]::NewGuid().ToString('N') + '.json'
+            Assert-ProoflineNoReparse $evidence
+            if ([IO.File]::Exists($evidence)) { throw 'Invalid journal evidence path occupied.' }
+            [IO.File]::Move($Pending, $evidence)
+            try { [IO.File]::Move($backup, $Pending) }
+            catch {
+                if (-not [IO.File]::Exists($Pending)) {
+                    try { [IO.File]::Move($evidence, $Pending) } catch { }
+                }
+                throw
+            }
+            Write-Warning "Malformed journal preserved at $evidence ($failure); recovering from validated backup."
+            return
+        }
+        # Do not block rollback when an unrelated reader temporarily locks the
+        # redundant backup. Cleanup keeps the journal until deletion succeeds.
         try { [IO.File]::Delete($backup) }
         catch { Write-Warning "Journal backup is locked; recovery will retain it until cleanup: $($_.Exception.Message)" }
     }

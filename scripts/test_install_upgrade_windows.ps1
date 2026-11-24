@@ -365,6 +365,36 @@ try {
         Require (-not [IO.File]::Exists($journal)) 'Canonical passed journal remains after recovery.'
         Require (-not [IO.File]::Exists($journal + '.postcheck.bak')) 'Stale checking backup remains after recovery.'
     }
+    Check 'malformed canonical journal recovers using validated checking backup' {
+        $dir = PrepareOld 'corrupt-canonical'
+        [void](MakePending $dir)
+        $pending = Pending 'corrupt-canonical'
+        Set-ProoflinePendingPostcheck $pending 'checking'
+        [IO.File]::Copy($pending, $pending + '.postcheck.bak', $false)
+        [IO.File]::WriteAllText($pending, 'BROKEN_JSON{')
+        [IO.File]::WriteAllBytes((Active 'corrupt-canonical'),
+            (Get-ProoflineTarExecutable $script:newArchive))
+        Invoke-ProoflinePendingRepair $dir
+        Require ((Get-ProoflineSha256 (Active 'corrupt-canonical')) -ceq $script:oldHash) 'Backup did not restore previous verified image.'
+        Assert-ProoflineRecord (Receipt 'corrupt-canonical') '0.5.1' $script:oldHash
+        Require (-not [IO.File]::Exists($pending)) 'Recovered transaction journal was retained.'
+        Require (-not [IO.File]::Exists($pending + '.postcheck.bak')) 'Recovered journal backup was retained.'
+        $evidence = @(Get-ChildItem -LiteralPath $dir -File -Force |
+            Where-Object { $_.Name -match '\A\.proofline-install\.pending\.json\.invalid-[0-9a-f]{32}\.json\z' })
+        Require ($evidence.Count -eq 1) 'Malformed journal evidence is missing.'
+        Require ([IO.File]::ReadAllText($evidence[0].FullName) -ceq 'BROKEN_JSON{') 'Malformed journal evidence was modified.'
+    }
+    Check 'invalid backup does not displace invalid canonical journal' {
+        $dir = PrepareOld 'invalid-both-journals'
+        [void](MakePending $dir)
+        $pending = Pending 'invalid-both-journals'
+        [IO.File]::WriteAllText($pending, 'BROKEN_CANONICAL{')
+        [IO.File]::WriteAllText($pending + '.postcheck.bak', 'BROKEN_BACKUP{')
+        Must-Throw { Invoke-ProoflinePendingRepair $dir }
+        Require ([IO.File]::ReadAllText($pending) -ceq 'BROKEN_CANONICAL{') 'Invalid canonical journal was discarded.'
+        Require ([IO.File]::ReadAllText($pending + '.postcheck.bak') -ceq 'BROKEN_BACKUP{') 'Invalid backup was discarded.'
+        Require ((Get-ProoflineSha256 (Active 'invalid-both-journals')) -ceq $script:oldHash) 'Invalid backup changed the installed executable.'
+    }
     Check 'backup deletion lock does not block rollback from validated canonical journal' {
         $dir = PrepareOld 'locked-journal-backup'
         [void](MakePending $dir)
@@ -440,6 +470,31 @@ try {
         Require ((Get-ProoflineSha256 (Active 'latest-release-entrypoint')) -ceq $script:oldHash) 'Latest release entrypoint installed the wrong executable.'
         Assert-ProoflineRecord (Receipt 'latest-release-entrypoint') '0.5.1' $script:oldHash
         Require (-not [IO.File]::Exists((Pending 'latest-release-entrypoint'))) 'Latest release entrypoint left a recovery journal.'
+    }
+    Check 'unpinned latest outage recovers interrupted upgrade before lookup' {
+        $dir = PrepareOld 'latest-failure-repair'
+        [void](MakePending $dir)
+        $pending = Pending 'latest-failure-repair'
+        Set-ProoflinePendingPostcheck $pending 'checking'
+        [IO.File]::WriteAllBytes((Active 'latest-failure-repair'),
+            (Get-ProoflineTarExecutable $script:newArchive))
+        $real = (Get-Item Function:\Get-ProoflineLatestVersion).ScriptBlock
+        try {
+            Set-Item Function:\Get-ProoflineLatestVersion -Value {
+                throw 'INTENTIONAL_LATEST_LOOKUP_UNAVAILABLE'
+            }
+            $failed = $false
+            try { Invoke-ProoflineInstaller $null $dir $false }
+            catch {
+                if ($_.Exception.Message -cne 'INTENTIONAL_LATEST_LOOKUP_UNAVAILABLE') { throw }
+                $failed = $true
+            }
+            Require $failed 'Latest pointer failure was not observed.'
+        }
+        finally { Set-Item Function:\Get-ProoflineLatestVersion -Value $real }
+        Require ((Get-ProoflineSha256 (Active 'latest-failure-repair')) -ceq $script:oldHash) 'Latest pointer failure prevented rollback.'
+        Assert-ProoflineRecord (Receipt 'latest-failure-repair') '0.5.1' $script:oldHash
+        Require (-not [IO.File]::Exists($pending)) 'Latest lookup failure left a pending journal.'
     }
     Check 'pre-download installer repairs interrupted upgrade despite download outage' {
         $dir = PrepareOld 'predownload-outage'
