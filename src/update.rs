@@ -143,7 +143,50 @@ fn suggestion(cache: &Cache, args: &[std::ffi::OsString], interactive: bool) -> 
         .latest
         .as_ref()
         .filter(|latest| newer(latest))
-        .map(|latest| format!("proofline {latest} is available; run 'proofline update'"))
+        .map(|latest| notice(latest, cfg!(target_os = "windows")))
+}
+
+fn notice(latest: &str, windows: bool) -> String {
+    if windows {
+        format!("proofline {latest} is available; 'proofline update' shows how to install it")
+    } else {
+        format!("proofline {latest} is available; run 'proofline update'")
+    }
+}
+
+/// The README's verified manual update: self-update cannot replace a Windows
+/// binary, and Windows has no Unix installer directory to check.
+/// `latest` is the cached version the notice announced; its pinned downloads
+/// exist before GitHub marks that release as the latest one.
+fn windows_steps(executable: Option<&Path>, latest: Option<&str>) -> String {
+    const ARCHIVE: &str = "proofline-x86_64-pc-windows-msvc.tar.gz";
+    let download = latest.map_or_else(
+        || {
+            // No newer version is known, so this may already be the newest one.
+            format!(
+                "{ARCHIVE} and SHA256SUMS from https://github.com/prooflinedev/cli/releases/latest \
+                 (stop if that release is not newer than this proofline {})",
+                env!("CARGO_PKG_VERSION")
+            )
+        },
+        |version| {
+            let release = format!("{RELEASES}/download/{version}");
+            format!("{release}/{ARCHIVE} and {release}/SHA256SUMS")
+        },
+    );
+    let executable = executable.map_or_else(
+        || "the proofline.exe you ran (find it with '(Get-Command proofline).Source')".to_owned(),
+        |path| path.display().to_string(),
+    );
+    format!(
+        "'proofline update' cannot replace proofline.exe on Windows; update it by hand:\n  \
+         1. Close every running Proofline process.\n  \
+         2. Download {download}\n  \
+         3. Run 'Get-FileHash -Algorithm SHA256 {ARCHIVE}' and check that the hash matches the archive's line in SHA256SUMS.\n  \
+         4. Create an empty folder with 'mkdir proofline-new' (choose another name if it already exists).\n  \
+         5. Extract into it with 'tar -xzf {ARCHIVE} -C proofline-new'.\n  \
+         6. Only if that succeeded, replace {executable} with proofline-new\\proofline.exe."
+    )
 }
 
 fn prepare_check(
@@ -422,6 +465,16 @@ fn replace(archive: &[u8], destination: &Path) -> anyhow::Result<()> {
 
 /// Updates an official installer location after verifying the pinned archive.
 pub(crate) async fn install() -> anyhow::Result<()> {
+    if cfg!(target_os = "windows") {
+        let latest = cache_path()
+            .and_then(|path| read_cache(&path).ok())
+            .and_then(|cache| cache.latest)
+            .filter(|latest| newer(latest));
+        bail!(windows_steps(
+            std::env::current_exe().ok().as_deref(),
+            latest.as_deref()
+        ));
+    }
     let (destination, target) =
         tokio::task::spawn_blocking(|| Ok::<_, anyhow::Error>((destination()?, target()?)))
             .await??;

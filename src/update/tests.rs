@@ -195,6 +195,58 @@ fn notices_are_suppressed_for_machine_and_hook_commands() {
     assert!(suggestion(&cache, &["status".into()], true).is_some());
 }
 
+#[test]
+fn windows_notices_point_to_the_manual_steps() {
+    assert_eq!(
+        notice("9.0.0", false),
+        "proofline 9.0.0 is available; run 'proofline update'"
+    );
+    let windows = notice("9.0.0", true);
+    assert!(
+        windows.starts_with("proofline 9.0.0 is available;"),
+        "{windows}"
+    );
+    assert!(
+        windows.contains("'proofline update' shows how"),
+        "{windows}"
+    );
+    // `suggestion` itself must pick the wording of the platform it runs on.
+    let cache = Cache {
+        checked: now(),
+        latest: Some("9.0.0".to_owned()),
+    };
+    assert_eq!(
+        suggestion(&cache, &["status".into()], true).unwrap(),
+        notice("9.0.0", cfg!(target_os = "windows"))
+    );
+    let steps = windows_steps(Some(Path::new(r"C:\tools\proofline.exe")), Some("9.0.0"));
+    for expected in [
+        "Close every running Proofline process",
+        "https://proofline.sh/cli/download/9.0.0/proofline-x86_64-pc-windows-msvc.tar.gz",
+        "https://proofline.sh/cli/download/9.0.0/SHA256SUMS",
+        "Get-FileHash -Algorithm SHA256 proofline-x86_64-pc-windows-msvc.tar.gz",
+        "mkdir proofline-new",
+        "tar -xzf proofline-x86_64-pc-windows-msvc.tar.gz -C proofline-new",
+        r"replace C:\tools\proofline.exe with proofline-new\proofline.exe",
+    ] {
+        assert!(
+            steps.contains(expected),
+            "{expected:?} missing from {steps}"
+        );
+    }
+    let unknown = windows_steps(None, None);
+    for expected in [
+        "from https://github.com/prooflinedev/cli/releases/latest",
+        "(Get-Command proofline).Source",
+        concat!("not newer than this proofline ", env!("CARGO_PKG_VERSION")),
+    ] {
+        assert!(
+            unknown.contains(expected),
+            "{expected:?} missing from {unknown}"
+        );
+    }
+}
+
 // This same test executable supplies a real child fixture. All endpoint and
 // fixture-mode injection lives in cfg(test), never in the customer binary.
 #[tokio::test]
@@ -294,7 +346,7 @@ async fn detached_discovery_is_serialized_and_notices_arrive_on_the_next_invocat
         assert!(
             !String::from_utf8(output.stdout)
                 .unwrap()
-                .contains("run 'proofline update'")
+                .contains(" is available;")
         );
     }
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -322,7 +374,7 @@ async fn detached_discovery_is_serialized_and_notices_arrive_on_the_next_invocat
     assert!(
         String::from_utf8(output.stdout)
             .unwrap()
-            .contains("run 'proofline update'")
+            .contains(&notice("9.0.0", cfg!(target_os = "windows")))
     );
     assert_eq!(received.load(Ordering::SeqCst), 1);
     server.abort();
