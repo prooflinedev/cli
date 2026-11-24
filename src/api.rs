@@ -291,9 +291,31 @@ impl Http {
         protocol: Option<&str>,
         notification: bool,
     ) -> Result<Vec<u8>, McpHttpError> {
+        let url = self.origin.join(["mcp"]);
+        debug::log(format_args!("→ POST {}", &url[Position::BeforePath..]));
+        let started = Instant::now();
+        let result = self
+            .mcp_exchange(url, token, body, protocol, notification)
+            .await;
+        let elapsed = started.elapsed().as_millis();
+        match &result {
+            Ok(body) => debug::log(format_args!("← ok in {elapsed} ms ({} bytes)", body.len())),
+            Err(error) => debug::log(format_args!("← failed after {elapsed} ms: {error}")),
+        }
+        result
+    }
+
+    async fn mcp_exchange(
+        &self,
+        url: Url,
+        token: &SecretString,
+        body: Vec<u8>,
+        protocol: Option<&str>,
+        notification: bool,
+    ) -> Result<Vec<u8>, McpHttpError> {
         let mut request = self
             .client
-            .post(self.origin.join(["mcp"]))
+            .post(url)
             .bearer_auth(token.expose_secret())
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::ACCEPT, "application/json, text/event-stream")
