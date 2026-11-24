@@ -45,6 +45,20 @@ pub enum ApiError {
     Renewal { reason: String },
 }
 
+impl ApiError {
+    /// Whether another read could succeed: the request did not reach
+    /// Proofline or timed out, or Proofline answered with a 5xx status. A
+    /// refusal, an unreadable answer and a credential that could not be
+    /// renewed are not.
+    pub(crate) const fn transient(&self) -> bool {
+        match self {
+            Self::Transport { .. } => true,
+            Self::Problem { status, .. } => *status >= 500,
+            Self::Protocol { .. } | Self::Renewal { .. } => false,
+        }
+    }
+}
+
 /// Closed transport failures for the stdio bridge. Upstream bodies and client
 /// diagnostics never become a JSON-RPC error or a terminal message.
 #[derive(Debug, thiserror::Error)]

@@ -197,7 +197,7 @@ enum CiCommand {
     /// under test and exit by what the checks recorded.
     ///
     /// It reads the deploys of the commit in the repository, keeps those that
-    /// `--environment`, `--task`, `--run` and `--attempt` select, and waits
+    /// `--environment`, `--task`, `--deployment`, `--run` and `--attempt` select, and waits
     /// until each has recorded the `--until` check. It then prints one line for
     /// each deploy and check through `--until`: the checkpoint, its result, the
     /// checkpoint's gap codes and the deploy's page. Older servers supply
@@ -1045,7 +1045,7 @@ async fn review(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
         requested.run_number,
         number,
         if requested.automatic_reviews_paused {
-            "; automatic reviews are paused for this organization"
+            "; automatic reviews are stopped on this pull request"
         } else {
             ""
         }
@@ -1358,11 +1358,7 @@ fn ci_ending(result: anyhow::Result<Verdict>) -> anyhow::Result<Verdict> {
 fn unavailable(error: &anyhow::Error) -> bool {
     error
         .downcast_ref::<ApiError>()
-        .is_some_and(|error| match error {
-            ApiError::Transport { .. } => true,
-            ApiError::Problem { status, .. } => *status >= 500,
-            ApiError::Protocol { .. } | ApiError::Renewal { .. } => false,
-        })
+        .is_some_and(ApiError::transient)
 }
 
 /// `ci review` once its inputs are read. In GitHub Actions without

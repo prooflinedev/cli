@@ -418,6 +418,10 @@ pub struct CommitDeploy {
     pub github_environment: Option<String>,
     #[serde(default)]
     pub deployment_task: Option<String>,
+    /// The deploy's GitHub deployments. Absent from older servers, so
+    /// `--deployment` matches none of their deploys.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub github_deployment_ids: Vec<i64>,
     #[serde(default)]
     pub workflow_run_id: Option<i64>,
     #[serde(default)]
