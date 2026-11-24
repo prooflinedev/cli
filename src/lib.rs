@@ -157,6 +157,9 @@ enum Command {
     /// Review the checkout's local changes, pushed commits, or an open pull
     /// request's current head.
     Review(ReviewArgs),
+    /// Inspect the checkout's local patch and check for sensitive files or
+    /// credentials offline, without signing in or uploading any patch bytes.
+    Preflight(PreflightArgs),
     /// Stop your own pending or running local patch, pushed-commit or named-file review.
     Stop(StopArgs),
     /// Show the findings of the latest review of a commit or pull request.
@@ -288,6 +291,29 @@ struct LocalSelectionArgs {
     /// Add untracked files that Git does not ignore to the working-tree review.
     #[arg(long, conflicts_with_all = ["pr", "staged"])]
     include_untracked: bool,
+}
+
+#[derive(Debug, Args)]
+struct PreflightArgs {
+    /// Inspect the original index against the base, excluding unstaged changes.
+    #[arg(long, conflicts_with = "include_untracked")]
+    staged: bool,
+    /// Include untracked files that Git does not ignore in the working-tree check.
+    #[arg(long, conflicts_with = "staged")]
+    include_untracked: bool,
+    /// Inspect only this literal repository-relative file in the local patch.
+    #[arg(long, value_name = "PATH")]
+    path: Option<String>,
+    /// Allow secret-shaped patch content from this exact repository-relative
+    /// path. Repeat for more paths.
+    #[arg(long, value_name = "PATH")]
+    allow_path: Vec<String>,
+    /// Git remote that names the base branch when there is no upstream.
+    #[arg(long, default_value = "origin")]
+    remote: String,
+    /// Print the preflight report as JSON.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Args)]
@@ -435,6 +461,7 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
             completions(*shell, &mut std::io::stdout().lock())?;
             return Ok(Verdict::Done);
         }
+        Command::Preflight(args) => return run_preflight(args).await,
         Command::Update => return update::install().await.map(|()| Verdict::Done),
         Command::UpdateCheck => {
             update::check().await;
@@ -448,6 +475,7 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
             completions(shell, &mut std::io::stdout().lock())?;
             Ok(Verdict::Done)
         }
+        Command::Preflight(args) => run_preflight(&args).await,
         Command::Update => update::install().await.map(|()| Verdict::Done),
         Command::UpdateCheck => {
             update::check().await;
@@ -1031,6 +1059,130 @@ async fn review(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
         }
     ));
     finish(api, requested.review_id, args).await
+}
+
+#[derive(Debug, serde::Serialize)]
+struct PreflightFindingOutput {
+    category: &'static str,
+    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    coordinate: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<&'static str>,
+    message: String,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct PreflightReport {
+    base_commit_sha: String,
+    files: usize,
+    paths: Vec<String>,
+    patch_bytes: usize,
+    passed: bool,
+    findings: Vec<PreflightFindingOutput>,
+}
+
+/// Inspects local changes and runs the full secret/sensitive-path preflight
+/// locally without signing in or making any network calls.
+async fn run_preflight(args: &PreflightArgs) -> anyhow::Result<Verdict> {
+    let selection = if args.staged {
+        git::LocalSelection::Staged
+    } else if args.include_untracked {
+        git::LocalSelection::IncludeUntracked
+    } else {
+        git::LocalSelection::Tracked
+    };
+    let changes = git::local_changes(
+        std::path::Path::new("."),
+        &args.remote,
+        selection,
+        args.path.as_deref(),
+    )
+    .await?;
+    let findings = preflight::scan(&changes, &args.allow_path)?;
+    let files = changes.files();
+    let paths = preflight::patch_paths(&changes);
+    let patch_bytes = changes.patch.len();
+    let passed = findings.is_empty();
+    let output_findings: Vec<PreflightFindingOutput> = findings
+        .iter()
+        .map(|finding| match finding {
+            preflight::Finding::EnvironmentPath { path } => PreflightFindingOutput {
+                category: "environment_path",
+                path: path.clone(),
+                line: None,
+                coordinate: None,
+                kind: None,
+                message: finding.message(),
+            },
+            preflight::Finding::Secret {
+                path,
+                line,
+                coordinate,
+                kind,
+            } => PreflightFindingOutput {
+                category: "secret",
+                path: path.clone(),
+                line: Some(*line),
+                coordinate: Some(coordinate),
+                kind: Some(kind),
+                message: finding.message(),
+            },
+        })
+        .collect();
+
+    let mut stdout = std::io::stdout().lock();
+    if args.json {
+        let report = PreflightReport {
+            base_commit_sha: changes.base_commit_sha,
+            files,
+            paths,
+            patch_bytes,
+            passed,
+            findings: output_findings,
+        };
+        writeln!(stdout, "{}", serde_json::to_string_pretty(&report)?)?;
+    } else if files == 0 {
+        writeln!(
+            stdout,
+            "Nothing to review: the selected local changes match {}.",
+            changes.base_commit_sha
+        )?;
+    } else if passed {
+        writeln!(
+            stdout,
+            "Preflight passed: {files} changed {} ({patch_bytes} bytes) on {}.",
+            if files == 1 { "file" } else { "files" },
+            changes.base_commit_sha
+        )?;
+        for path in &paths {
+            writeln!(stdout, "  {path}")?;
+        }
+    } else {
+        writeln!(
+            stdout,
+            "Preflight blocked: {} {} across {files} changed {} ({patch_bytes} bytes) on {}:",
+            output_findings.len(),
+            if output_findings.len() == 1 {
+                "issue"
+            } else {
+                "issues"
+            },
+            if files == 1 { "file" } else { "files" },
+            changes.base_commit_sha
+        )?;
+        for finding in &output_findings {
+            writeln!(stdout, "  - {}", finding.message)?;
+        }
+    }
+
+    Ok(if passed {
+        Verdict::Done
+    } else {
+        Verdict::Blocked
+    })
 }
 
 /// Reviews the checkout's local changes against the commit they build on.
