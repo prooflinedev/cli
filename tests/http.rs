@@ -225,10 +225,16 @@ async fn status_preserves_metadata_and_reports_failed_checks_with_exit_one() {
     ] {
         let requests = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&requests);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let origin = format!("http://{}", socket.local_addr().unwrap());
+        // With no server, the socket stays bound until the loop ends and never
+        // listens, so connections to it are refused. A dropped listener freed
+        // its port, and another test's server could bind it and accept the
+        // token (#43815).
         let server =
-            if let Some(status) = status {
+            status.map(|status| {
+                let listener = socket.listen(1024).unwrap();
                 let app = Router::new().route(
                 &format!("/api/v1/organizations/{ORG}/reviews"),
                 get(move |headers: HeaderMap| {
@@ -255,13 +261,10 @@ async fn status_preserves_metadata_and_reports_failed_checks_with_exit_one() {
                     Json(json!({ "scopes": ["setup:write", "org:configure"], "state": "ENDED" }))
                 }),
             );
-                Some(tokio::spawn(async move {
+                tokio::spawn(async move {
                     axum::serve(listener, app).await.unwrap();
-                }))
-            } else {
-                drop(listener);
-                None
-            };
+                })
+            });
         let output = cli(&origin, &["status"]).await;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
