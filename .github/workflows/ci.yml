@@ -36,9 +36,20 @@ jobs:
           persist-credentials: false
       - run: cargo build --release --locked --target x86_64-pc-windows-msvc
       - run: python scripts/archive.py x86_64-pc-windows-msvc
-      - shell: pwsh
+      - name: Check packaged archive with PowerShell 5.1 and PowerShell 7
+        shell: pwsh
         run: |
-          tar -xzf artifacts/proofline-x86_64-pc-windows-msvc.tar.gz -C artifacts
+          $archive = 'artifacts/proofline-x86_64-pc-windows-msvc.tar.gz'
+          $built = 'target/x86_64-pc-windows-msvc/release/proofline.exe'
+          foreach ($engine in @('powershell.exe', 'pwsh.exe')) {
+            & $engine -NoProfile -NonInteractive -File scripts/check_windows_release_archive.ps1 -ArchivePath $archive -ExecutablePath $built
+            if ($LASTEXITCODE -ne 0) { throw "$engine rejected the packaged Windows executable." }
+          }
+          tar -xzf $archive -C artifacts
+          if ((Get-FileHash -LiteralPath './artifacts/proofline.exe' -Algorithm SHA256).Hash -cne
+              (Get-FileHash -LiteralPath $built -Algorithm SHA256).Hash) {
+            throw 'Smoke-tested Windows executable differs from installer-validated archive.'
+          }
           & ./artifacts/proofline.exe --version
           if ($LASTEXITCODE -ne 0) { throw "Windows executable failed" }
           & ./artifacts/proofline.exe setup --print

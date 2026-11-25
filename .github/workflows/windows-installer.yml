@@ -1,0 +1,134 @@
+name: Windows installer tests
+
+on:
+  pull_request:
+    paths:
+      - 'install.ps1'
+      - 'scripts/test_install*windows.ps1'
+      - 'scripts/generate_windows_installer_fixtures.py'
+      - 'scripts/check_windows_release_archive.ps1'
+      - 'scripts/archive.py'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**'
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/windows-installer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  syntax-preflight:
+    name: Installer syntax (${{ matrix.engine }})
+    runs-on: windows-2025
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: ['powershell.exe', 'pwsh.exe']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Parse Windows installer and test scripts
+        shell: pwsh
+        env:
+          TEST_ENGINE: ${{ matrix.engine }}
+        run: |
+          & $env:TEST_ENGINE -NoProfile -NonInteractive -File scripts/test_install_syntax_windows.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Installer syntax preflight failed: $env:TEST_ENGINE" }
+
+  offline-validation:
+    needs: syntax-preflight
+    name: Installer offline tests (${{ matrix.engine }})
+    runs-on: windows-2025
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: ['powershell.exe', 'pwsh.exe']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check fixture generator
+        shell: pwsh
+        run: |
+          python -m py_compile scripts/generate_windows_installer_fixtures.py
+          if ($LASTEXITCODE -ne 0) { throw 'Fixture generator did not compile.' }
+
+      - name: Run validator and recovery fixtures
+        shell: pwsh
+        env:
+          TEST_ENGINE: ${{ matrix.engine }}
+        run: |
+          foreach ($script in @(
+             'scripts/test_install_syntax_windows.ps1',
+            'scripts/test_install_windows.ps1',
+            'scripts/test_install_upgrade_windows.ps1',
+            'scripts/test_install_concurrency_windows.ps1'
+          )) {
+            Write-Host "Running $script with $env:TEST_ENGINE"
+            & $env:TEST_ENGINE -NoProfile -NonInteractive -File $script
+            if ($LASTEXITCODE -ne 0) { throw "$script failed with exit code $LASTEXITCODE" }
+          }
+
+
+  real-release-integration:
+    needs: syntax-preflight
+    name: Real Windows install and interruption recovery (${{ matrix.engine }})
+    runs-on: windows-2025
+    # Up to 24 forced-termination workers x 90 seconds plus real upgrades,
+    # download/setup time, and test-runner overhead can exceed 30 minutes.
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: ['powershell.exe', 'pwsh.exe']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install and upgrade pinned official releases
+        shell: pwsh
+        env:
+          TEST_ENGINE: ${{ matrix.engine }}
+        run: |
+          & $env:TEST_ENGINE -NoProfile -NonInteractive -File scripts/test_install_upgrade_real_windows.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Real Windows upgrade test failed: $LASTEXITCODE" }
+
+      - name: Recover from twelve real process-termination checkpoints
+        shell: pwsh
+        env:
+          TEST_ENGINE: ${{ matrix.engine }}
+        run: |
+          & $env:TEST_ENGINE -NoProfile -NonInteractive -File scripts/test_install_interruption_real_windows.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Real interruption recovery failed: $LASTEXITCODE" }
+
+  isolated-user-path:
+    needs: syntax-preflight
+    name: Default installer PATH persistence (${{ matrix.engine }})
+    # A separate GitHub-hosted VM provides a disposable Windows user profile.
+    # No other job or test in this workflow shares its HKCU registry hive.
+    runs-on: windows-2025
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: ['powershell.exe', 'pwsh.exe']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check full installer default user PATH integration in isolated profile
+        shell: pwsh
+        env:
+          TEST_ENGINE: ${{ matrix.engine }}
+        run: |
+          & $env:TEST_ENGINE -NoProfile -NonInteractive -File scripts/test_install_user_path_ci_windows.ps1
+          if ($LASTEXITCODE -ne 0) { throw "Isolated installer PATH test failed: $LASTEXITCODE" }

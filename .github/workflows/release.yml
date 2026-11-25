@@ -82,6 +82,18 @@ jobs:
             fi
           fi
           python3 scripts/archive.py "$TARGET"
+      - name: Validate packaged Windows release with both PowerShell engines
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $archive = 'artifacts/proofline-x86_64-pc-windows-msvc.tar.gz'
+          $built = 'target/x86_64-pc-windows-msvc/release/proofline.exe'
+          # Validate exactly the archive being uploaded, not the separate
+          # Checks workflow build. Both engines must accept its gzip stream.
+          foreach ($engine in @('powershell.exe', 'pwsh.exe')) {
+            & $engine -NoProfile -NonInteractive -File scripts/check_windows_release_archive.ps1 -ArchivePath $archive -ExecutablePath $built
+            if ($LASTEXITCODE -ne 0) { throw "$engine rejected the release archive." }
+          }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cli-${{ matrix.target }}
