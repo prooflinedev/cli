@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 const RELEASES: &str = "https://proofline.sh/cli";
+const WINDOWS_ARCHIVE: &str = "proofline-x86_64-pc-windows-msvc.tar.gz";
 const DAY: u64 = 86_400;
 const MAX_ARCHIVE: usize = 64 * 1024 * 1024;
 
@@ -99,8 +100,8 @@ pub fn on_invocation() {
         return;
     };
     let interactive = std::io::stderr().is_terminal() && std::io::stdout().is_terminal();
-    if let Ok(Some(notice)) = prepare_check(&path, &args, interactive, start_check) {
-        crate::say(&notice);
+    if let Ok(Some(latest)) = prepare_check(&path, &args, interactive, start_check) {
+        crate::say(&notice(&latest, updater()));
     } else {
         // Missing or failed advisory discovery never changes the command result.
     }
@@ -131,6 +132,7 @@ const QUIET_ARGUMENTS: [&str; 20] = [
     "hooks",
 ];
 
+/// The newer cached version an invocation announces, if any.
 fn suggestion(cache: &Cache, args: &[std::ffi::OsString], interactive: bool) -> Option<String> {
     let quiet = args.iter().any(|arg| {
         arg.to_str()
@@ -139,11 +141,47 @@ fn suggestion(cache: &Cache, args: &[std::ffi::OsString], interactive: bool) -> 
     if !interactive || quiet {
         return None;
     }
-    cache
-        .latest
-        .as_ref()
-        .filter(|latest| newer(latest))
-        .map(|latest| format!("proofline {latest} is available; run 'proofline update'"))
+    cache.latest.clone().filter(|latest| newer(latest))
+}
+
+/// How this binary takes a new release.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Updater {
+    /// `proofline update` replaces it: an official platform, and the regular
+    /// file `proofline` in the installer directory.
+    Command,
+    /// A Windows binary, which the user replaces from the release archive.
+    WindowsDownload,
+    /// A source build, package-manager installation or copy elsewhere.
+    Original,
+}
+
+/// Reads only local files, so the notice makes no network call.
+fn updater() -> Updater {
+    if cfg!(target_os = "windows") {
+        return Updater::WindowsDownload;
+    }
+    let installed = || {
+        let directory = installer_directory().ok()?;
+        install_path(&std::env::current_exe().ok()?, &directory).ok()
+    };
+    if release_os().is_ok() && release_arch(std::env::consts::ARCH) && installed().is_some() {
+        Updater::Command
+    } else {
+        Updater::Original
+    }
+}
+
+fn notice(latest: &str, updater: Updater) -> String {
+    match updater {
+        Updater::Command => format!("proofline {latest} is available; run 'proofline update'"),
+        Updater::WindowsDownload => format!(
+            "proofline {latest} is available; download {RELEASES}/download/{latest}/{WINDOWS_ARCHIVE} and check it against SHA256SUMS beside it"
+        ),
+        Updater::Original => {
+            format!("proofline {latest} is available; update this binary the way it was installed")
+        }
+    }
 }
 
 fn prepare_check(
@@ -170,9 +208,9 @@ fn prepare_check(
         checked: 0,
         latest: None,
     });
-    let notice = suggestion(&cache, args, interactive);
+    let announced = suggestion(&cache, args, interactive);
     if cache.checked <= now() && now().saturating_sub(cache.checked) < DAY {
-        return Ok(notice);
+        return Ok(announced);
     }
     // Record the attempt first, so an offline machine does not fork on every command.
     write_cache(
@@ -185,7 +223,7 @@ fn prepare_check(
     if launch().is_err() {
         // Keep any known notice if optional discovery cannot start.
     }
-    Ok(notice)
+    Ok(announced)
 }
 
 fn checker_command(executable: &Path) -> Command {
@@ -300,7 +338,16 @@ async fn refresh(client: &reqwest::Client, address: &str, path: PathBuf) -> anyh
 }
 
 fn install_path(executable: &Path, directory: &Path) -> anyhow::Result<PathBuf> {
-    let expected = fs::canonicalize(directory)?.join("proofline");
+    let outside = || {
+        anyhow::anyhow!(
+            "this binary is outside the installer directory {}; if the installer put it elsewhere, set PROOFLINE_INSTALL_DIR to that directory, otherwise update it through its package manager or rebuild it from source",
+            directory.display()
+        )
+    };
+    // A missing installer directory holds no installed binary either.
+    let expected = fs::canonicalize(directory)
+        .map_err(|_| outside())?
+        .join("proofline");
     // Checked first: on Linux `current_exe` already names the link's target,
     // so the comparison below would hide why the update is refused.
     if fs::symlink_metadata(&expected).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
@@ -309,33 +356,46 @@ fn install_path(executable: &Path, directory: &Path) -> anyhow::Result<PathBuf> 
     // `current_exe` is not canonical on every platform (macOS reports the path
     // the binary was started through), while `expected` is.
     if fs::canonicalize(executable).ok().as_deref() != Some(expected.as_path()) {
-        bail!(
-            "this binary is outside the installer directory {}; update it through its package manager or rebuild it from source",
-            directory.display()
-        );
+        return Err(outside());
     }
     Ok(expected)
 }
 
-fn destination() -> anyhow::Result<PathBuf> {
-    let directory = match std::env::var_os("PROOFLINE_INSTALL_DIR") {
+fn installer_directory() -> anyhow::Result<PathBuf> {
+    Ok(match std::env::var_os("PROOFLINE_INSTALL_DIR") {
         Some(directory) => PathBuf::from(directory),
         None => {
             PathBuf::from(std::env::var_os("HOME").context("set HOME or PROOFLINE_INSTALL_DIR")?)
                 .join(".local/bin")
         }
-    };
-    install_path(&std::env::current_exe()?, &directory)
+    })
 }
 
-fn target() -> anyhow::Result<String> {
-    let os = match std::env::consts::OS {
+fn destination() -> anyhow::Result<PathBuf> {
+    install_path(&std::env::current_exe()?, &installer_directory()?)
+}
+
+/// The release target's operating system part. Windows releases exist, but
+/// only as an archive the user verifies and extracts.
+fn release_os() -> anyhow::Result<&'static str> {
+    Ok(match std::env::consts::OS {
         "linux" => "unknown-linux-musl",
         "macos" => "apple-darwin",
+        "windows" => bail!(
+            "proofline update does not install Windows binaries; download {WINDOWS_ARCHIVE} and SHA256SUMS from {RELEASES}/download/VERSION/, with VERSION from {RELEASES}/latest, compare the archive's SHA-256 with Get-FileHash, and replace proofline.exe with the one it holds"
+        ),
         os => bail!(
             "no official Proofline release is built for {os}; build https://github.com/prooflinedev/cli from source"
         ),
-    };
+    })
+}
+
+fn release_arch(arch: &str) -> bool {
+    matches!(arch, "x86_64" | "aarch64")
+}
+
+fn target() -> anyhow::Result<String> {
+    let os = release_os()?;
     let mut arch = std::env::consts::ARCH;
     if cfg!(target_os = "macos") && arch == "x86_64" {
         let output = Command::new("/usr/sbin/sysctl")
@@ -345,7 +405,7 @@ fn target() -> anyhow::Result<String> {
             arch = "aarch64";
         }
     }
-    if !matches!(arch, "x86_64" | "aarch64") {
+    if !release_arch(arch) {
         bail!("no official Proofline release is built for {arch}");
     }
     Ok(format!("{arch}-{os}"))
@@ -422,8 +482,10 @@ fn replace(archive: &[u8], destination: &Path) -> anyhow::Result<()> {
 
 /// Updates an official installer location after verifying the pinned archive.
 pub(crate) async fn install() -> anyhow::Result<()> {
-    let (destination, target) =
-        tokio::task::spawn_blocking(|| Ok::<_, anyhow::Error>((destination()?, target()?)))
+    // The platform first: a Windows shell may have no HOME, and the refusal
+    // for the missing variable would hide the one that applies.
+    let (target, destination) =
+        tokio::task::spawn_blocking(|| Ok::<_, anyhow::Error>((target()?, destination()?)))
             .await??;
     let client = client(Duration::from_secs(60))?;
     let version = latest(&client).await?;

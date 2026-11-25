@@ -29,7 +29,7 @@ const SAME_RUN: &str = "Proofline records the landing of a run's deploy only aft
 const FAILED_READS: u32 = 5;
 
 /// Minutes `ci deploy` waits without `--timeout`, at least. A wait for the
-/// 20-minute or hour check also lasts until that check is due.
+/// landing, 20-minute or hour check also lasts until that check is due.
 const DEFAULT_TIMEOUT_MINUTES: u64 = 30;
 
 /// The deploy states this CLI knows. The server may add one in a minor
@@ -72,6 +72,11 @@ pub(crate) struct CiDeployArgs {
     /// Proofline environments is a deploy in each, and this tells them apart.
     #[arg(long, value_name = "UUID")]
     environment_id: Option<Uuid>,
+    /// Only deploys with this `CodePipeline` execution ID or Amplify job ID.
+    /// Proofline records a `CodePipeline` deploy after the execution succeeds.
+    /// A reader in that execution waits until its timeout.
+    #[arg(long, value_name = "ID")]
+    aws_run: Option<String>,
     /// Only deploys of this GitHub deployment task, such as `deploy:web`.
     #[arg(long, value_name = "TASK")]
     task: Option<String>,
@@ -82,21 +87,19 @@ pub(crate) struct CiDeployArgs {
     #[arg(long, value_name = "ID")]
     deployment: Option<i64>,
     /// Only deploys that this GitHub Actions run created. On a `workflow_run`
-    /// event it defaults to the completed run; it never defaults to the
-    /// reading job's own run.
+    /// event it defaults to the completed run unless `--aws-run` is given.
     #[arg(long, value_name = "ID")]
     run: Option<i64>,
     /// Only the deploy of `--run` that holds a deployment of this run attempt.
     /// A deploy that lists no attempts never matches. On a `workflow_run`
-    /// event without `--run` it defaults to the completed run's attempt.
+    /// event without `--run` or `--aws-run` it defaults to the completed run's attempt.
     #[arg(long, value_name = "N", requires = "run")]
     attempt: Option<i64>,
     /// The check to wait for. The checks before it count too.
     #[arg(long, value_enum, default_value_t = Until::Landing)]
     until: Until,
-    /// Minutes to wait for the check. By default 30, or for `--until 20m` and
-    /// `--until 1h` until the selected deploys' check is due if that is later.
-    /// `--until 1d` needs an explicit value.
+    /// Minutes to wait for the check. By default until the selected deploys'
+    /// check is due, and at least 30. `--until 1d` needs an explicit value.
     #[arg(long, value_name = "MINUTES")]
     timeout: Option<u64>,
     /// Print the route's response as JSON instead of text.
@@ -150,7 +153,7 @@ impl CiDeployArgs {
         if self.commit.is_none() && !cloud_build {
             self.commit = Some(produced.head_sha.clone());
         }
-        if self.run.is_none() {
+        if self.run.is_none() && self.aws_run.is_none() {
             self.run = Some(produced.id);
             self.attempt = produced.attempt;
             self.followed_conclusion.clone_from(&produced.conclusion);
@@ -191,10 +194,13 @@ impl CiDeployArgs {
     }
 
     /// Whether the wait lasts until the selected deploys' check is due: the
-    /// default wait for the 20-minute or hour check, which an on-time check
-    /// can outlast.
+    /// default wait for the landing, 20-minute or hour check, which an
+    /// on-time check can outlast. A landing check that reads the runtime a
+    /// second time comes due 75 minutes after landing, and later while the
+    /// deploy's run still has jobs pending.
     fn waits_until_due(&self) -> bool {
-        self.timeout.is_none() && matches!(self.until, Until::Minutes20 | Until::Hour1)
+        self.timeout.is_none()
+            && matches!(self.until, Until::Landing | Until::Minutes20 | Until::Hour1)
     }
 
     fn selects(&self, deploy: &CommitDeploy) -> bool {
@@ -203,6 +209,7 @@ impl CiDeployArgs {
         };
         self.environment_id
             .is_none_or(|id| deploy.environment_id == id)
+            && matches(self.aws_run.as_deref(), deploy.aws_run_id.as_deref())
             && matches(
                 self.environment.as_deref(),
                 deploy.github_environment.as_deref(),
@@ -233,6 +240,9 @@ enum Reading {
     /// The deploy has no verification, as when it landed while deploy checks
     /// were off, so no check of it will be recorded.
     Unverified,
+    /// The deploy never landed: its GitHub deployments only went inactive, as
+    /// when its job was cancelled, so no check of it will be recorded.
+    Inactive,
     /// The deploy's verification ended without recording the named check,
     /// so it never will. A running verification's overdue check still waits.
     Ended,
@@ -263,13 +273,13 @@ fn result_and_gaps(deploy: &CommitDeploy, at: Until) -> (Option<&str>, &[String]
 }
 
 /// A failure or recorded regression decides first. A deploy that can no
-/// longer record the named check, because a later deploy replaced it before
-/// then, it has no verification or its verification ended without it, ends
-/// the wait for it. Otherwise every check through the requested checkpoint
-/// must be healthy and gap-free, and the deploy's state one the CLI knows: a
-/// state a newer server added may mean what no check here shows. A known state
-/// with a later check still to come, or a later one that did not record
-/// `HEALTHY`, leaves the requested check to be read on its own.
+/// longer record the named check, because it never landed, a later deploy
+/// replaced it before then, it has no verification or its verification ended
+/// without it, ends the wait for it. Otherwise every check through the
+/// requested checkpoint must be healthy and gap-free, and the deploy's state
+/// one the CLI knows: a state a newer server added may mean what no check here
+/// shows. A known state with a later check still to come, or a later one that
+/// did not record `HEALTHY`, leaves the requested check to be read on its own.
 fn judge(deploy: &CommitDeploy, until: Until) -> Reading {
     let regressed = deploy
         .checkpoints
@@ -280,6 +290,9 @@ fn judge(deploy: &CommitDeploy, until: Until) -> Reading {
     }
     if deploy.state == "UNVERIFIED" {
         return Reading::Unverified;
+    }
+    if deploy.state == "INACTIVE" {
+        return Reading::Inactive;
     }
     let through = || {
         Until::ALL
@@ -440,6 +453,11 @@ pub(crate) async fn wait(
                     waited,
                 ),
             };
+            if args.aws_run.is_some() && selected.is_empty() {
+                say(
+                    "Proofline records a CodePipeline deploy after its execution succeeds. A reader inside that execution waits until its timeout. Read the checks from a later pipeline.",
+                );
+            }
             say(&ended);
             return Ok(verdict);
         }
@@ -498,6 +516,14 @@ fn count(deploys: usize) -> String {
 
 /// The deploy's environment, task, run and attempts, as its lines start.
 fn label(deploy: &CommitDeploy) -> String {
+    if let (Some(provider), Some(run)) = (&deploy.aws_provider, &deploy.aws_run_id) {
+        let name = match provider.as_str() {
+            "AWS_CODEPIPELINE" => "CodePipeline",
+            "AWS_AMPLIFY" => "Amplify",
+            other => other,
+        };
+        return format!("{} run {}", text::one_line(name), text::one_line(run));
+    }
     let mut label = vec![
         deploy
             .github_environment
@@ -600,9 +626,9 @@ fn rollback_line(rollback: &CommitDeployRollback) -> String {
     parts.join("; ")
 }
 
-/// The line the job ends with. When every deploy that is not established was
-/// replaced before the check, has no checks, or ended its checks without the
-/// named one, it says so and names their pages.
+/// The line the job ends with. When every deploy that is not established
+/// never landed, was replaced before the check, has no checks, or ended its
+/// checks without the named one, it says so and names their pages.
 fn ending(
     verdict: Verdict,
     judged: &[(&CommitDeploy, Reading)],
@@ -620,7 +646,7 @@ fn ending(
             causes(judged)
         ),
         _ if readings.is_empty() && recorded > 0 => format!(
-            "Proofline recorded {} of {name} at {commit}, and none matches --environment-id, --environment, --task, --deployment, --run or --attempt after {minutes} minutes. The result is not established.",
+            "Proofline recorded {} of {name} at {commit}, and none matches --environment-id, --aws-run, --environment, --task, --deployment, --run or --attempt after {minutes} minutes. The result is not established.",
             count(recorded)
         ),
         _ if readings.is_empty() => format!(
@@ -632,6 +658,11 @@ fn ending(
         _ if readings.contains(&Reading::UnknownState) => format!(
             "A deploy of {name} at {commit} reads a state this version of the CLI does not know: {}. Its checks are not read as no regression until the CLI is updated. The result is not established.",
             unknown_states(judged)
+        ),
+        _ if only(&readings, Reading::Inactive) => format!(
+            "The {checkpoint} check will not be recorded, because {} of {name} at {commit} never landed{}. The result is not established.",
+            this(&readings, Reading::Inactive),
+            pages(judged, Reading::Inactive)
         ),
         _ if only(&readings, Reading::Superseded) => format!(
             "A later deploy replaced {} of {name} at {commit} before the {checkpoint} check, so that check will not be recorded{}. The result is not established.",
@@ -902,6 +933,10 @@ mod tests {
         later_gap["checkpoints"][1]["gaps"] = json!(["SIGNAL_NO_DATA"]);
         let mut unverified = deploy("deploy", &[1], &[], &[]);
         unverified["state"] = json!("UNVERIFIED");
+        // A deploy whose GitHub deployments only went inactive, as when its
+        // job was cancelled, never landed and records no check.
+        let mut inactive = deploy("deploy", &[1], &[], &[]);
+        inactive["state"] = json!("INACTIVE");
         // A verification that ended after its 20-minute check: its hour check
         // will never be recorded, while the checks it did record stay readable.
         let mut finished = deploy("deploy", &[1], &["HEALTHY", "HEALTHY"], &[]);
@@ -1003,6 +1038,12 @@ mod tests {
                 "no deploy checks",
                 &[][..],
                 recorded(&[unverified]),
+                Verdict::NotComplete,
+            ),
+            (
+                "never landed",
+                &[][..],
+                recorded(std::slice::from_ref(&inactive)),
                 Verdict::NotComplete,
             ),
             (
@@ -1111,6 +1152,20 @@ mod tests {
         );
         assert!(
             last.contains("HOUR_1") && last.contains("https://console.proofline.example/deploys/1"),
+            "{last}"
+        );
+        let inactive: CommitDeploy = serde_json::from_value(inactive).unwrap();
+        let last = ending(
+            Verdict::NotComplete,
+            &[(&inactive, judge(&inactive, Until::Landing))],
+            1,
+            "acme/app",
+            COMMIT,
+            "LANDING",
+            30,
+        );
+        assert!(
+            last.contains("https://console.proofline.example/deploys/1"),
             "{last}"
         );
         let mut lines = output.lines();
@@ -1379,6 +1434,29 @@ mod tests {
         assert!(took >= Duration::from_secs(49 * 60), "{took:?}");
         assert!(took < Duration::from_secs(51 * 60), "{took:?}");
 
+        // A landing check due 75 minutes from now that a reread records 40
+        // minutes into the wait is read, past the 30-minute floor, and the
+        // wait exits 0. A due time already past keeps 30 minutes.
+        let mut unrecorded = deploy("deploy", &[1], &[], &[]);
+        let due_at = i64::try_from(crate::device::now()).unwrap() + 75 * 60;
+        unrecorded["checkpoints"][0]["due_at"] = json!(crate::tests::rfc3339(due_at));
+        let mut healthy = deploy("deploy", &[1], &["HEALTHY"], &[]);
+        healthy["checkpoints"][0]["due_at"] = json!(crate::tests::rfc3339(due_at));
+        // Reads 0 to 4 come at 0, 5, 15, 35 and 75 seconds, then each minute;
+        // read 43 is the first at least 40 minutes in.
+        let mut answers = vec![recorded(&[unrecorded]); 43];
+        answers.push(recorded(&[healthy]));
+        let (verdict, reads, took) = run(None, &[], answers).await;
+        assert_eq!(verdict.unwrap(), Verdict::Done);
+        assert_eq!(reads, 44);
+        assert!(took >= Duration::from_secs(40 * 60), "{took:?}");
+        assert!(took < Duration::from_secs(41 * 60), "{took:?}");
+        let past = recorded(&[deploy("deploy", &[1], &[], &[])]);
+        let (verdict, _, took) = run(None, &[], vec![past]).await;
+        assert_eq!(verdict.unwrap(), Verdict::NotComplete);
+        assert!(took >= Duration::from_secs(30 * 60), "{took:?}");
+        assert!(took < Duration::from_secs(31 * 60), "{took:?}");
+
         // A read that fails with a 5xx answer after one that answered does
         // not end the wait: it reads again on its schedule, and an answer
         // resets the count, so seven failures, at most four in a row, still
@@ -1442,6 +1520,66 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_selection_decides_which_deploys_count() {
         assert!(args(&["--run", "7"]).check_reader_run(Some(7)).is_err());
+
+        // One commit has three different landing verdicts. The Amplify job
+        // and Actions run have the same numeric ID.
+        let execution = "8ab8018c-91e4-482c-90bd-db212b3ec393";
+        let aws = json!({
+            "environment_id": ORG,
+            "aws_provider": "AWS_CODEPIPELINE",
+            "aws_run_id": execution,
+            "state": "NOT_YET_DUE",
+            "regressed": false,
+            "checkpoints": [{"checkpoint": "LANDING", "result": "HEALTHY",
+                             "due_at": "2026-11-21T00:00:00Z"}],
+            "gaps": []
+        });
+        let mut amplify = aws.clone();
+        amplify["aws_provider"] = json!("AWS_AMPLIFY");
+        amplify["aws_run_id"] = json!("7");
+        amplify["regressed"] = json!(true);
+        amplify["checkpoints"][0]["result"] = json!("REGRESSED");
+        let mixed = recorded(&[
+            aws,
+            amplify,
+            deploy(
+                "deploy",
+                &[1],
+                &["INCOMPLETE"],
+                &["RUNTIME_INVENTORY_STALE"],
+            ),
+        ]);
+        for (flags, ended) in [
+            (&["--aws-run", execution][..], Verdict::Done),
+            (&["--aws-run", "7"][..], Verdict::Regressed),
+            (
+                &["--aws-run", execution, "--environment-id", ORG][..],
+                Verdict::Done,
+            ),
+            (&["--run", "7"][..], Verdict::NotComplete),
+            (
+                &["--aws-run", execution, "--run", "7", "--timeout", "0"][..],
+                Verdict::NotComplete,
+            ),
+            (
+                &["--aws-run", "missing", "--timeout", "0"][..],
+                Verdict::NotComplete,
+            ),
+            (
+                &[
+                    "--aws-run",
+                    execution,
+                    "--environment-id",
+                    REPOSITORY,
+                    "--timeout",
+                    "0",
+                ][..],
+                Verdict::NotComplete,
+            ),
+        ] {
+            let (verdict, ..) = run(None, flags, vec![mixed.clone()]).await;
+            assert_eq!(verdict.unwrap(), ended, "{flags:?}");
+        }
 
         let tasks = recorded(&[
             deploy("deploy:web", &[1], &["HEALTHY"], &[]),
@@ -1682,6 +1820,9 @@ mod tests {
             Some("0123456789abcdef0123456789abcdef01234567")
         );
         assert_eq!((explicit.run, explicit.attempt), (Some(8), None));
+        let mut aws_reader = args(&["--aws-run", execution]);
+        aws_reader.follow(&produced, false);
+        assert_eq!((aws_reader.run, aws_reader.attempt), (None, None));
         let mut cloud_build = args(&[]);
         cloud_build.follow(&produced, true);
         assert_eq!(cloud_build.commit, None);
@@ -1703,7 +1844,8 @@ mod tests {
         for (flags, until_due) in [
             (&["--until", "20m"][..], true),
             (&["--until", "1h"][..], true),
-            (&[][..], false),
+            (&[][..], true),
+            (&["--timeout", "30"][..], false),
             (&["--until", "1h", "--timeout", "5"][..], false),
         ] {
             assert_eq!(args(flags).waits_until_due(), until_due, "{flags:?}");

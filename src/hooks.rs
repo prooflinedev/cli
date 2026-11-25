@@ -565,9 +565,10 @@ fn assessment_line(assessment: &Assessment, complete: bool) -> String {
     }
 }
 
-/// Whether the review has a finding at or above `fail_on`. As in `ci review`,
-/// a CODE finding counts only in a complete review and while it is not
-/// `RESOLVED`; an environment finding counts in any review.
+/// Whether the review has a finding at or above `fail_on`. A hook's review
+/// has no finding decisions, so its findings decide: a CODE finding counts
+/// only in a complete review and while it is not `RESOLVED`; an environment
+/// finding counts in any review.
 fn reaches_fail_on(detail: &ReviewDetail, complete: bool, fail_on: Severity) -> bool {
     let code = outcome::code_assessment(detail)
         .is_some_and(|code| complete && outcome::code_reaches(code, fail_on));

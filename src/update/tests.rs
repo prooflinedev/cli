@@ -81,7 +81,16 @@ fn installer_directory_and_bounded_cache() {
     fs::write(&binary, b"binary").unwrap();
     let binary = fs::canonicalize(binary).unwrap();
     assert_eq!(install_path(&binary, directory.path()).unwrap(), binary);
-    assert!(install_path(&directory.path().join("cargo/proofline"), directory.path()).is_err());
+    // A binary elsewhere gets the same refusal whether or not the installer
+    // directory exists, and it names the variable for a custom one.
+    let foreign = directory.path().join("cargo/proofline");
+    let installer = directory.path().join("bin");
+    fs::create_dir_all(&installer).unwrap();
+    let existing = install_path(&foreign, &installer).unwrap_err().to_string();
+    fs::remove_dir(&installer).unwrap();
+    let missing = install_path(&foreign, &installer).unwrap_err().to_string();
+    assert_eq!(existing, missing);
+    assert!(missing.contains("PROOFLINE_INSTALL_DIR"), "{missing}");
     let cache = directory.path().join("cache/update.json");
     write_cache(
         &cache,
@@ -192,7 +201,21 @@ fn notices_are_suppressed_for_machine_and_hook_commands() {
         assert!(suggestion(&cache, &args, true).is_none(), "{args:?}");
     }
     assert!(suggestion(&cache, &["status".into()], false).is_none());
-    assert!(suggestion(&cache, &["status".into()], true).is_some());
+    let latest = suggestion(&cache, &["status".into()], true).unwrap();
+    // Only a binary `proofline update` replaces is told to run it.
+    for (updater, suggests_command) in [
+        (Updater::Command, true),
+        (Updater::WindowsDownload, false),
+        (Updater::Original, false),
+    ] {
+        let shown = notice(&latest, updater);
+        assert!(shown.contains("9.0.0"), "{shown}");
+        assert_eq!(
+            shown.contains("proofline update"),
+            suggests_command,
+            "{shown}"
+        );
+    }
 }
 
 // This same test executable supplies a real child fixture. All endpoint and
@@ -228,14 +251,14 @@ async fn detached_discovery_is_serialized_and_notices_arrive_on_the_next_invocat
                 .env(MODE, "worker")
                 .env(CACHE, &path)
                 .env(ADDRESS, address);
-            let notice = tokio::task::spawn_blocking(move || {
+            let latest = tokio::task::spawn_blocking(move || {
                 prepare_check(&path, &["status".into()], true, || spawn_check(worker))
             })
             .await
             .unwrap()
             .unwrap();
-            if let Some(notice) = notice {
-                println!("{notice}");
+            if let Some(latest) = latest {
+                println!("{}", notice(&latest, Updater::Command));
             }
         }
         return;

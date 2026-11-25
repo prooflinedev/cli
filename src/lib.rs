@@ -44,8 +44,8 @@ mod knowledge;
 mod tools;
 
 use crate::model::{
-    CodeAssessment, CommitReviewRequest, FileReviewRequest, OpenItems, PatchReviewRequest,
-    RepositoryNames, ReviewDetail, ReviewFilters, ReviewSummary,
+    CommitReviewRequest, FileReviewRequest, OpenItems, PatchReviewRequest, RepositoryNames,
+    ReviewDetail, ReviewFilters, ReviewSummary,
 };
 use crate::origin::{DEFAULT_ORIGIN, Origin};
 use crate::outcome::Outcome;
@@ -1481,12 +1481,7 @@ async fn ci_review(
         state,
         OutputFormat::from_json(args.json),
     )?;
-    let verdict = ci_verdict(
-        state,
-        detail.open_items.as_ref(),
-        outcome::code_assessment(&detail),
-        args.fail_on,
-    );
+    let verdict = ci_verdict(state, detail.open_items.as_ref(), args.fail_on);
     say_ci_ending(api, review_id, &detail, state, verdict, args.timeout);
     Ok(verdict)
 }
@@ -1620,14 +1615,13 @@ fn say_ci_ending(
 /// How `ci review` ends for a review read as `state`. Completeness decides
 /// first: only a complete review is measured against `fail_on`, because the
 /// findings of a review that did not finish are not its whole result. The
-/// server counts open ENV findings and their current decisions. CODE findings
-/// have no projected decisions. Those of a complete CODE assessment are
-/// measured by their recorded severity and lifecycle. Without the ENV counts
-/// the threshold cannot be measured, which is never a pass.
+/// server's `open_items` counts alone measure it: they hold the open findings
+/// of both lanes under their current decisions, so a finding someone
+/// dismissed, accepted as a risk or marked fixed does not count. Without the
+/// counts the threshold cannot be measured, which is never a pass.
 fn ci_verdict(
     state: Option<Outcome>,
     open_items: Option<&OpenItems>,
-    code_assessment: Option<&CodeAssessment>,
     fail_on: Option<Severity>,
 ) -> Verdict {
     match state {
@@ -1641,9 +1635,7 @@ fn ci_verdict(
                     Severity::Warning => open.open_findings,
                     Severity::Serious => open.serious_findings,
                 };
-                let code_reaches =
-                    code_assessment.is_some_and(|code| outcome::code_reaches(code, threshold));
-                if count > 0 || code_reaches {
+                if count > 0 {
                     Verdict::ThresholdReached
                 } else {
                     Verdict::Done
@@ -1655,7 +1647,7 @@ fn ci_verdict(
 
 /// How `review --fail-on` ends for a complete review. A pull request counts
 /// its open items, as `ci review` does; other reviews have no finding
-/// decisions, so their findings count, as in a Git hook.
+/// decisions, so their unresolved findings count, as in a Git hook.
 fn review_verdict(detail: &ReviewDetail, fail_on: Option<Severity>) -> Verdict {
     let Some(threshold) = fail_on else {
         return Verdict::Done;
@@ -1664,7 +1656,6 @@ fn review_verdict(detail: &ReviewDetail, fail_on: Option<Severity>) -> Verdict {
         return ci_verdict(
             Some(Outcome::Completed),
             detail.open_items.as_ref(),
-            outcome::code_assessment(detail),
             fail_on,
         );
     }
@@ -2270,7 +2261,7 @@ mod tests {
             (None, Verdict::Unavailable),
         ] {
             assert_eq!(
-                ci_verdict(state, Some(&open(1, 1)), None, serious),
+                ci_verdict(state, Some(&open(1, 1)), serious),
                 verdict,
                 "{state:?}"
             );
@@ -2289,14 +2280,14 @@ mod tests {
             (None, serious, Verdict::Unavailable),
         ] {
             assert_eq!(
-                ci_verdict(complete, counts.as_ref(), None, fail_on),
+                ci_verdict(complete, counts.as_ref(), fail_on),
                 verdict,
                 "{counts:?} {fail_on:?}"
             );
         }
         // A gap decides before the missing counts do.
         assert_eq!(
-            ci_verdict(Some(Outcome::Incomplete), None, None, serious),
+            ci_verdict(Some(Outcome::Incomplete), None, serious),
             Verdict::NotComplete
         );
     }

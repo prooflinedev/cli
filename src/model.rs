@@ -414,6 +414,10 @@ pub struct CommitDeployVerifications {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct CommitDeploy {
     pub environment_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aws_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aws_run_id: Option<String>,
     #[serde(default)]
     pub github_environment: Option<String>,
     #[serde(default)]

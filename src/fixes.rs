@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum FixCommand {
-    /// List open ENV findings at a pull request's live head, retaining availability and gaps.
+    /// List open ENV, migration compatibility and stored-check CODE findings at a pull request's live head, retaining availability and gaps.
     List {
         #[arg(long)]
         repo: String,

@@ -152,11 +152,13 @@ pub(crate) fn code_unavailable(review: &ReviewDetail) -> bool {
             || (review.assessment_count == 0 && review.assessments.is_empty()))
 }
 
-/// Whether an open finding of a complete CODE assessment reaches `threshold`.
-/// CODE findings have no projected decisions, so their recorded lifecycle and
-/// severity decide. Complete environments complete a review even beside a
-/// partial CODE assessment, and a partial assessment's findings are not its
-/// whole result.
+/// Whether an open finding of a complete CODE assessment reaches `threshold`,
+/// for a review that has no finding decisions: a patch, range, commit or file
+/// review, or a Git hook. Its recorded lifecycle and severity decide. A
+/// pull-request review is measured by the server's `open_items` counts
+/// instead, which hold both lanes and their decisions. Complete environments
+/// complete a review even beside a partial CODE assessment, and a partial
+/// assessment's findings are not its whole result.
 pub(crate) fn code_reaches(code: &CodeAssessment, threshold: Severity) -> bool {
     code_gap(code).is_none()
         && code

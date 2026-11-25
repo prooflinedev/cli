@@ -801,6 +801,20 @@
       "CommitDeploy": {
         "description": "One deploy of the commit and where its verification stands.",
         "properties": {
+          "aws_provider": {
+            "description": "The provider of an AWS deploy (`AWS_CODEPIPELINE` or `AWS_AMPLIFY`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "aws_run_id": {
+            "description": "The `CodePipeline` execution ID or Amplify job ID.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "checkpoints": {
             "description": "The four checks in order, each with its recorded result, if any, and\n when a missing one becomes overdue. Empty when no verification of\n the deploy exists.",
             "items": {
@@ -835,7 +849,7 @@
             "type": "array"
           },
           "github_deployment_ids": {
-            "description": "The ID of each GitHub deployment the deploy holds, ascending: the\n deployment a pipeline created, or each one an Actions run's jobs\n created. A deployment outside Actions is a deploy of its own, so two\n of one commit, GitHub Environment and task read apart by this ID.\n Every listed deploy holds one; a server from before the field existed\n omits it.",
+            "description": "The ID of each GitHub deployment the deploy holds, ascending: the\n deployment a pipeline created, or each one an Actions run's jobs\n created. A deployment outside Actions is a deploy of its own, so two\n of one commit, GitHub Environment and task read apart by this ID.\n Every GitHub deploy holds one; a server from before the field existed\n omits it.",
             "items": {
               "format": "int64",
               "type": "integer"
@@ -3688,7 +3702,8 @@
         "enum": [
           "outcome",
           "code_changed",
-          "post_merge"
+          "post_merge",
+          "published"
         ],
         "type": "string"
       },
@@ -7260,7 +7275,7 @@
   },
   "info": {
     "title": "Proofline Review API",
-    "version": "10.1.0"
+    "version": "10.2.0"
   },
   "openapi": "3.1.0",
   "paths": {
