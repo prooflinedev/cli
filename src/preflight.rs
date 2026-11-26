@@ -176,6 +176,10 @@ fn alphanumeric(byte: u8) -> bool {
     byte.is_ascii_alphanumeric()
 }
 
+fn hexadecimal(byte: u8) -> bool {
+    byte.is_ascii_hexdigit()
+}
+
 fn upper_or_digit(byte: u8) -> bool {
     byte.is_ascii_uppercase() || byte.is_ascii_digit()
 }
@@ -273,20 +277,234 @@ const TOKEN_SHAPES: &[TokenShape] = &[
         minimum: 52,
         body: base32,
     },
+    TokenShape {
+        kind: "a GitLab token",
+        prefixes: &["glpat-", "glrt-", "glptt-"],
+        minimum: 20,
+        body: token_byte,
+    },
+    TokenShape {
+        kind: "an npm token",
+        prefixes: &["npm_"],
+        minimum: 36,
+        body: token_byte,
+    },
+    TokenShape {
+        kind: "a PyPI token",
+        prefixes: &["pypi-AgEIcHlwaS5vcmc"],
+        minimum: 40,
+        body: token_byte,
+    },
+    TokenShape {
+        kind: "a SendGrid API key",
+        prefixes: &["SG."],
+        minimum: 22,
+        body: token_byte,
+    },
+    TokenShape {
+        kind: "a Mailgun API key",
+        prefixes: &["key-"],
+        minimum: 32,
+        body: token_byte,
+    },
+    TokenShape {
+        kind: "a DigitalOcean token",
+        prefixes: &["dop_v1_", "dosa_v1_"],
+        minimum: 40,
+        body: token_byte,
+    },
+    TokenShape {
+        kind: "a Twilio API key",
+        prefixes: &["SK"],
+        minimum: 32,
+        body: hexadecimal,
+    },
 ];
 
-/// Literal private-key markers and distinctive credential prefixes. This
-/// check refuses the original bytes; it never rewrites the reviewed patch.
+/// A signed JWT: three base64url segments, the first two of which are JSON
+/// objects and so start with `eyJ`. An `alg=none` token has no signature and
+/// carries no credential, so it is deliberately not named.
+fn has_jwt(text: &str) -> bool {
+    text.match_indices("eyJ").any(|(start, _)| {
+        let Some(tail) = text.get(start..) else {
+            return false;
+        };
+        let Some(header_end) = tail.find('.') else {
+            return false;
+        };
+        let Some(header) = tail.get(..header_end) else {
+            return false;
+        };
+        if header.len() < 12 || !header.bytes().all(token_byte) {
+            return false;
+        }
+        let Some(rest) = tail.get(header_end + 1..) else {
+            return false;
+        };
+        if !rest.starts_with("eyJ") {
+            return false;
+        }
+        let Some(payload_end) = rest.find('.') else {
+            return false;
+        };
+        let Some(payload) = rest.get(..payload_end) else {
+            return false;
+        };
+        if payload.len() < 12 || !payload.bytes().all(token_byte) {
+            return false;
+        }
+        // Quotes and statement punctuation follow the signature in source;
+        // only its leading base64url bytes are part of the token.
+        let Some(signature) = rest.get(payload_end + 1..) else {
+            return false;
+        };
+        signature
+            .bytes()
+            .take_while(|byte| token_byte(*byte))
+            .count()
+            >= 8
+    })
+}
+
+/// A Telegram bot token: a numeric bot ID, a colon, and a 35-character secret.
+fn has_telegram_bot_token(text: &str) -> bool {
+    text.match_indices(':').any(|(colon, _)| {
+        let (Some(before), Some(after)) = (text.get(..colon), text.get(colon + 1..)) else {
+            return false;
+        };
+        let digits = before.bytes().rev().take_while(u8::is_ascii_digit).count();
+        digits >= 8 && after.len() >= 35 && after.bytes().take(35).all(token_byte)
+    })
+}
+
+/// The two sides of a credential assignment in source, JSON, YAML or a shell
+/// file. Only one line is inspected, so a multi-line value is out of scope.
+fn assignment(text: &str) -> Option<(&str, &str)> {
+    let (name, value) = match text.split_once('=') {
+        Some(parts) => parts,
+        None => text.split_once(':')?,
+    };
+    let mut name = name.trim();
+    for prefix in [
+        "export ", "let ", "const ", "var ", "final ", "static ", "val ", "pub ",
+    ] {
+        if let Some(rest) = name.strip_prefix(prefix) {
+            name = rest.trim();
+            break;
+        }
+    }
+    let name = name.trim_matches(|character| matches!(character, '"' | '\'' | '`'));
+    if name.is_empty() {
+        return None;
+    }
+    let value = value
+        .trim()
+        .trim_end_matches([';', ','])
+        .trim()
+        .trim_matches(|character| matches!(character, '"' | '\'' | '`'));
+    Some((name, value))
+}
+
+/// Whether an assignment's name asks for a credential. Public keys and public
+/// hashes are not credentials, even when their values are long and varied.
+fn secret_name(name: &str) -> bool {
+    let lowered = name.to_ascii_lowercase();
+    if lowered.contains("public")
+        || lowered.contains("certificate")
+        || lowered.contains("fingerprint")
+        || lowered.contains("checksum")
+    {
+        return false;
+    }
+    lowered
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .any(|part| {
+            matches!(
+                part,
+                "key"
+                    | "secret"
+                    | "token"
+                    | "password"
+                    | "passwd"
+                    | "pwd"
+                    | "credential"
+                    | "credentials"
+                    | "apikey"
+                    | "authtoken"
+                    | "authorization"
+                    | "auth"
+                    | "session"
+                    | "cookie"
+                    | "signature"
+                    | "bearer"
+                    | "encryptionkey"
+                    | "masterkey"
+            )
+        })
+}
+
+/// Whether an opaque value looks like a credential rather than a placeholder:
+/// long, ASCII, without spaces, with many distinct characters and no character
+/// dominating it. Integer counts keep this rule independent of float rounding.
+fn diverse(value: &str) -> bool {
+    if value.len() < 20 || value.len() > 512 {
+        return false;
+    }
+    let mut counts = [0usize; 128];
+    let mut distinct = 0usize;
+    let mut most = 0usize;
+    for byte in value.bytes() {
+        if byte >= 128 {
+            return false;
+        }
+        let count = &mut counts[usize::from(byte)];
+        if *count == 0 {
+            distinct += 1;
+        }
+        *count += 1;
+        most = most.max(*count);
+    }
+    distinct >= 12 && most * 2 <= value.len()
+}
+
+/// A credential in a named assignment catches providers without a distinctive
+/// prefix, such as a 40-character AWS secret access key.
+fn assigned_secret(text: &str) -> bool {
+    let Some((name, value)) = assignment(text) else {
+        return false;
+    };
+    secret_name(name)
+        && !value.starts_with("${")
+        && !value.starts_with('<')
+        && !value.contains("://")
+        && diverse(value)
+}
+
+/// Literal private-key markers, distinctive credential prefixes, structured
+/// tokens and credential assignments. This check refuses the original bytes;
+/// it never rewrites the reviewed patch.
 fn secret_shape(text: &str) -> Option<&'static str> {
     if (text.contains("-----BEGIN ") || text.contains("-----END "))
         && (text.contains("PRIVATE KEY-----") || text.contains("PRIVATE KEY BLOCK-----"))
     {
         return Some("a private-key marker");
     }
-    TOKEN_SHAPES
+    if let Some(shape) = TOKEN_SHAPES
         .iter()
         .find(|shape| has_token(text, shape.prefixes, shape.minimum, shape.body))
-        .map(|shape| shape.kind)
+    {
+        return Some(shape.kind);
+    }
+    if has_jwt(text) {
+        return Some("a JSON Web Token");
+    }
+    if has_telegram_bot_token(text) {
+        return Some("a Telegram bot token");
+    }
+    if assigned_secret(text) {
+        return Some("a credential assignment");
+    }
+    None
 }
 
 #[cfg(test)]
@@ -387,5 +605,61 @@ mod tests {
             secret_shape("ordinary source text without credentials"),
             None
         );
+    }
+
+    #[test]
+    fn additional_credential_families_are_refused() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+        let cases = [
+            (format!("glpat-{}", "A".repeat(20)), "a GitLab token"),
+            (format!("npm_{}", "a".repeat(36)), "an npm token"),
+            (
+                format!("pypi-AgEIcHlwaS5vcmc{}", "a".repeat(48)),
+                "a PyPI token",
+            ),
+            (format!("SG.{}", "a".repeat(22)), "a SendGrid API key"),
+            (format!("key-{}", "a".repeat(32)), "a Mailgun API key"),
+            (format!("dop_v1_{}", "a".repeat(40)), "a DigitalOcean token"),
+            (format!("SK{}", "a".repeat(32)), "a Twilio API key"),
+            (
+                format!("123456789:{}", "A".repeat(35)),
+                "a Telegram bot token",
+            ),
+            (jwt.to_owned(), "a JSON Web Token"),
+        ];
+        for (text, kind) in cases {
+            assert_eq!(secret_shape(&text), Some(kind), "{text}");
+        }
+    }
+
+    #[test]
+    fn high_entropy_credential_assignments_are_refused() {
+        let value = "aB3dE5gH7jK9mN2pQ4rS6tU8vW0xY1z";
+        for line in [
+            format!("AWS_SECRET_ACCESS_KEY={value}"),
+            format!("\"api_key\": \"{value}\""),
+            format!("export CLIENT_SECRET='{value}';"),
+            format!("authToken: {value}"),
+        ] {
+            assert_eq!(
+                secret_shape(&line),
+                Some("a credential assignment"),
+                "{line}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_assignments_and_placeholders_are_allowed() {
+        for line in [
+            "version = \"1.2.3\"",
+            "public_key = \"ssh-rsa AAAAB3NzaC1yc2EAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"",
+            "api_key = \"${API_KEY}\"",
+            "token = \"your_token_here\"",
+            "author = \"Some Very Long Author Name Here\"",
+            "checksum = \"0123456789abcdef0123456789abcdef\"",
+        ] {
+            assert_eq!(secret_shape(line), None, "{line}");
+        }
     }
 }

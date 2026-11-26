@@ -961,6 +961,34 @@ async fn local_path_keeps_secret_preflight_and_can_select_a_deleted_file() {
 }
 
 #[tokio::test]
+async fn newly_covered_credential_families_refuse_before_http() {
+    let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    let gitlab = format!("glpat-{}", "A".repeat(20));
+    for (secret, diagnostic) in [
+        (gitlab.as_str(), "\"config.ts\":1 (new line)"),
+        (jwt, "\"client.ts\":1 (new line)"),
+    ] {
+        let checkout = Checkout::new(&[]).await;
+        if secret == jwt {
+            checkout
+                .write("client.ts", &format!("const token = \"{secret}\";\n"))
+                .await;
+        } else {
+            checkout
+                .write("config.ts", &format!("const token = \"{secret}\";\n"))
+                .await;
+        }
+        let server = Server::start(true).await;
+        let output = checkout
+            .review(&server, &[], &["--include-untracked"])
+            .await;
+        assert_refusal(&output, diagnostic, secret);
+        server.assert_no_requests();
+        server.close().await;
+    }
+}
+
+#[tokio::test]
 async fn local_path_never_expands_a_file_replaced_by_a_directory() {
     let checkout = Checkout::new(&[("selected", "base\n")]).await;
     tokio::fs::remove_file(checkout.root().join("selected"))
