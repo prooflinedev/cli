@@ -142,7 +142,11 @@ pub(crate) async fn export(api: &Api, args: &ExportArgs) -> anyhow::Result<Verdi
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .unwrap_or_default();
-    if content_type.split(';').next().map(str::trim) != Some(accept)
+    let matching_media_type = content_type
+        .split(';')
+        .next()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case(accept));
+    if !matching_media_type
         || !reply
             .headers
             .get("x-proofline-export-version")
