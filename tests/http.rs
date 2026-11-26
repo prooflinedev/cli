@@ -432,17 +432,31 @@ struct Fake {
     polls: Arc<AtomicUsize>,
     report_organization: bool,
     summary: Option<Value>,
+    /// Fields that replace the stand-in's own device-code reply.
+    challenge: Option<Value>,
 }
 
-async fn code() -> Json<Value> {
-    Json(json!({
+/// Answers with approval pages on the stand-in's own origin, as the console does.
+/// `ORIGIN` in an overriding field stands for that origin.
+async fn code(State(fake): State<Fake>, headers: HeaderMap) -> Json<Value> {
+    let origin = format!("http://{}", headers[header::HOST].to_str().unwrap());
+    let mut body = json!({
         "device_code": "d".repeat(52),
         "user_code": "WDJB-MJHT",
-        "verification_uri": "http://127.0.0.1/auth/device",
-        "verification_uri_complete": "http://127.0.0.1/auth/device?user_code=WDJB-MJHT",
+        "verification_uri": format!("{origin}/auth/device"),
+        "verification_uri_complete": format!("{origin}/auth/device?user_code=WDJB-MJHT"),
         "expires_in": 600,
         "interval": 1,
-    }))
+    });
+    if let Some(Value::Object(fields)) = fake.challenge {
+        for (name, value) in fields {
+            body[name] = match value {
+                Value::String(text) => Value::String(text.replace("ORIGIN", &origin)),
+                other => other,
+            };
+        }
+    }
+    Json(body)
 }
 
 async fn token(State(fake): State<Fake>, Json(body): Json<Value>) -> Response {
@@ -582,11 +596,25 @@ fn org() -> Uuid {
 async fn device_sign_in_waits_for_approval_and_keeps_the_organization() {
     let fake = Fake {
         report_organization: true,
+        // Same-origin pages whose dot segments the parsed URL removes.
+        challenge: Some(json!({
+            "verification_uri": "ORIGIN/auth/./device",
+            "verification_uri_complete": "ORIGIN/auth/x/../device?user_code=WDJB-MJHT",
+        })),
         ..Fake::default()
     };
-    let http = Http::new(serve(fake.clone()).await).unwrap();
+    let origin = serve(fake.clone()).await;
+    let http = Http::new(origin.clone()).unwrap();
     let challenge = device::start(&http, &[]).await.unwrap();
     assert_eq!(challenge.user_code.expose_secret(), "WDJB-MJHT");
+    assert_eq!(challenge.verification_uri, format!("{origin}/auth/device"));
+    assert_eq!(
+        challenge
+            .verification_uri_complete
+            .as_ref()
+            .map(|complete| complete.expose_secret().to_owned()),
+        Some(format!("{origin}/auth/device?user_code=WDJB-MJHT"))
+    );
     assert!(format!("{challenge:?}").contains("REDACTED"));
     assert!(!format!("{challenge:?}").contains("WDJB"));
     let credential = device::finish(&http, &challenge, None).await.unwrap();
@@ -598,6 +626,61 @@ async fn device_sign_in_waits_for_approval_and_keeps_the_organization() {
         Some("reviews:read findings:read")
     );
     assert!(!format!("{credential:?}").contains(TOKEN));
+}
+
+#[tokio::test]
+async fn a_sign_in_page_on_another_origin_is_refused() {
+    for (field, address) in [
+        ("verification_uri", "https://proofline.example/auth/device"),
+        (
+            "verification_uri_complete",
+            "https://proofline.example/auth/device?user_code=WDJB-MJHT",
+        ),
+        (
+            "verification_uri_complete",
+            "file:///C:/Windows/System32/calc.exe",
+        ),
+        // Same scheme and host as the stand-in, whose port is never 1.
+        ("verification_uri", "http://127.0.0.1:1/auth/device"),
+        ("verification_uri", "not a url"),
+        // A blob: URL takes the origin of the URL inside it.
+        ("verification_uri_complete", "blob:ORIGIN/0190f3a0"),
+    ] {
+        let http = Http::new(
+            serve(Fake {
+                challenge: Some(json!({ field: address })),
+                ..Fake::default()
+            })
+            .await,
+        )
+        .unwrap();
+        let refusal = device::start(&http, &[]).await.unwrap_err();
+        assert!(
+            matches!(&refusal, DeviceError::Api(ApiError::Protocol { .. })),
+            "{field} = {address}: {refusal:?}"
+        );
+        assert!(refusal.to_string().contains(field), "{refusal}");
+    }
+}
+
+#[tokio::test]
+async fn a_sign_in_code_that_could_rewrite_the_terminal_is_refused() {
+    for code in ["WDJB-MJHT\u{1b}[2J", "WDJB-\u{202E}THJM", "WDJB\nMJHT"] {
+        let http = Http::new(
+            serve(Fake {
+                challenge: Some(json!({ "user_code": code })),
+                ..Fake::default()
+            })
+            .await,
+        )
+        .unwrap();
+        let refusal = device::start(&http, &[]).await.unwrap_err();
+        assert!(
+            matches!(&refusal, DeviceError::Api(ApiError::Protocol { .. })),
+            "{code:?}: {refusal:?}"
+        );
+        assert!(!refusal.to_string().contains(code), "{refusal}");
+    }
 }
 
 #[tokio::test]

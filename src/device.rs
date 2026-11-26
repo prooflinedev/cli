@@ -6,10 +6,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::Deserialize;
+use url::Url;
 use uuid::Uuid;
 
 use crate::api::{ApiError, Http};
 use crate::credentials::{Credential, Source};
+use crate::text;
 
 const GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
 const SLOW_DOWN_SECONDS: u64 = 5;
@@ -75,14 +77,41 @@ pub async fn start(http: &Http, scopes: &[String]) -> Result<Challenge, DeviceEr
     }
     let body: ChallengeBody =
         serde_json::from_slice(&reply.body).map_err(|error| http.protocol(error.to_string()))?;
+    // The code is printed for the person to type, so it must not carry
+    // characters that could move the cursor or reorder the text.
+    if text::one_line(&body.user_code) != body.user_code {
+        return Err(http
+            .protocol("user_code contains control characters")
+            .into());
+    }
+    let verification_uri = approval_page(http, "verification_uri", &body.verification_uri)?;
+    let verification_uri_complete = body
+        .verification_uri_complete
+        .map(|address| approval_page(http, "verification_uri_complete", &address))
+        .transpose()?;
     Ok(Challenge {
         device_code: SecretString::from(body.device_code),
         user_code: SecretString::from(body.user_code),
-        verification_uri: body.verification_uri,
-        verification_uri_complete: body.verification_uri_complete.map(SecretString::from),
+        verification_uri,
+        verification_uri_complete: verification_uri_complete.map(SecretString::from),
         expires_in: body.expires_in,
         interval: body.interval.max(1),
     })
+}
+
+/// Returns `address` when it is a page on the console's own origin. The CLI
+/// opens it in a browser, so a page on another site, or a `file:` or custom
+/// scheme, is refused. The scheme is checked too, because a `blob:` URL takes
+/// the origin of the URL inside it. The serialized URL is ASCII, so it is safe
+/// to print.
+fn approval_page(http: &Http, field: &str, address: &str) -> Result<String, ApiError> {
+    let page = Url::parse(address).map_err(|_| http.protocol(format!("{field} is not a URL")))?;
+    if !matches!(page.scheme(), "http" | "https")
+        || page.origin().ascii_serialization() != http.origin().as_key()
+    {
+        return Err(http.protocol(format!("{field} is not on {}", http.origin())));
+    }
+    Ok(page.into())
 }
 
 /// Polls until the person approves, refuses or the code expires.
