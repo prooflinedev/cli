@@ -145,6 +145,19 @@ enum HookAction {
     },
 }
 
+pub(crate) async fn inspect_hooks(dir: &Path) -> Result<Vec<(&'static str, bool)>, git::GitError> {
+    let hooks_dir = git::hooks_dir(dir).await?;
+    let mut results = Vec::with_capacity(Hook::ALL.len());
+    for hook in Hook::ALL {
+        let path = hooks_dir.join(hook.name());
+        let installed = tokio::fs::read_to_string(&path)
+            .await
+            .is_ok_and(|content| content.contains(MARKER) || content.contains(&hook.line()));
+        results.push((hook.name(), installed));
+    }
+    Ok(results)
+}
+
 pub(crate) async fn manage(args: HooksArgs) -> anyhow::Result<()> {
     let here = Path::new(".");
     match args.action {

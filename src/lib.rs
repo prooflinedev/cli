@@ -10,6 +10,7 @@ mod coverage;
 pub mod credentials;
 mod deploy;
 pub mod device;
+mod doctor;
 pub mod git;
 mod github_actions;
 mod hooks;
@@ -162,6 +163,8 @@ enum Command {
     Logout,
     /// Show which organization and token the CLI uses.
     Status,
+    /// Diagnose environment, TLS, credentials, Git, hooks, and MCP setup.
+    Doctor(doctor::DoctorArgs),
     /// Review the checkout's local changes, pushed commits, or an open pull
     /// request's current head.
     Review(ReviewArgs),
@@ -427,6 +430,9 @@ pub enum Verdict {
 
 /// Runs one command. `token` is `PROOFLINE_TOKEN`, read by the caller.
 pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdict> {
+    if let Command::Doctor(args) = cli.command {
+        return doctor::run(args, &cli.base_url, cli.ca_cert.as_deref(), token, cli.org).await;
+    }
     if let Some(path) = &cli.ca_cert {
         tls::trust(path)?;
     }
@@ -551,6 +557,7 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
         Command::Status => status(Http::new(origin)?, token, cli.org)
             .await
             .map(|()| Verdict::Done),
+        Command::Doctor(_) => unreachable!("handled before origin and TLS setup"),
         Command::Review(args) => {
             let api = connect(Http::new(origin)?, token, cli.org).await?;
             review(&api, &args).await
