@@ -504,7 +504,7 @@
         "type": "object"
       },
       "CheckFile": {
-        "description": "One file World cited for a check's result.",
+        "description": "One file the evaluator cited for a check's result.",
         "properties": {
           "path": {
             "allOf": [
@@ -520,7 +520,7 @@
                 "$ref": "#/components/schemas/CheckFileRevision"
               }
             ],
-            "description": "The revision World read the file at."
+            "description": "The revision the evaluator read the file at."
           }
         },
         "required": [
@@ -545,7 +545,7 @@
         ]
       },
       "CheckLifecycle": {
-        "description": "World's lifecycle disclosure for the evaluator version that answered, as\n the receipt recorded it. A deployment gate counts only `GATING` results\n (`DeterministicCoverage::gate_effective_status`), and only when it\n evaluates a deployment; the lifecycle alone permits or blocks nothing.",
+        "description": "The lifecycle the evaluator disclosed for the version that answered, as\n the receipt recorded it. A deployment gate counts only `GATING` results\n (`DeterministicCoverage::gate_effective_status`), and only when it\n evaluates a deployment; the lifecycle alone permits or blocks nothing.",
         "oneOf": [
           {
             "const": "GATING",
@@ -1173,7 +1173,7 @@
                 "$ref": "#/components/schemas/CustomerChecks"
               }
             ],
-            "description": "The deterministic World checks recorded for this assessment."
+            "description": "The deterministic environment checks recorded for this assessment.\n Only assessments made by the check evaluator Proofline retired on\n 2026-11-05 carry them. A later assessment records none, and\n `receipt_recorded` is then false."
           },
           "completed_at": {
             "description": "When the assessment completed. Null while it has not.",
@@ -1261,7 +1261,7 @@
                 "$ref": "#/components/schemas/CustomerChecks"
               }
             ],
-            "description": "The deterministic World checks recorded for this assessment."
+            "description": "The deterministic environment checks recorded for this assessment.\n Only assessments made by the check evaluator Proofline retired on\n 2026-11-05 carry them. A later assessment records none, and\n `receipt_recorded` is then false."
           },
           "completed_at": {
             "description": "When the assessment completed. Null while it has not.",
@@ -1358,21 +1358,21 @@
       "CustomerCheck": {
         "properties": {
           "detail": {
-            "description": "Why World refused the check, or otherwise World's recorded explanation\n of the result. Null when neither is recorded.",
+            "description": "Why the evaluator refused the check, or otherwise its recorded\n explanation of the result. Null when neither is recorded.",
             "type": [
               "string",
               "null"
             ]
           },
           "evaluated_at": {
-            "description": "When World evaluated this answer. A reused answer is evidence from\n this instant, which can precede the assessment.",
+            "description": "When the evaluator produced this answer. A reused answer is evidence\n from this instant, which can precede the assessment.",
             "type": [
               "string",
               "null"
             ]
           },
           "files": {
-            "description": "The files World cited as evidence for this result, once each in\n World's order, with the revision World read each at. Empty when World\n cited no file, and on results recorded before World cited files.",
+            "description": "The files the evaluator cited as evidence for this result, once each\n in the evaluator's order, with the revision it read each at. Empty\n when it cited no file, and on results recorded before it cited files.",
             "items": {
               "$ref": "#/components/schemas/CheckFile"
             },
@@ -1403,7 +1403,7 @@
                 "type": "null"
               }
             ],
-            "description": "Why an `UNRESOLVED` check did not settle, as World's verdict gave it.\n Absent on every other outcome, and on an unresolved receipt whose\n verdict names none of these reasons."
+            "description": "Why an `UNRESOLVED` check did not settle, as the evaluator's verdict\n gave it.\n Absent on every other outcome, and on an unresolved receipt whose\n verdict names none of these reasons."
           }
         },
         "required": [
@@ -1440,7 +1440,7 @@
         "type": "object"
       },
       "CustomerCodeAssessment": {
-        "description": "The review's code assessment as it recorded its run. Its findings\n rest on the pinned code alone, never on World evidence.",
+        "description": "The review's code assessment as it recorded its run. Its findings\n rest on the pinned code alone, never on infrastructure evidence.",
         "properties": {
           "base_commit_sha": {
             "description": "The base commit the code assessment compared the head with.",
@@ -1568,7 +1568,7 @@
             "type": "string"
           },
           "label": {
-            "description": "The reference's display label, such as a path with its line range. A\n recorded read, a vendor documentation read, a customer tool call, a\n static analysis result or an unnamed World entity carries a fixed\n label, and a deterministic test carries its check's readable name.",
+            "description": "The reference's display label, such as a path with its line range. A\n recorded read, a vendor documentation read, a customer tool call, a\n static analysis result or an unnamed infrastructure entity carries a fixed\n label, and a deterministic test carries its check's readable name.",
             "type": "string"
           },
           "legacy_text": {
@@ -1951,7 +1951,7 @@
                 "type": "null"
               }
             ],
-            "description": "The change-level diagram: the changed call path from the pinned code\n index and the relations World declares. Absent when the review\n recorded none."
+            "description": "The change-level diagram: the changed call path from the pinned code\n index. A diagram recorded by the check evaluator Proofline retired on\n 2026-11-05 can also show the environment relations it returned.\n Absent when the review recorded none."
           },
           "change_summary": {
             "anyOf": [
@@ -3365,7 +3365,7 @@
           },
           {
             "const": "WORLD_EVIDENCED",
-            "description": "A World entity or deterministic World evaluation at the pinned snapshot.",
+            "description": "An infrastructure entity or deterministic check result at the pinned\n snapshot, recorded by the check evaluator Proofline retired on\n 2026-11-05.",
             "type": "string"
           },
           {
@@ -7100,11 +7100,11 @@
         "type": "string"
       },
       "UnresolvedReason": {
-        "description": "World's reason an executed check did not settle. A gate weighs the three\n alike, and each asks the reader for a different response.",
+        "description": "The evaluator's reason an executed check did not settle. A gate weighs the three\n alike, and each asks the reader for a different response.",
         "oneOf": [
           {
             "const": "NEEDS_EVIDENCE",
-            "description": "The evidence World held neither established nor refuted the property.",
+            "description": "The evidence the evaluator held neither established nor refuted the\n property.",
             "type": "string"
           },
           {
