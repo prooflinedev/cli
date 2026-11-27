@@ -199,6 +199,9 @@ struct FindingProperties<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     environment: Option<&'a str>,
     lifecycle_state: &'a str,
+    // A decision can expire unseen, so it is data here, never a suppression.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    decision: Option<&'a str>,
     location_status: LocationStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     remediation: Option<&'a str>,
@@ -582,6 +585,10 @@ fn finding_result<'a>(
             lane,
             environment,
             lifecycle_state: &finding.lifecycle_state,
+            decision: finding
+                .latest_validation
+                .as_ref()
+                .map(|decision| decision.validation.as_str()),
             location_status,
             remediation: finding.remediation.as_deref(),
             evidence_references,

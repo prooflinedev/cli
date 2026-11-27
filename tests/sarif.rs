@@ -655,6 +655,13 @@ async fn sarif_retains_identity_and_filters_locations_at_the_recorded_head() {
     }));
     let mut retained = finding(1, "SERIOUS", references);
     retained["finding_fingerprint"] = json!(FINGERPRINT);
+    retained["latest_validation"] = json!({
+        "validation": "ACCEPTED_RISK",
+        "source": "UI",
+        "recorded_at": "2026-10-01T00:00:00Z",
+        "actor_name": "Ada",
+        "actor_login": "ada",
+    });
     let console = Console::new(review(vec![retained, finding(2, "WARNING", Vec::new())]));
     let origin = serve(console.clone()).await;
     let schema = schema();
@@ -699,6 +706,10 @@ async fn sarif_retains_identity_and_filters_locations_at_the_recorded_head() {
         finding(1, "SERIOUS", Vec::new())["id"]
     );
     assert_eq!(serious["level"], "error");
+    // A decision can expire unseen, so it is recorded data, not a suppression.
+    assert_eq!(serious["properties"]["decision"], "ACCEPTED_RISK");
+    assert!(serious.get("suppressions").is_none());
+    assert!(run["results"][1]["properties"].get("decision").is_none());
     assert_eq!(serious["ruleId"], "data_integrity");
     let rule_index = serious["ruleIndex"].as_u64().unwrap();
     let rule_index = usize::try_from(rule_index).unwrap();

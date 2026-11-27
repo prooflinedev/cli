@@ -333,6 +333,7 @@ mod tests {
             assessments,
             code_assessment: None,
             subjects: Vec::new(),
+            investigation_findings: Vec::new(),
             base_commit_sha: None,
             head_commit_sha: None,
             open_items: None,
@@ -355,6 +356,7 @@ mod tests {
             lifecycle_state: lifecycle_state.to_owned(),
             remediation: None,
             evidence_refs: Vec::new(),
+            latest_validation: None,
         }
     }
 
