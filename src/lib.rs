@@ -298,6 +298,18 @@ struct LocalSelectionArgs {
     include_untracked: bool,
 }
 
+/// What a local review shows without a server.
+#[derive(Debug, Args)]
+struct LocalPreviewArgs {
+    /// Print what this local review would send and every reason the secret
+    /// preflight refuses it, without signing in or sending anything.
+    #[arg(
+        long,
+        conflicts_with_all = ["schema", "pr", "commit", "range", "files", "verify", "no_wait", "fail_on", "json"]
+    )]
+    dry_run: bool,
+}
+
 #[derive(Debug, Args)]
 struct ReviewArgs {
     /// Print the JSON result schema without requesting or reading a review.
@@ -309,6 +321,8 @@ struct ReviewArgs {
     pr: Option<u64>,
     #[command(flatten)]
     local_selection: LocalSelectionArgs,
+    #[command(flatten)]
+    local_preview: LocalPreviewArgs,
     /// Review the change this pushed commit makes against its first parent.
     /// The name is resolved once in the checkout; GitHub must have both commits.
     /// With --files, review complete selected files at that commit instead.
@@ -437,6 +451,11 @@ pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdic
         let mut stdout = std::io::stdout().lock();
         writeln!(stdout, "{}", serde_json::to_string_pretty(&document)?)?;
         return Ok(Verdict::Done);
+    }
+    if let Command::Review(args) = &cli.command
+        && args.local_preview.dry_run
+    {
+        return review_dry_run(args).await;
     }
     match &cli.command {
         Command::Completions { shell } => {
@@ -1053,16 +1072,67 @@ async fn review(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
     finish(api, requested.review_id, args).await
 }
 
-/// Reviews the checkout's local changes against the commit they build on.
-/// Nothing is pushed: GitHub needs only the base commit.
-async fn review_local(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
-    let selection = if args.local_selection.staged {
+/// The bytes a local review reads, from the selection flags.
+fn local_selection(args: &ReviewArgs) -> git::LocalSelection {
+    if args.local_selection.staged {
         git::LocalSelection::Staged
     } else if args.local_selection.include_untracked {
         git::LocalSelection::IncludeUntracked
     } else {
         git::LocalSelection::Tracked
-    };
+    }
+}
+
+/// What one patch entry does, with Git's own path bytes quoted so a control
+/// character in a name never reaches the terminal.
+fn describe(path: &git::PatchPaths) -> String {
+    match (&path.old, &path.new) {
+        (None, Some(new)) => format!("added {new:?}"),
+        (Some(old), None) => format!("deleted {old:?}"),
+        (Some(old), Some(new)) if old != new => format!("renamed {old:?} -> {new:?}"),
+        (Some(path), Some(_)) => format!("modified {path:?}"),
+        // Git always names at least one endpoint of a patch entry.
+        (None, None) => "changed, with no path".to_owned(),
+    }
+}
+
+/// Prints the patch a local review would send and every reason the preflight
+/// refuses it. It reads no credential and makes no request, so a person can
+/// check a checkout before signing in.
+async fn review_dry_run(args: &ReviewArgs) -> anyhow::Result<Verdict> {
+    let changes = git::local_changes(
+        std::path::Path::new("."),
+        &args.repository.remote,
+        local_selection(args),
+        args.path.as_deref(),
+    )
+    .await?;
+    let files = changes.files();
+    if files == 0 {
+        say(&format!(
+            "Nothing to review: the selected local changes match {}.",
+            changes.base_commit_sha
+        ));
+        return Ok(Verdict::Done);
+    }
+    say(&format!(
+        "Local review would send {files} changed {} ({} bytes of patch) against {}.",
+        if files == 1 { "file" } else { "files" },
+        changes.patch.len(),
+        changes.base_commit_sha
+    ));
+    for path in &changes.paths {
+        say(&format!("  {}", describe(path)));
+    }
+    preflight::check(&changes, &args.allow_path)?;
+    say("The secret preflight passed. Nothing was sent.");
+    Ok(Verdict::Done)
+}
+
+/// Reviews the checkout's local changes against the commit they build on.
+/// Nothing is pushed: GitHub needs only the base commit.
+async fn review_local(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
+    let selection = local_selection(args);
     let changes = git::local_changes(
         std::path::Path::new("."),
         &args.repository.remote,

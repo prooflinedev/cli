@@ -514,7 +514,7 @@ async fn local_selection_uploads_only_selected_bytes_and_refuses_before_http() {
     let output = checkout
         .review(&server, &[], &["--include-untracked"])
         .await;
-    assert_refusal(&output, "sensitive .env path \".env.local\"", &github);
+    assert_refusal(&output, "\".env.local\": a sensitive .env path", &github);
     assert_eq!(server.fixture.requests.load(Ordering::SeqCst), requests);
     assert_eq!(*server.fixture.uploads.lock().unwrap(), uploads);
     assert_eq!(checkout.index().await, index);
@@ -551,6 +551,59 @@ async fn local_selection_uploads_only_selected_bytes_and_refuses_before_http() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("3,000 files"));
     server.assert_no_requests();
     assert_eq!(checkout.index().await, index);
+    server.close().await;
+}
+
+#[tokio::test]
+async fn a_dry_run_prints_the_patch_and_sends_nothing() {
+    let checkout = Checkout::new(&[("kept.txt", "one\n"), ("old.txt", "gone\n")]).await;
+    checkout.write("kept.txt", "one\ntwo\n").await;
+    checkout.write("added.txt", "new\n").await;
+    checkout.git(&["rm", "-q", "old.txt"]).await;
+    let server = Server::start(true).await;
+    let output = checkout
+        .review_and_wait(&server, &[], &["--dry-run", "--include-untracked"])
+        .await;
+    let text = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(0), "{text}");
+    assert!(output.stdout.is_empty());
+    assert!(text.contains("would send 3 changed files"), "{text}");
+    for line in [
+        "added \"added.txt\"",
+        "modified \"kept.txt\"",
+        "deleted \"old.txt\"",
+        "The secret preflight passed. Nothing was sent.",
+    ] {
+        assert!(text.contains(line), "{line}: {text}");
+    }
+    server.assert_no_requests();
+    server.close().await;
+}
+
+#[tokio::test]
+async fn a_dry_run_reports_every_refused_path_in_one_run() {
+    let github = format!("ghp_{}", "D".repeat(36));
+    let checkout = Checkout::new(&[("kept.txt", "one\n")]).await;
+    checkout.write("kept.txt", "AKIAIOSFODNN7EXAMPLE\n").await;
+    checkout.write("added.txt", &format!("{github}\n")).await;
+    checkout.write(".env.local", "SETTING=local\n").await;
+    let server = Server::start(true).await;
+    let output = checkout
+        .review_and_wait(&server, &[], &["--dry-run", "--include-untracked"])
+        .await;
+    let text = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(output.stdout.is_empty());
+    assert!(text.contains("local patch has 3 problems"), "{text}");
+    for line in [
+        "\".env.local\": a sensitive .env path",
+        "\"added.txt\":1 (new line): a GitHub token",
+        "\"kept.txt\":1 (new line): an AWS access-key ID",
+    ] {
+        assert!(text.contains(line), "{line}: {text}");
+    }
+    assert!(!text.contains(&github), "{text}");
+    server.assert_no_requests();
     server.close().await;
 }
 
@@ -623,9 +676,9 @@ async fn exact_overrides_keep_other_paths_blocked_and_upload_the_original_patch(
     let index = checkout.index().await;
     let server = Server::start(true).await;
     for (allowed, diagnostic) in [
-        (vec![], "sensitive .env path \".env.local\""),
+        (vec![], "\".env.local\": a sensitive .env path"),
         (vec![".env.local"], "\"nested/token.txt\":2 (new line)"),
-        (vec!["*"], "sensitive .env path \".env.local\""),
+        (vec!["*"], "\".env.local\": a sensitive .env path"),
         (
             vec![".env.local", "nested"],
             "\"nested/token.txt\":2 (new line)",
@@ -674,8 +727,11 @@ async fn a_sensitive_rename_requires_both_exact_endpoints() {
     let index = checkout.index().await;
     let server = Server::start(true).await;
     for (allowed, diagnostic) in [
-        (vec![], "sensitive .env path \".env.old\""),
-        (vec![".env.old"], "sensitive .env path \"config/.env.prod\""),
+        (vec![], "\".env.old\": a sensitive .env path"),
+        (
+            vec![".env.old"],
+            "\"config/.env.prod\": a sensitive .env path",
+        ),
     ] {
         let output = checkout.review(&server, &allowed, &[]).await;
         assert_refusal(&output, diagnostic, private);

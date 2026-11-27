@@ -1,6 +1,13 @@
 //! Local refusals before any patch bytes leave the checkout.
 
+use std::fmt;
+
 use crate::git::{LocalChanges, PatchPaths};
+
+/// How many refused lines the report prints before it counts the rest. A
+/// patch may hold thousands of files, and a wall of lines hides the first
+/// one the person must fix anyway.
+const SHOWN: usize = 20;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum PreflightError {
@@ -8,21 +15,61 @@ pub(crate) enum PreflightError {
         "--allow-path {0:?} is not an exact repository-relative path; use the path from the local refusal"
     )]
     InvalidAllowPath(String),
-    #[error(
-        "local patch includes the sensitive .env path {0:?}; remove it before upload, or pass --allow-path for that exact path"
-    )]
-    EnvironmentPath(String),
-    #[error(
-        "local patch contains {kind} at {path:?}:{line} ({coordinate}); remove it before upload, or pass --allow-path for that exact path"
-    )]
+    #[error("{0}")]
+    Refused(Refusals),
+    #[error("could not map the local patch to file paths and lines; no review was requested")]
+    InvalidPatch,
+}
+
+/// Every problem in the patch, in patch order. One run names them all, so the
+/// person removes them in one edit instead of one run per secret.
+#[derive(Debug)]
+pub(crate) struct Refusals(Vec<Issue>);
+
+#[derive(Debug)]
+enum Issue {
+    /// A path Git tracks as an environment file, whatever its content.
+    SensitivePath(String),
+    /// A credential shape on one patch line.
     Secret {
         path: String,
         line: usize,
         coordinate: &'static str,
         kind: &'static str,
     },
-    #[error("could not map the local patch to file paths and lines; no review was requested")]
-    InvalidPatch,
+}
+
+impl fmt::Display for Refusals {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let count = self.0.len();
+        write!(
+            formatter,
+            "local patch has {count} {}; remove {} before upload, or pass --allow-path for each exact path:",
+            if count == 1 { "problem" } else { "problems" },
+            if count == 1 { "it" } else { "them" },
+        )?;
+        for issue in self.0.iter().take(SHOWN) {
+            write!(formatter, "\n  {issue}")?;
+        }
+        if count > SHOWN {
+            write!(formatter, "\n  and {} more", count - SHOWN)?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for Issue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SensitivePath(path) => write!(formatter, "{path:?}: a sensitive .env path"),
+            Self::Secret {
+                path,
+                line,
+                coordinate,
+                kind,
+            } => write!(formatter, "{path:?}:{line} ({coordinate}): {kind}"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -38,39 +85,52 @@ pub(crate) fn check(changes: &LocalChanges, allowed: &[String]) -> Result<(), Pr
         }
     }
     let mut paths = changes.paths.iter();
-    let mut current = None;
+    let mut current: Option<(&PatchPaths, bool)> = None;
     let mut hunk = None;
+    let mut found = Vec::new();
     for (patch_line, line) in changes.patch.lines().enumerate() {
         if line.starts_with("diff --git ") {
             let file = paths.next().ok_or(PreflightError::InvalidPatch)?;
-            environment_paths(file, allowed)?;
-            current = Some(file);
+            // A refused path is not scanned line by line: every one of its
+            // lines would repeat the same refusal.
+            let refused = environment_paths(file, allowed, &mut found);
+            current = Some((file, refused));
             hunk = None;
             continue;
         }
-        let file = current.ok_or(PreflightError::InvalidPatch)?;
+        let (file, refused) = *current.as_ref().ok_or(PreflightError::InvalidPatch)?;
         if line.starts_with("@@ ") {
             // A section heading can quote a line outside the hunk. Its exact
             // coordinate is a patch line, not a guessed source-file line.
-            inspect(
-                file.new.as_deref().or(file.old.as_deref()),
-                patch_line + 1,
-                "patch line",
-                line,
-                allowed,
-            )?;
+            if !refused {
+                inspect(
+                    file.new.as_deref().or(file.old.as_deref()),
+                    patch_line + 1,
+                    "patch line",
+                    line,
+                    allowed,
+                    &mut found,
+                )?;
+            }
             hunk = Some(hunk_lines(line)?);
         } else if let Some(lines) = &mut hunk {
-            inspect_hunk(file, lines, line, allowed)?;
+            inspect_hunk(file, lines, line, allowed, refused, &mut found)?;
         }
     }
     if paths.next().is_some() {
         return Err(PreflightError::InvalidPatch);
     }
-    Ok(())
+    if found.is_empty() {
+        Ok(())
+    } else {
+        Err(PreflightError::Refused(Refusals(found)))
+    }
 }
 
-fn environment_paths(file: &PatchPaths, allowed: &[String]) -> Result<(), PreflightError> {
+/// Collects a refusal for each endpoint Git tracks as an environment file,
+/// and reports whether the file's lines still need a scan.
+fn environment_paths(file: &PatchPaths, allowed: &[String], found: &mut Vec<Issue>) -> bool {
+    let mut refused = false;
     for path in [&file.old, &file.new]
         .iter()
         .filter_map(|path| path.as_deref())
@@ -80,10 +140,11 @@ fn environment_paths(file: &PatchPaths, allowed: &[String]) -> Result<(), Prefli
                 .split('/')
                 .any(|part| part == ".env" || part.starts_with(".env."))
         {
-            return Err(PreflightError::EnvironmentPath(path.to_owned()));
+            found.push(Issue::SensitivePath(path.to_owned()));
+            refused = true;
         }
     }
-    Ok(())
+    refused
 }
 
 fn hunk_lines(line: &str) -> Result<Lines, PreflightError> {
@@ -116,21 +177,44 @@ fn inspect_hunk(
     lines: &mut Lines,
     line: &str,
     allowed: &[String],
+    refused: bool,
+    found: &mut Vec<Issue>,
 ) -> Result<(), PreflightError> {
     if let Some(text) = line.strip_prefix('+') {
-        inspect(file.new.as_deref(), lines.new, "new line", text, allowed)?;
+        if !refused {
+            inspect(
+                file.new.as_deref(),
+                lines.new,
+                "new line",
+                text,
+                allowed,
+                found,
+            )?;
+        }
         lines.new = next_line(lines.new)?;
     } else if let Some(text) = line.strip_prefix('-') {
-        inspect(file.old.as_deref(), lines.old, "base line", text, allowed)?;
+        if !refused {
+            inspect(
+                file.old.as_deref(),
+                lines.old,
+                "base line",
+                text,
+                allowed,
+                found,
+            )?;
+        }
         lines.old = next_line(lines.old)?;
     } else if let Some(text) = line.strip_prefix(' ') {
-        inspect(
-            file.new.as_deref().or(file.old.as_deref()),
-            lines.new,
-            "new line",
-            text,
-            allowed,
-        )?;
+        if !refused {
+            inspect(
+                file.new.as_deref().or(file.old.as_deref()),
+                lines.new,
+                "new line",
+                text,
+                allowed,
+                found,
+            )?;
+        }
         lines.old = next_line(lines.old)?;
         lines.new = next_line(lines.new)?;
     } else if !line.starts_with("\\ No newline at end of file") {
@@ -149,12 +233,13 @@ fn inspect(
     coordinate: &'static str,
     text: &str,
     allowed: &[String],
+    found: &mut Vec<Issue>,
 ) -> Result<(), PreflightError> {
     let path = path.ok_or(PreflightError::InvalidPatch)?;
     if !is_allowed(path, allowed)
         && let Some(kind) = secret_shape(text)
     {
-        return Err(PreflightError::Secret {
+        found.push(Issue::Secret {
             path: path.to_owned(),
             line,
             coordinate,
@@ -291,7 +376,30 @@ fn secret_shape(text: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::secret_shape;
+    use super::{Issue, Refusals, SHOWN, secret_shape};
+
+    #[test]
+    fn every_refusal_is_listed_once_and_the_tail_is_counted() {
+        let one = Refusals(vec![Issue::SensitivePath(".env".to_owned())]);
+        assert_eq!(
+            one.to_string(),
+            "local patch has 1 problem; remove it before upload, or pass --allow-path for each exact path:\n  \".env\": a sensitive .env path"
+        );
+        let many = Refusals(
+            (1..=SHOWN + 2)
+                .map(|line| Issue::Secret {
+                    path: "src/a.rs".to_owned(),
+                    line,
+                    coordinate: "new line",
+                    kind: "a GitHub token",
+                })
+                .collect(),
+        );
+        let text = many.to_string();
+        assert!(text.starts_with("local patch has 22 problems;"), "{text}");
+        assert!(text.ends_with("\n  and 2 more"), "{text}");
+        assert_eq!(text.lines().count(), SHOWN + 2);
+    }
 
     #[test]
     fn credential_families_refuse_minimum_bodies_but_accept_short_or_invalid_ones() {
