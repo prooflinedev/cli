@@ -612,6 +612,277 @@ async fn each_pushed_branch_is_reviewed_against_the_commit_the_remote_has() {
 }
 
 #[tokio::test]
+async fn a_pushed_branch_is_not_reviewed_with_commits_from_the_default_branch() {
+    let checkout = Checkout::new().await;
+    let uploads = Uploads::default();
+    let origin = serve(uploads.clone(), "SERIOUS", false).await;
+    checkout.git(&["checkout", "-q", "-b", "feature"]).await;
+    let pushed = checkout.commit("feature.rs", "fn feature() {}\n").await;
+    // Another change reaches the default branch after the branch was pushed.
+    checkout.git(&["checkout", "-q", "main"]).await;
+    let main = checkout.commit("teammate.rs", "fn teammate() {}\n").await;
+    checkout
+        .git(&["update-ref", "refs/remotes/origin/main", &main])
+        .await;
+    let unknown = "1".repeat(40);
+    // (how the branch is updated, the remote's commit, the expected base)
+    let cases = [
+        ("merge", pushed.as_str(), main.as_str()),
+        ("rebase", pushed.as_str(), main.as_str()),
+        ("amend", pushed.as_str(), pushed.as_str()),
+        ("amend", unknown.as_str(), checkout.base.as_str()),
+    ];
+    for (update, remote_sha, expected_base) in cases {
+        checkout
+            .git(&["checkout", "-q", "-B", "feature", &pushed])
+            .await;
+        match update {
+            "merge" => {
+                checkout
+                    .git(&["merge", "-q", "--no-edit", "origin/main"])
+                    .await;
+            }
+            "rebase" => {
+                checkout.git(&["rebase", "-q", "origin/main"]).await;
+            }
+            _ => {
+                checkout.git(&["reset", "-q", "--soft", "HEAD~"]).await;
+            }
+        }
+        let head = checkout
+            .commit("feature.rs", "fn feature() { pushed() }\n")
+            .await;
+        // Push the branch without it checked out, so a base read from HEAD
+        // instead of the pushed commit fails the amend cases.
+        checkout.git(&["checkout", "-q", "main"]).await;
+        uploads.lock().unwrap().clear();
+        let output = checkout
+            .proofline(
+                &origin,
+                &[
+                    "hook",
+                    "run",
+                    "pre-push",
+                    "origin",
+                    "https://github.com/acme/web.git",
+                ],
+                &format!("refs/heads/feature {head} refs/heads/feature {remote_sha}\n"),
+            )
+            .await;
+        let case = format!("{update} over {remote_sha}");
+        assert_eq!(output.status.code(), Some(0), "{case}: {}", stderr(&output));
+        let uploads = uploads.lock().unwrap();
+        assert_eq!(uploads.len(), 1, "{case}");
+        assert_eq!(uploads[0]["base_commit_sha"], expected_base, "{case}");
+        let patch = uploads[0]["patch"].as_str().unwrap();
+        assert!(patch.contains("+fn feature() { pushed() }"), "{case}");
+        // Against the remote's commit, the patch is only the change to it;
+        // against a merge-base, it adds the whole file.
+        assert_eq!(
+            patch.contains("-fn feature() {}"),
+            expected_base == pushed,
+            "{case}: {patch}"
+        );
+        assert!(!patch.contains("teammate"), "{case}: {patch}");
+    }
+}
+
+#[tokio::test]
+async fn a_pushed_commit_the_tracking_ref_holds_is_reviewed_against_the_commit_the_remote_has() {
+    let checkout = Checkout::new().await;
+    let uploads = Uploads::default();
+    let origin = serve(uploads.clone(), "SERIOUS", false).await;
+    // The remote's main was rewound to the base, but this checkout's
+    // tracking ref still holds the commit each push now restores.
+    let restored = checkout
+        .commit("orders.rs", "fn main() { restored() }\n")
+        .await;
+    // A further local commit on top: its merge-base with the tracking ref is
+    // the restored commit, which the destination checks alone must skip.
+    let extended = checkout.commit("extra.rs", "fn extra() {}\n").await;
+    checkout
+        .git(&["update-ref", "refs/remotes/origin/main", &restored])
+        .await;
+    // (the pushed local ref, the pushed commit, the destination ref)
+    let pushes = [
+        // The default branch, pushed from a differently named branch.
+        ("refs/heads/restore", &restored, "refs/heads/main"),
+        ("refs/heads/restore", &extended, "refs/heads/main"),
+        // Another branch the remote also had at the base.
+        ("refs/heads/feature", &restored, "refs/heads/feature"),
+        // A destination that is not a branch, from a branch that is not the
+        // default either.
+        ("refs/heads/topic", &restored, "refs/for/main"),
+        ("refs/heads/topic", &extended, "refs/for/main"),
+    ];
+    for (local_ref, pushed, remote_ref) in pushes {
+        uploads.lock().unwrap().clear();
+        let output = checkout
+            .proofline(
+                &origin,
+                &[
+                    "hook",
+                    "run",
+                    "pre-push",
+                    "origin",
+                    "https://github.com/acme/web.git",
+                ],
+                &format!("{local_ref} {pushed} {remote_ref} {}\n", checkout.base),
+            )
+            .await;
+        let case = format!("{local_ref} at {pushed} to {remote_ref}");
+        assert_eq!(output.status.code(), Some(0), "{case}: {}", stderr(&output));
+        let uploads = uploads.lock().unwrap();
+        assert_eq!(uploads.len(), 1, "{case}: {}", stderr(&output));
+        assert_eq!(uploads[0]["base_commit_sha"], checkout.base, "{case}");
+        let patch = uploads[0]["patch"].as_str().unwrap();
+        assert!(
+            patch.contains("+fn main() { restored() }"),
+            "{case}: {patch}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_push_is_not_reviewed_as_empty_when_the_remote_commit_is_missing() {
+    let checkout = Checkout::new().await;
+    let uploads = Uploads::default();
+    let origin = serve(uploads.clone(), "SERIOUS", false).await;
+    // The remote's branch moved to a commit this checkout never fetched,
+    // and the stale tracking ref holds the commit the push restores.
+    let restored = checkout
+        .commit("orders.rs", "fn main() { restored() }\n")
+        .await;
+    let extended = checkout.commit("extra.rs", "fn extra() {}\n").await;
+    checkout
+        .git(&["update-ref", "refs/remotes/origin/main", &restored])
+        .await;
+    checkout
+        .git(&["config", "proofline.hook.pre-push.onIncomplete", "block"])
+        .await;
+    let missing = "1".repeat(40);
+    // (the pushed local ref, the pushed commit, the destination ref). Only a
+    // branch other than the default may fall back to the tracking ref, and
+    // not when that would compare the pushed commit with itself.
+    let pushes = [
+        (
+            "refs/heads/feature",
+            &restored,
+            "refs/heads/feature",
+            "feature",
+        ),
+        (
+            "refs/heads/restore",
+            &extended,
+            "refs/heads/main",
+            "restore",
+        ),
+        ("refs/heads/topic", &extended, "refs/for/main", "topic"),
+    ];
+    for (local_ref, pushed, remote_ref, label) in pushes {
+        uploads.lock().unwrap().clear();
+        let output = checkout
+            .proofline(
+                &origin,
+                &[
+                    "hook",
+                    "run",
+                    "pre-push",
+                    "origin",
+                    "https://github.com/acme/web.git",
+                ],
+                &format!("{local_ref} {pushed} {remote_ref} {missing}\n"),
+            )
+            .await;
+        let text = stderr(&output);
+        let case = format!("{local_ref} to {remote_ref}: {text}");
+        assert!(uploads.lock().unwrap().is_empty(), "{case}");
+        assert!(!text.contains("nothing to review"), "{case}");
+        assert!(
+            text.contains(&format!("could not review {label}")),
+            "{case}"
+        );
+        assert_eq!(output.status.code(), Some(1), "{case}");
+    }
+}
+
+#[tokio::test]
+async fn a_force_push_that_only_drops_branch_changes_is_reviewed() {
+    let checkout = Checkout::new().await;
+    let uploads = Uploads::default();
+    let origin = serve(uploads.clone(), "SERIOUS", false).await;
+    checkout.git(&["checkout", "-q", "-b", "feature"]).await;
+    let pushed = checkout.commit("feature.rs", "fn feature() {}\n").await;
+    checkout.git(&["checkout", "-q", "main"]).await;
+    let main = checkout.commit("teammate.rs", "fn teammate() {}\n").await;
+    checkout
+        .git(&["update-ref", "refs/remotes/origin/main", &main])
+        .await;
+    // An empty commit on the default branch's tip replaces the branch: its
+    // files equal that tip's, but the push removes feature.rs.
+    checkout.git(&["checkout", "-q", "-b", "replacement"]).await;
+    checkout
+        .git(&["commit", "-q", "--allow-empty", "-m", "replace"])
+        .await;
+    let head = checkout.git(&["rev-parse", "HEAD"]).await;
+    checkout.git(&["checkout", "-q", "main"]).await;
+    let output = checkout
+        .proofline(
+            &origin,
+            &[
+                "hook",
+                "run",
+                "pre-push",
+                "origin",
+                "https://github.com/acme/web.git",
+            ],
+            &format!("refs/heads/replacement {head} refs/heads/feature {pushed}\n"),
+        )
+        .await;
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let uploads = uploads.lock().unwrap();
+    assert_eq!(uploads.len(), 1, "{}", stderr(&output));
+    assert_eq!(uploads[0]["base_commit_sha"], pushed);
+    let patch = uploads[0]["patch"].as_str().unwrap();
+    assert!(patch.contains("-fn feature() {}"), "{patch}");
+}
+
+#[tokio::test]
+async fn a_branch_without_history_in_common_with_the_default_branch_keeps_the_remote_commit() {
+    let checkout = Checkout::new().await;
+    let uploads = Uploads::default();
+    let origin = serve(uploads.clone(), "SERIOUS", false).await;
+    // A site branch such as gh-pages starts from no commit of main.
+    checkout.git(&["checkout", "-q", "--orphan", "pages"]).await;
+    checkout.git(&["rm", "-q", "-r", "-f", "."]).await;
+    let pushed = checkout.commit("index.html", "<p>old</p>\n").await;
+    let head = checkout.commit("index.html", "<p>new</p>\n").await;
+    checkout.git(&["checkout", "-q", "main"]).await;
+    let output = checkout
+        .proofline(
+            &origin,
+            &[
+                "hook",
+                "run",
+                "pre-push",
+                "origin",
+                "https://github.com/acme/web.git",
+            ],
+            &format!("refs/heads/pages {head} refs/heads/pages {pushed}\n"),
+        )
+        .await;
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let uploads = uploads.lock().unwrap();
+    assert_eq!(uploads.len(), 1, "{}", stderr(&output));
+    assert_eq!(uploads[0]["base_commit_sha"], pushed);
+    let patch = uploads[0]["patch"].as_str().unwrap();
+    assert!(
+        patch.contains("-<p>old</p>") && patch.contains("+<p>new</p>"),
+        "{patch}"
+    );
+}
+
+#[tokio::test]
 #[ignore = "requires official pre-commit >=3.2.0 on PATH; run this suite with --include-ignored"]
 async fn the_pre_commit_framework_preserves_selection_policy_and_existing_configuration() {
     let checkout = Checkout::new().await;

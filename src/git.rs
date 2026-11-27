@@ -365,6 +365,122 @@ pub async fn new_branch_base(dir: &Path, remote: &str, head: &str) -> Result<Str
     merge_base(dir, remote, &commit_sha(head)?, &[default.as_str()]).await
 }
 
+/// The base of a branch the remote has at `remote_sha`. That commit is the
+/// base while `head` takes in nothing from `remote`'s default branch that
+/// `remote_sha` lacks, so a push reviews only what it adds. After `head`
+/// merged or rebased onto newer default-branch commits, comparing with
+/// `remote_sha` would review those commits again as part of the push, so the
+/// branch is compared with its merge-base with the default branch, as a new
+/// branch is. So is a branch whose remote commit this checkout does not have.
+/// A branch with no default branch to compare with, or no history in common
+/// with it, keeps the remote's commit as its base.
+///
+/// The tracking ref for the default branch can be stale, so it never alone
+/// decides that a push has nothing to review: a push to the default branch
+/// itself, to a destination that is not a branch, or of a commit the
+/// tracking ref already holds also keeps the remote's commit as its base.
+pub async fn pushed_branch_base(
+    dir: &Path,
+    remote: &str,
+    remote_ref: &str,
+    remote_sha: &str,
+    head: &str,
+) -> Result<String, GitError> {
+    let remote_sha = commit_sha(remote_sha)?;
+    let head = commit_sha(head)?;
+    let known = match resolve(dir, &remote_sha).await {
+        Ok(_) => true,
+        Err(GitError::UnknownRevision(_)) => false,
+        Err(error) => return Err(error),
+    };
+    let default = format!("refs/remotes/{remote}/HEAD");
+    // A missing default ref means no default branch, whatever status
+    // `symbolic-ref` exits with for it.
+    let has_default = line_in(dir, &["rev-parse", "--verify", "--quiet", &default])
+        .await
+        .is_ok();
+    let default_branch = if has_default {
+        answer_in(dir, &["symbolic-ref", "--quiet", &default]).await?
+    } else {
+        None
+    };
+    let to_default = default_branch
+        .as_deref()
+        .and_then(|target| target.strip_prefix(&format!("refs/remotes/{remote}/")))
+        .is_some_and(|name| remote_ref.strip_prefix("refs/heads/") == Some(name));
+    if to_default || !remote_ref.starts_with("refs/heads/") {
+        // Only the remote's commit is a base for these destinations.
+        return if known {
+            Ok(remote_sha)
+        } else {
+            Err(GitError::UnknownRevision(remote_sha))
+        };
+    }
+    let fork_point = if has_default {
+        answer_in(dir, &["merge-base", &head, &default])
+            .await?
+            .map(|fork_point| commit_sha(&fork_point))
+            .transpose()?
+    } else {
+        None
+    };
+    let Some(fork_point) = fork_point else {
+        return if known {
+            Ok(remote_sha)
+        } else {
+            Err(GitError::NoBase(remote.to_owned()))
+        };
+    };
+    // A base with the pushed commit's files would review nothing, even
+    // where the push changes what the remote has.
+    let trees = line_in(
+        dir,
+        &[
+            "rev-parse",
+            &format!("{fork_point}^{{tree}}"),
+            &format!("{head}^{{tree}}"),
+        ],
+    )
+    .await?;
+    let trees: Vec<&str> = trees.lines().collect();
+    if trees.first() == trees.get(1) {
+        return if known {
+            Ok(remote_sha)
+        } else {
+            Err(GitError::UnknownRevision(remote_sha))
+        };
+    }
+    let ancestor = ["merge-base", "--is-ancestor", &fork_point, &remote_sha];
+    if known && answer_in(dir, &ancestor).await?.is_some() {
+        Ok(remote_sha)
+    } else {
+        Ok(fork_point)
+    }
+}
+
+/// Runs git in `dir` where exit status 1 is an answer, not a failure: `None`
+/// for status 1 (not an ancestor, no common ancestor), and the trimmed output
+/// otherwise.
+async fn answer_in(dir: &Path, args: &[&str]) -> Result<Option<String>, GitError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .await
+        .map_err(|error| GitError::Unavailable(error.to_string()))?;
+    match output.status.code() {
+        Some(0) => Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        )),
+        Some(1) => Ok(None),
+        _ => Err(GitError::Failed {
+            command: args.join(" "),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        }),
+    }
+}
+
 /// The patch from `base_commit_sha` to `head`, or to `index` when `head` is
 /// `None`.
 async fn diff(
