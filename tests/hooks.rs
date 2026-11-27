@@ -506,6 +506,35 @@ async fn the_exit_policy_blocks_only_on_request_and_never_reads_a_gap_as_clean()
 }
 
 #[tokio::test]
+async fn a_resolved_environment_finding_does_not_block_a_commit() {
+    let checkout = Checkout::new().await;
+    tokio::fs::write(checkout.root().join("orders.rs"), "fn main() { retry() }\n")
+        .await
+        .unwrap();
+    checkout.git(&["add", "orders.rs"]).await;
+    checkout
+        .git(&["config", "proofline.hook.pre-commit.mode", "block"])
+        .await;
+    // The review is complete, and its one environment finding is resolved.
+    let origin = serve_review(
+        Uploads::default(),
+        "COMPLETED",
+        1,
+        findings("SERIOUS", false, "RESOLVED"),
+        None,
+    )
+    .await;
+    let output = checkout
+        .proofline(&origin, &["hook", "run", "pre-commit"], "")
+        .await;
+    let text = stderr(&output);
+    assert_eq!(output.status.code(), Some(0), "{text}");
+    assert!(!text.contains("blocked this commit"), "{text}");
+    // A resolved finding still prints, so the developer sees what was fixed.
+    assert!(text.contains("SERIOUS  orders.rs:1"), "{text}");
+}
+
+#[tokio::test]
 async fn only_a_complete_review_prints_no_findings() {
     let checkout = Checkout::new().await;
     tokio::fs::write(checkout.root().join("orders.rs"), "fn main() { retry() }\n")
