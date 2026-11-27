@@ -1821,20 +1821,42 @@ mod tests {
         grant: Grant,
         exchange: Exchange,
     ) -> (String, Arc<Mutex<Vec<Received>>>) {
+        console_with(start, grant, exchange, &[]).await
+    }
+
+    async fn console_with(
+        start: tokio::time::Instant,
+        grant: Grant,
+        exchange: Exchange,
+        issuer_statuses: &[u16],
+    ) -> (String, Arc<Mutex<Vec<Received>>>) {
         let issued = Arc::new(Mutex::new(0_u32));
         let exchanged = Arc::new(Mutex::new(0_u32));
+        let exchanged_for_deploys = Arc::clone(&exchanged);
+        let issuer_statuses = issuer_statuses.to_vec();
         let app = Router::new()
             .route(
                 "/github/token",
                 get(move || {
                     let issued = Arc::clone(&issued);
+                    let issuer_statuses = issuer_statuses.clone();
                     async move {
                         let number = {
                             let mut issued = issued.lock().unwrap();
                             *issued += 1;
                             *issued
                         };
-                        Json(json!({ "value": format!("job-identity-{number}") }))
+                        let status = issuer_statuses
+                            .get(usize::try_from(number - 1).unwrap())
+                            .or_else(|| issuer_statuses.last())
+                            .copied()
+                            .unwrap_or(200);
+                        if status != 200 {
+                            let status = axum::http::StatusCode::from_u16(status).unwrap();
+                            return (status, Json(json!({ "message": "oidc unavailable" })))
+                                .into_response();
+                        }
+                        Json(json!({ "value": format!("job-identity-{number}") })).into_response()
                     }
                 }),
             )
@@ -1901,6 +1923,37 @@ mod tests {
                         "items": [], "next_cursor": null, "truncated": false,
                         "filters": { "repositories": [], "environments": [], "authors": [] },
                     }))
+                }),
+            )
+            .route(
+                &format!(
+                    "/api/v1/organizations/{ORG}/repositories/{REPOSITORY}/commits/{HEAD}/deploy-verifications"
+                ),
+                get(move || {
+                    let exchanged = Arc::clone(&exchanged_for_deploys);
+                    async move {
+                        let count = *exchanged.lock().unwrap();
+                        let twenty_min = (count >= 2).then_some("HEALTHY");
+                        Json(json!({
+                            "recorded": true,
+                            "deploys": [{
+                                "environment_id": "0190f3a0-0000-7000-8000-0000000000e0",
+                                "github_environment": "production",
+                                "deployment_task": "deploy",
+                                "workflow_run_id": 7,
+                                "workflow_run_attempt": 1,
+                                "workflow_run_attempts": [1],
+                                "state": "NOT_YET_DUE",
+                                "regressed": false,
+                                "checkpoints": [
+                                    { "checkpoint": "LANDING", "result": "HEALTHY", "due_at": "2026-11-21T00:00:00Z" },
+                                    { "checkpoint": "MINUTES_20", "result": twenty_min, "due_at": "2026-11-21T00:20:00Z" }
+                                ],
+                                "gaps": [],
+                                "deploy_url": "https://console.proofline.example/deploys/1",
+                            }]
+                        }))
+                    }
                 }),
             )
             .route(
@@ -2047,6 +2100,14 @@ mod tests {
         grant: Grant,
         exchange: Exchange,
     ) -> (anyhow::Result<Verdict>, Vec<Received>) {
+        pull_request_job_with(grant, exchange, &[]).await
+    }
+
+    async fn pull_request_job_with(
+        grant: Grant,
+        exchange: Exchange,
+        issuer_statuses: &[u16],
+    ) -> (anyhow::Result<Verdict>, Vec<Received>) {
         // As in the test above, a 10 ms ticker bounds each jump of the clock.
         let ticker = tokio::spawn(async {
             for _ in 0..1_000_000 {
@@ -2054,7 +2115,7 @@ mod tests {
             }
         });
         let start = tokio::time::Instant::now();
-        let (origin, received) = console(start, grant, exchange).await;
+        let (origin, received) = console_with(start, grant, exchange, issuer_statuses).await;
         let http = Http::new(Origin::parse(&origin).unwrap()).unwrap();
         let issuer = github_actions::Issuer::new(
             format!("{origin}/github/token").parse().unwrap(),
@@ -2162,6 +2223,94 @@ mod tests {
             let last = received.iter().map(|(_, at, ..)| *at).max().unwrap();
             assert!(last < REQUEST_AFTER, "{status}: {last:?}");
         }
+    }
+
+    /// Runner OIDC 5xx outages at startup or renewal keep `Unavailable` (exit 4)
+    /// attribution to GitHub Actions, while runner 4xx refusals remain non-transient (exit 1).
+    #[tokio::test(start_paused = true)]
+    async fn oidc_issuer_outages_remain_unavailable_and_refusals_do_not() {
+        for (case, exchange, statuses, exit_four) in [
+            ("startup 503", HOURLY, &[503][..], true),
+            ("startup 403", HOURLY, &[403][..], false),
+            ("renewal 503", Exchange::Grants(100), &[200, 503][..], true),
+            ("renewal 403", Exchange::Grants(100), &[200, 403][..], false),
+        ] {
+            let (verdict, received) =
+                pull_request_job_with(Grant::Completes, exchange, statuses).await;
+            let error = verdict.unwrap_err();
+            assert_eq!(unavailable(&error), exit_four, "{case}: {error:#}");
+            let message = format!("{error:#}");
+            assert!(message.contains("GitHub Actions"), "{case}: {message}");
+            assert_eq!(review_requests(&received), 0, "{case}: {received:?}");
+        }
+    }
+
+    /// Long `ci deploy` waits renew through transient runner OIDC blips using
+    /// `FAILED_READS`, fail with exit 4 once exhausted, and abort immediately on 4xx.
+    #[tokio::test(start_paused = true)]
+    async fn deploy_wait_tolerates_transient_oidc_renewal_outages_and_aborts_on_refusal() {
+        let deploy_args = match Cli::try_parse_from([
+            "proofline",
+            "ci",
+            "deploy",
+            "--repo",
+            "acme/app",
+            "--until",
+            "20m",
+        ])
+        .unwrap()
+        .command
+        {
+            Command::Ci(CiCommand::Deploy(args)) => args,
+            other => panic!("{other:?}"),
+        };
+        let run_deploy = |statuses: &'static [u16]| async {
+            let ticker = tokio::spawn(async {
+                for _ in 0..1_000_000 {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            });
+            let start = tokio::time::Instant::now();
+            let (origin, received) =
+                console_with(start, Grant::Completes, Exchange::Grants(100), statuses).await;
+            let http = Http::new(Origin::parse(&origin).unwrap()).unwrap();
+            let issuer = github_actions::Issuer::new(
+                format!("{origin}/github/token").parse().unwrap(),
+                SecretString::from("runner-secret"),
+            );
+            let verdict = async {
+                let api = github_actions::api(http, &issuer, None, None).await?;
+                deploy::wait(&api, &deploy_args, HEAD, None).await
+            }
+            .await;
+            ticker.abort();
+            let received = received.lock().unwrap().clone();
+            (verdict, received)
+        };
+
+        // Two transient OIDC 503s at renewal stay inside FAILED_READS = 5 and recover.
+        let (verdict, received) = run_deploy(&[200, 503, 503, 200]).await;
+        assert_eq!(verdict.unwrap(), Verdict::Done, "{received:?}");
+
+        // Five consecutive OIDC 503s exhaust FAILED_READS and exit 4 (Unavailable).
+        let (verdict, received) = run_deploy(&[200, 503]).await;
+        let error = verdict.unwrap_err();
+        assert!(unavailable(&error), "sustained 503: {error:#}");
+        let token_calls = received
+            .iter()
+            .filter(|(request, ..)| request == "GET /github/token")
+            .count();
+        assert_eq!(token_calls, 6, "{received:?}");
+
+        // An OIDC 403 refusal aborts on the first failure without spending retries.
+        let (verdict, received) = run_deploy(&[200, 403]).await;
+        let error = verdict.unwrap_err();
+        assert!(!unavailable(&error), "refused 403: {error:#}");
+        let token_calls = received
+            .iter()
+            .filter(|(request, ..)| request == "GET /github/token")
+            .count();
+        assert_eq!(token_calls, 2, "{received:?}");
     }
 
     #[test]

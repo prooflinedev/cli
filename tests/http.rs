@@ -1774,16 +1774,27 @@ async fn failing_exchange(status: StatusCode) -> String {
     origin
 }
 
+/// A runner whose OIDC token endpoint answers `status`.
+async fn failing_oidc(status: StatusCode) -> String {
+    let app = Router::new().route("/github/token", get(move || async move { status }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    origin
+}
+
 #[tokio::test]
 async fn ci_review_in_github_actions_exchanges_the_jobs_oidc_token_for_its_credential() {
     let (console, requests) =
         ci_console("PULL_REQUEST", StatusCode::OK, "COMPLETED", None, None).await;
-    // A refused exchange is the caller's error. One Proofline could not serve
-    // is an outage, like any other request it fails.
+    // A refused exchange or runner token request is the caller's error. One
+    // either upstream could not serve is an outage, like any other request.
     let cases = [
         (console, 0),
         (failing_exchange(StatusCode::NOT_FOUND).await, 1),
         (failing_exchange(StatusCode::SERVICE_UNAVAILABLE).await, 4),
+        (failing_oidc(StatusCode::FORBIDDEN).await, 1),
+        (failing_oidc(StatusCode::SERVICE_UNAVAILABLE).await, 4),
     ];
     for (origin, code) in cases {
         let directory = tempfile::tempdir().unwrap();
