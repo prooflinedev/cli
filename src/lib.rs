@@ -427,6 +427,8 @@ pub enum Verdict {
     Blocked,
     /// A deploy failed or one of its checks recorded a regression.
     Regressed,
+    /// Interrupted by `Ctrl-C` while waiting for a review.
+    Interrupted,
 }
 
 /// Runs one command. `token` is `PROOFLINE_TOKEN`, read by the caller.
@@ -1065,7 +1067,7 @@ async fn review(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
             ""
         }
     ));
-    finish(api, requested.review_id, args).await
+    finish(api, requested.review_id, OnInterrupt::Detach, args).await
 }
 
 /// Reviews the checkout's local changes against the commit they build on.
@@ -1124,7 +1126,13 @@ async fn review_local(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
             verifying.finding_id, verifying.iteration
         ));
     }
-    finish(api, requested.review_id, args).await
+    finish(
+        api,
+        requested.review_id,
+        OnInterrupt::for_stoppable_request(requested.existing),
+        args,
+    )
+    .await
 }
 
 async fn review_files(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
@@ -1147,7 +1155,13 @@ async fn review_files(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
         request.paths.len(),
         request.commit_sha
     ));
-    finish(api, requested.review_id, args).await
+    finish(
+        api,
+        requested.review_id,
+        OnInterrupt::for_stoppable_request(requested.existing),
+        args,
+    )
+    .await
 }
 
 /// Reviews pushed commits: one commit against its parent, or a range. The
@@ -1176,11 +1190,22 @@ async fn review_pushed(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> 
         request.base_commit_sha,
         request.head_commit_sha
     ));
-    finish(api, requested.review_id, args).await
+    finish(
+        api,
+        requested.review_id,
+        OnInterrupt::for_stoppable_request(requested.existing),
+        args,
+    )
+    .await
 }
 
 /// Prints the requested review's link, or waits for it and prints its result.
-async fn finish(api: &Api, review_id: Uuid, args: &ReviewArgs) -> anyhow::Result<Verdict> {
+async fn finish(
+    api: &Api,
+    review_id: Uuid,
+    on_interrupt: OnInterrupt,
+    args: &ReviewArgs,
+) -> anyhow::Result<Verdict> {
     if args.no_wait {
         let mut stdout = std::io::stdout().lock();
         let url = api.review_url(review_id);
@@ -1202,6 +1227,7 @@ async fn finish(api: &Api, review_id: Uuid, args: &ReviewArgs) -> anyhow::Result
         &args.output,
         OutputFormat::from_json(args.output.json),
         args.fail_on,
+        on_interrupt,
     )
     .await
 }
@@ -1230,7 +1256,16 @@ async fn findings(api: &Api, args: &FindingsArgs) -> anyhow::Result<Verdict> {
     } else {
         OutputFormat::from_json(args.output.json)
     };
-    show(api, review_id, args.wait, &args.output, format, None).await
+    show(
+        api,
+        review_id,
+        args.wait,
+        &args.output,
+        format,
+        None,
+        OnInterrupt::Detach,
+    )
+    .await
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1248,38 +1283,185 @@ fn poll_deadline(minutes: u64) -> Result<tokio::time::Instant, PollTimeoutTooLar
         .ok_or(PollTimeoutTooLarge { minutes })
 }
 
-/// Reads the review, polling until it finishes or `deadline` passes. Without
-/// a deadline it reads once. Every read confirms the server's answer is of
-/// the review requested, not a cache or routing mix-up that would otherwise
-/// let a result for a different review decide this one's outcome.
-async fn read_review(
+/// How long an interrupted wait waits for a single best-effort `POST .../stop`.
+const STOP_ON_INTERRUPT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// What a waiting command should do if interrupted by `Ctrl-C`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OnInterrupt {
+    /// Stop the newly requested review once so it stops spending credits.
+    Stop,
+    /// Detach without stopping the review (reused reviews, pull-request
+    /// reviews, scans, reruns, or read-only waits).
+    Detach,
+}
+
+impl OnInterrupt {
+    pub(crate) const fn for_stoppable_request(existing: bool) -> Self {
+        if existing { Self::Detach } else { Self::Stop }
+    }
+}
+
+/// One review snapshot returned by [`read_review`].
+pub(crate) struct ReadReview {
+    pub(crate) raw: serde_json::Value,
+    pub(crate) detail: ReviewDetail,
+    pub(crate) state: Option<Outcome>,
+}
+
+/// Outcome of polling a review until it finishes, times out, or is interrupted.
+pub(crate) enum WaitResult {
+    Ready(Box<ReadReview>),
+    Interrupted,
+}
+
+/// Resolves when `Ctrl-C` arrives. If the platform signal handler cannot be
+/// registered, stays pending rather than falsely cancelling a running review.
+async fn wait_ctrl_c() {
+    if tokio::signal::ctrl_c().await.is_err() {
+        std::future::pending::<()>().await;
+    }
+}
+
+/// Reads the review, polling until it finishes, `deadline` passes, or `Ctrl-C`
+/// interrupts the wait. Without a deadline it reads once. Every read confirms
+/// the server's answer is of the review requested, not a cache or routing
+/// mix-up that would otherwise let a result for a different review decide this
+/// one's outcome.
+pub(crate) async fn read_review(
     api: &Api,
     review_id: Uuid,
     deadline: Option<tokio::time::Instant>,
     sarif: bool,
-) -> anyhow::Result<(serde_json::Value, ReviewDetail, Option<Outcome>)> {
+    on_interrupt: OnInterrupt,
+) -> anyhow::Result<WaitResult> {
+    if deadline.is_none() {
+        return read_review_until(
+            api,
+            review_id,
+            None,
+            sarif,
+            on_interrupt,
+            std::future::pending(),
+            std::future::pending(),
+        )
+        .await;
+    }
+    read_review_until(
+        api,
+        review_id,
+        deadline,
+        sarif,
+        on_interrupt,
+        wait_ctrl_c(),
+        wait_ctrl_c(),
+    )
+    .await
+}
+
+async fn read_review_until<F1, F2>(
+    api: &Api,
+    review_id: Uuid,
+    deadline: Option<tokio::time::Instant>,
+    sarif: bool,
+    on_interrupt: OnInterrupt,
+    first_interrupt: F1,
+    second_interrupt: F2,
+) -> anyhow::Result<WaitResult>
+where
+    F1: Future<Output = ()>,
+    F2: Future<Output = ()>,
+{
+    let mut interrupt = std::pin::pin!(first_interrupt);
     let mut delay = FIRST_POLL_SECONDS;
     loop {
-        let (raw, detail) = api.review(review_id).await?;
+        let (raw, detail) = tokio::select! {
+            biased;
+            () = &mut interrupt => {
+                handle_interrupt(api, review_id, on_interrupt, second_interrupt).await;
+                return Ok(WaitResult::Interrupted);
+            }
+            polled = api.review(review_id) => polled?,
+        };
         outcome::same_review(&detail, review_id)?;
         if sarif {
             sarif::validate_subject(&detail, review_id)?;
         }
         let state = outcome::terminal(&detail);
         let Some(deadline) = deadline else {
-            return Ok((raw, detail, state));
+            return Ok(WaitResult::Ready(Box::new(ReadReview {
+                raw,
+                detail,
+                state,
+            })));
         };
         let now = tokio::time::Instant::now();
         if state.is_some() || now >= deadline {
-            return Ok((raw, detail, state));
+            return Ok(WaitResult::Ready(Box::new(ReadReview {
+                raw,
+                detail,
+                state,
+            })));
         }
         say(&format!(
             "Review is {}; checking again in {delay} seconds.",
             text::one_line(&detail.status)
         ));
         let pause = Duration::from_secs(delay).min(deadline.saturating_duration_since(now));
-        tokio::time::sleep(pause).await;
+        tokio::select! {
+            biased;
+            () = &mut interrupt => {
+                handle_interrupt(api, review_id, on_interrupt, second_interrupt).await;
+                return Ok(WaitResult::Interrupted);
+            }
+            () = tokio::time::sleep(pause) => {}
+        }
         delay = (delay * 2).min(LONGEST_POLL_SECONDS);
+    }
+}
+
+async fn handle_interrupt<F>(
+    api: &Api,
+    review_id: Uuid,
+    on_interrupt: OnInterrupt,
+    second_interrupt: F,
+) where
+    F: Future<Output = ()>,
+{
+    let url = api.review_url(review_id);
+    match on_interrupt {
+        OnInterrupt::Detach => {
+            say(&format!(
+                "Interrupted; review {review_id} continues at {url}. Run `proofline findings --review {review_id} --wait` to check it later."
+            ));
+        }
+        OnInterrupt::Stop => {
+            say(&format!("Interrupted; stopping review {review_id}..."));
+            let stop = tokio::time::timeout(STOP_ON_INTERRUPT_TIMEOUT, api.stop_review(review_id));
+            tokio::select! {
+                biased;
+                () = second_interrupt => {
+                    say(&format!(
+                        "Aborted before stop completed. Run `proofline stop {review_id}` to stop it, or open {url}"
+                    ));
+                }
+                result = stop => match result {
+                    Ok(Ok(_)) => {
+                        say(&format!("Stopped review {review_id} ({url})."));
+                    }
+                    Ok(Err(error)) => {
+                        say(&format!(
+                            "Could not stop review {review_id}: {error}. Run `proofline stop {review_id}` to retry, or open {url}"
+                        ));
+                    }
+                    Err(_) => {
+                        say(&format!(
+                            "Timed out stopping review {review_id}. Run `proofline stop {review_id}` to retry, or open {url}"
+                        ));
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1291,6 +1473,7 @@ async fn show(
     output: &OutputArgs,
     format: OutputFormat,
     fail_on: Option<Severity>,
+    on_interrupt: OnInterrupt,
 ) -> anyhow::Result<Verdict> {
     let deadline = if wait {
         Some(poll_deadline(output.timeout)?)
@@ -1298,7 +1481,12 @@ async fn show(
         None
     };
     let sarif = matches!(format, OutputFormat::Sarif);
-    let (raw, detail, state) = read_review(api, review_id, deadline, sarif).await?;
+    let WaitResult::Ready(read) =
+        read_review(api, review_id, deadline, sarif, on_interrupt).await?
+    else {
+        return Ok(Verdict::Interrupted);
+    };
+    let ReadReview { raw, detail, state } = *read;
     // `audit_mode` marks an audit, as on a listed review (`ReviewSummary`).
     if raw.get("audit_mode").is_some_and(|mode| !mode.is_null()) {
         print_audit(api, raw, &detail, format)?;
@@ -1315,7 +1503,11 @@ async fn show(
                 Verdict::Unavailable => say(
                     "Proofline returned the completed review without `open_items`, so --fail-on could not be measured. It is not a pass.",
                 ),
-                Verdict::Done | Verdict::NotComplete | Verdict::Blocked | Verdict::Regressed => {}
+                Verdict::Done
+                | Verdict::NotComplete
+                | Verdict::Blocked
+                | Verdict::Regressed
+                | Verdict::Interrupted => {}
             }
             return Ok(verdict);
         }
@@ -1479,8 +1671,18 @@ async fn ci_review(
         return Ok(Verdict::Unavailable);
     };
     let sarif_path = args.sarif.as_deref();
-    let (raw, detail, state) =
-        read_review(api, review_id, Some(deadline), sarif_path.is_some()).await?;
+    let WaitResult::Ready(read) = read_review(
+        api,
+        review_id,
+        Some(deadline),
+        sarif_path.is_some(),
+        OnInterrupt::Detach,
+    )
+    .await?
+    else {
+        return Ok(Verdict::Interrupted);
+    };
+    let ReadReview { raw, detail, state } = *read;
     confirm_ci_subject(&detail, commit, repository_id)?;
     if let Some(path) = sarif_path {
         write_sarif(api, review_id, &detail, path).await?;
@@ -1621,7 +1823,11 @@ fn say_ci_ending(
             Verdict::Unavailable => say(
                 "Proofline returned the completed review without `open_items`, so --fail-on could not be measured. It is not a pass.",
             ),
-            Verdict::Done | Verdict::NotComplete | Verdict::Blocked | Verdict::Regressed => {}
+            Verdict::Done
+            | Verdict::NotComplete
+            | Verdict::Blocked
+            | Verdict::Regressed
+            | Verdict::Interrupted => {}
         },
         Some(ended) => say_not_complete(ended),
     }
@@ -2305,5 +2511,232 @@ mod tests {
             ci_verdict(Some(Outcome::Incomplete), None, serious),
             Verdict::NotComplete
         );
+    }
+    fn running_review_json(review_id: Uuid) -> serde_json::Value {
+        json!({
+            "id": review_id,
+            "kind": "PATCH",
+            "status": "RUNNING",
+            "assessment_count": 0,
+            "assessments": [],
+            "code_assessment": null,
+            "base_commit_sha": "b".repeat(40),
+            "head_commit_sha": "c".repeat(40),
+            "open_items": null,
+            "pull_request_number": null,
+            "repository_full_name": "acme/web",
+            "run_number": null,
+        })
+    }
+
+    async fn spawn_interrupt_server(
+        org_id: Uuid,
+        review_id: Uuid,
+        stop_status: axum::http::StatusCode,
+        hang_stop: bool,
+    ) -> (
+        Api,
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Receiver<()>,
+        Arc<std::sync::atomic::AtomicUsize>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use axum::extract::Path as AxumPath;
+        use axum::http::StatusCode;
+
+        let (polled_tx, polled_rx) = tokio::sync::oneshot::channel();
+        let polled_tx = Arc::new(Mutex::new(Some(polled_tx)));
+        let (stop_started_tx, stop_started_rx) = tokio::sync::oneshot::channel();
+        let stop_started_tx = Arc::new(Mutex::new(Some(stop_started_tx)));
+        let stops = Arc::new(AtomicUsize::new(0));
+        let stop_count = Arc::clone(&stops);
+
+        let app = Router::new()
+            .route(
+                &format!("/api/v1/organizations/{org_id}/reviews/{{id}}"),
+                get(move |AxumPath(id): AxumPath<Uuid>| {
+                    let polled_tx = Arc::clone(&polled_tx);
+                    async move {
+                        let tx = polled_tx.lock().unwrap().take();
+                        if let Some(tx) = tx {
+                            let _ = tx.send(());
+                        }
+                        (StatusCode::OK, Json(running_review_json(id)))
+                    }
+                }),
+            )
+            .route(
+                &format!("/api/v1/organizations/{org_id}/reviews/{{id}}/stop"),
+                post(move |AxumPath(id): AxumPath<Uuid>| {
+                    let stop_count = Arc::clone(&stop_count);
+                    let stop_started_tx = Arc::clone(&stop_started_tx);
+                    async move {
+                        assert_eq!(id, review_id);
+                        stop_count.fetch_add(1, Ordering::SeqCst);
+                        let tx = stop_started_tx.lock().unwrap().take();
+                        if let Some(tx) = tx {
+                            let _ = tx.send(());
+                        }
+                        if hang_stop {
+                            std::future::pending::<()>().await;
+                        }
+                        if stop_status.is_success() {
+                            (
+                                stop_status,
+                                Json(json!({
+                                    "review_id": id,
+                                    "status": "STOPPED",
+                                    "stopped_by": {"github_user_id": 123, "login": "reviewer"},
+                                    "stopped_at": "2026-01-01T00:00:00Z",
+                                })),
+                            )
+                        } else {
+                            (
+                                stop_status,
+                                Json(json!({
+                                    "title": "Review already settled",
+                                    "status": stop_status.as_u16(),
+                                    "detail": "This review can no longer be stopped.",
+                                })),
+                            )
+                        }
+                    }
+                }),
+            );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let http = Http::new(Origin::parse(&origin).unwrap()).unwrap();
+        let api = Api::new(http, SecretString::from("test-token".to_owned()), org_id);
+        (api, polled_rx, stop_started_rx, stops, server)
+    }
+
+    #[tokio::test]
+    async fn interrupt_with_stop_sends_one_stop_request_and_returns_interrupted() {
+        use std::sync::atomic::Ordering;
+
+        let org_id = Uuid::parse_str(ORG).unwrap();
+        let review_id = Uuid::parse_str(REQUESTED).unwrap();
+        let (api, polled_rx, _, stops, server) =
+            spawn_interrupt_server(org_id, review_id, axum::http::StatusCode::OK, false).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+
+        let result = read_review_until(
+            &api,
+            review_id,
+            Some(deadline),
+            false,
+            OnInterrupt::Stop,
+            async {
+                let _ = polled_rx.await;
+            },
+            std::future::pending(),
+        )
+        .await
+        .unwrap();
+
+        server.abort();
+        assert!(matches!(result, WaitResult::Interrupted));
+        assert_eq!(stops.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn interrupt_with_detach_never_calls_stop() {
+        use std::sync::atomic::Ordering;
+
+        let org_id = Uuid::parse_str(ORG).unwrap();
+        let review_id = Uuid::parse_str(REQUESTED).unwrap();
+        let (api, polled_rx, _, stops, server) =
+            spawn_interrupt_server(org_id, review_id, axum::http::StatusCode::OK, false).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+
+        let result = read_review_until(
+            &api,
+            review_id,
+            Some(deadline),
+            false,
+            OnInterrupt::Detach,
+            async {
+                let _ = polled_rx.await;
+            },
+            std::future::pending(),
+        )
+        .await
+        .unwrap();
+
+        server.abort();
+        assert!(matches!(result, WaitResult::Interrupted));
+        assert_eq!(stops.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn interrupt_with_stop_refusal_does_not_retry_and_returns_interrupted() {
+        use std::sync::atomic::Ordering;
+
+        let org_id = Uuid::parse_str(ORG).unwrap();
+        let review_id = Uuid::parse_str(REQUESTED).unwrap();
+        let (api, polled_rx, _, stops, server) =
+            spawn_interrupt_server(org_id, review_id, axum::http::StatusCode::CONFLICT, false)
+                .await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+
+        let result = read_review_until(
+            &api,
+            review_id,
+            Some(deadline),
+            false,
+            OnInterrupt::Stop,
+            async {
+                let _ = polled_rx.await;
+            },
+            std::future::pending(),
+        )
+        .await
+        .unwrap();
+
+        server.abort();
+        assert!(matches!(result, WaitResult::Interrupted));
+        assert_eq!(stops.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn second_interrupt_aborts_hung_stop_immediately() {
+        use std::sync::atomic::Ordering;
+
+        let org_id = Uuid::parse_str(ORG).unwrap();
+        let review_id = Uuid::parse_str(REQUESTED).unwrap();
+        let (api, polled_rx, stop_started_rx, stops, server) =
+            spawn_interrupt_server(org_id, review_id, axum::http::StatusCode::OK, true).await;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            read_review_until(
+                &api,
+                review_id,
+                Some(deadline),
+                false,
+                OnInterrupt::Stop,
+                async {
+                    let _ = polled_rx.await;
+                },
+                async {
+                    let _ = stop_started_rx.await;
+                },
+            ),
+        )
+        .await
+        .expect("second interrupt should abort before STOP_ON_INTERRUPT_TIMEOUT")
+        .unwrap();
+
+        server.abort();
+        assert!(matches!(result, WaitResult::Interrupted));
+        assert_eq!(stops.load(Ordering::SeqCst), 1);
     }
 }

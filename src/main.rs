@@ -55,6 +55,7 @@ fn main() -> ExitCode {
         // recorded a regression.
         Ok(Verdict::ThresholdReached | Verdict::Regressed) => ExitCode::from(3),
         Ok(Verdict::Blocked) => ExitCode::FAILURE,
+        Ok(Verdict::Interrupted) => ExitCode::from(130),
         Err(error) => {
             eprintln!("proofline: {error:#}");
             ExitCode::FAILURE

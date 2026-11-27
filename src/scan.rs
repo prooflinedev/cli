@@ -11,7 +11,9 @@ use uuid::Uuid;
 
 use crate::api::{Api, ApiError};
 use crate::model::{ScanRequest, ScanResponse};
-use crate::{OutputArgs, OutputFormat, RepositoryArgs, Verdict, git, say, show, text, tools};
+use crate::{
+    OnInterrupt, OutputArgs, OutputFormat, RepositoryArgs, Verdict, git, say, show, text, tools,
+};
 
 #[derive(Debug, Args)]
 pub(crate) struct ScanArgs {
@@ -144,6 +146,7 @@ pub(crate) async fn run(
         &args.output,
         OutputFormat::from_json(args.output.json),
         None,
+        OnInterrupt::Detach,
     )
     .await
     {
