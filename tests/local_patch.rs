@@ -561,7 +561,16 @@ async fn added_context_deleted_and_quoted_content_refuses_before_http() {
     let base = format!("first\n{private}\nthird\nfourth\n");
     let context = format!("first\n{private}\nthird\nchanged\n");
     let added = format!("first\n{github}\n");
-    let quoted = "src/clé\t\"quoted\".txt";
+    #[cfg(unix)]
+    let (quoted, quoted_diagnostic) = (
+        "src/clé\t\"quoted\".txt",
+        "\"src/clé\\t\\\"quoted\\\".txt\":2 (new line)",
+    );
+    #[cfg(not(unix))]
+    let (quoted, quoted_diagnostic) = (
+        "src/clé 'quoted'.txt",
+        "\"src/clé 'quoted'.txt\":2 (new line)",
+    );
     for (path, before, after, diagnostic, secret) in [
         (
             "new.txt",
@@ -588,7 +597,7 @@ async fn added_context_deleted_and_quoted_content_refuses_before_http() {
             quoted,
             None,
             added.as_str(),
-            "\"src/clé\\t\\\"quoted\\\".txt\":2 (new line)",
+            quoted_diagnostic,
             github.as_str(),
         ),
     ] {

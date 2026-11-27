@@ -74,7 +74,12 @@ fn unattended_registration_preserves_settings_and_uses_the_installed_binary() {
             assert_eq!(config, serde_json::from_str::<Value>(&original).unwrap());
             server
         };
-        assert_eq!(server["command"], executable.to_str().unwrap());
+        assert_eq!(
+            Path::new(server["command"].as_str().unwrap())
+                .canonicalize()
+                .unwrap(),
+            executable
+        );
         assert_eq!(
             server["args"],
             json!(["--base-url", "https://proofline.sh", "mcp"])

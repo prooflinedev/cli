@@ -523,7 +523,6 @@ fn a_separate_writer_lock_refuses_without_replacement_and_retry_converges() {
     let entered = Arc::new(Barrier::new(2));
     let release = Arc::new(Barrier::new(2));
     let worker = {
-        let lock_path = lock_path.clone();
         let entered = Arc::clone(&entered);
         let release = Arc::clone(&release);
         std::thread::spawn(move || {
@@ -531,7 +530,7 @@ fn a_separate_writer_lock_refuses_without_replacement_and_retry_converges() {
                 .read(true)
                 .write(true)
                 .create_new(true)
-                .open(lock_path)
+                .open(&lock_path)
                 .unwrap();
             lease.try_lock().unwrap();
             entered.wait();
@@ -740,6 +739,10 @@ fn invalid_duplicate_oversized_and_readonly_documents_stay_private_and_intact() 
         #[cfg(unix)]
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         #[cfg(not(unix))]
+        #[expect(
+            clippy::permissions_set_readonly_false,
+            reason = "Windows has no Unix mode bits; clearing readonly is required before removing the file"
+        )]
         {
             let mut permissions = fs::metadata(&path).unwrap().permissions();
             permissions.set_readonly(false);
