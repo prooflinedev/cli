@@ -274,3 +274,65 @@ fn existing(layout: &store::Layout, diagnostics: &mut impl Write) -> Result<(), 
     )
     .map_err(|error| InstallError::console("report the existing entry", error))
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ClientConfigStatus {
+    Registered,
+    NotRegistered,
+    Missing,
+    Error(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClientRegistration {
+    pub(crate) client: &'static str,
+    pub(crate) path: PathBuf,
+    pub(crate) status: ClientConfigStatus,
+}
+
+const MAX_INSPECT_BYTES: u64 = 1_048_576;
+
+pub(crate) fn inspect_clients(home: Option<&Path>, origin: &Origin) -> Vec<ClientRegistration> {
+    let resolved_home = home.map(Path::to_path_buf).or_else(std::env::home_dir);
+    let Some(home) = resolved_home else {
+        return Vec::new();
+    };
+    let clients = [
+        (Client::ClaudeCode, "Claude Code"),
+        (Client::Codex, "Codex"),
+        (Client::Cursor, "Cursor"),
+        (Client::Gemini, "Gemini CLI"),
+        (Client::Kiro, "Kiro"),
+    ];
+    clients
+        .into_iter()
+        .map(|(client, label)| {
+            let path = home.join(client.relative_path());
+            let status = match std::fs::symlink_metadata(&path) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    ClientConfigStatus::Missing
+                }
+                Err(error) => ClientConfigStatus::Error(error.to_string()),
+                Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                    ClientConfigStatus::Error("not a regular file".to_owned())
+                }
+                Ok(metadata) if metadata.len() > MAX_INSPECT_BYTES => {
+                    ClientConfigStatus::Error("configuration exceeds 1 MiB limit".to_owned())
+                }
+                Ok(_) => match std::fs::read(&path) {
+                    Err(error) => ClientConfigStatus::Error(error.to_string()),
+                    Ok(bytes) => match config::prepare(client, Some(&bytes), origin) {
+                        Ok(config::Update::Existing) => ClientConfigStatus::Registered,
+                        Ok(config::Update::Change(_)) => ClientConfigStatus::NotRegistered,
+                        Err(error) => ClientConfigStatus::Error(error.to_string()),
+                    },
+                },
+            };
+            ClientRegistration {
+                client: label,
+                path,
+                status,
+            }
+        })
+        .collect()
+}
