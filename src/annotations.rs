@@ -73,7 +73,7 @@ fn investigation(
         finding.area,
         finding.published_by()
     );
-    emit(out, "notice", vec![titled(&title)], &finding.title)
+    emit(out, "notice", &[titled(&title)], &finding.title)
 }
 
 fn earlier(out: &mut impl Write, finding: &EarlierFinding) -> std::io::Result<()> {
@@ -82,12 +82,7 @@ fn earlier(out: &mut impl Write, finding: &EarlierFinding) -> std::io::Result<()
         .title
         .as_deref()
         .unwrap_or("A finding of an earlier run is still open.");
-    emit(
-        out,
-        command(&finding.severity),
-        vec![titled(&title)],
-        message,
-    )
+    emit(out, command(&finding.severity), &[titled(&title)], message)
 }
 
 fn annotate(
@@ -117,7 +112,7 @@ fn annotate(
     let title = format!("Proofline {lane}: {}{decision}", finding.risk_domain);
     properties.push(titled(&title));
     let message = format!("{}\n\n{}", finding.claim, finding.impact);
-    emit(out, command(&finding.severity), properties, &message)
+    emit(out, command(&finding.severity), &properties, &message)
 }
 
 fn titled(title: &str) -> String {
@@ -127,7 +122,7 @@ fn titled(title: &str) -> String {
 fn emit(
     out: &mut impl Write,
     command: &str,
-    properties: Vec<String>,
+    properties: &[String],
     message: &str,
 ) -> std::io::Result<()> {
     writeln!(
@@ -195,6 +190,20 @@ mod tests {
         assert_eq!(
             written(|out| investigation(out, &detail, &finding)),
             "::notice title=Proofline environment%3A network (SHARED_IDENTITY)::egress is blocked\n"
+        );
+    }
+
+    #[test]
+    fn an_earlier_finding_of_an_unknown_severity_is_a_notice() {
+        let finding = EarlierFinding {
+            review_id: uuid::Uuid::nil(),
+            run_number: 2,
+            severity: "CRITICAL".to_owned(),
+            title: Some("Disk fills".to_owned()),
+        };
+        assert_eq!(
+            written(|out| earlier(out, &finding)),
+            "::notice title=Proofline earlier run 2::Disk fills\n"
         );
     }
 

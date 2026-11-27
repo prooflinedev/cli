@@ -94,6 +94,8 @@ pub struct ReviewDetail {
     pub run_number: Option<i64>,
     #[serde(default)]
     pub subjects: Vec<ReviewSubject>,
+    /// Environment findings with no severity, by assessment. They are counted
+    /// in `open_items` but listed in no assessment's findings.
     #[serde(default)]
     pub investigation_findings: Vec<InvestigationFinding>,
     /// The findings a `--verify` patch review re-verified locally. Absent on
