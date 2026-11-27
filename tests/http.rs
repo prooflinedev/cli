@@ -2584,7 +2584,7 @@ async fn native_tools_keep_tenant_paths_and_reruns_make_one_attempt() {
             if path.ends_with("/exports/reviews") {
                 return (
                     [
-                        ("content-type", "text/csv"),
+                        ("content-type", "Text/CSV; charset=UTF-8"),
                         ("x-proofline-export-version", "1"),
                         ("x-proofline-export-settled-until", "2026-10-25T00:00:00Z"),
                         ("x-proofline-export-next-cursor", "opaque-next"),
@@ -2596,7 +2596,19 @@ async fn native_tools_keep_tenant_paths_and_reruns_make_one_attempt() {
             if path.contains("/exports/") {
                 return (
                     [
-                        ("content-type", "application/x-ndjson"),
+                        (
+                            "content-type",
+                            if path.ends_with("/finding_validations")
+                                && request
+                                    .uri()
+                                    .query()
+                                    .is_some_and(|query| query.contains("cursor=wrong-media-type"))
+                            {
+                                "text/plain"
+                            } else {
+                                "Application/X-NDJSON"
+                            },
+                        ),
                         ("x-proofline-export-version", "2"),
                         ("x-proofline-export-settled-until", "2026-10-25T00:00:00Z"),
                     ],
@@ -2682,6 +2694,25 @@ async fn native_tools_keep_tenant_paths_and_reruns_make_one_attempt() {
             assert_eq!(output.stdout, b"{\"dataset_version\":2}\n", "{dataset}");
         }
     }
+    let output = cli(
+        &origin,
+        &[
+            "export",
+            "finding_validations",
+            "--from",
+            "2026-10-01T00:00:00Z",
+            "--to",
+            "2026-10-25T00:00:00Z",
+            "--format",
+            "ndjson",
+            "--cursor",
+            "wrong-media-type",
+        ],
+    )
+    .await;
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unsupported export format"));
     server.abort();
 }
 
