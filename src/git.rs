@@ -400,6 +400,8 @@ async fn diff(
         "--no-ext-diff",
         "--no-textconv",
         "--no-color",
+        // A submodule is its commit change, never its own files or log.
+        "--submodule=short",
         "--src-prefix=a/",
         "--dst-prefix=b/",
         &base_commit_sha,
@@ -766,5 +768,69 @@ mod tests {
             run(dir, &["diff", "--cached", "--name-status", "--no-renames"]),
             staged
         );
+    }
+
+    #[tokio::test]
+    async fn a_moved_submodule_is_its_commit_change_whatever_the_configuration_says() {
+        let identify = |dir: &Path| {
+            run(dir, &["config", "user.email", "dev@example.com"]);
+            run(dir, &["config", "user.name", "dev"]);
+        };
+        let library = tempfile::tempdir().unwrap();
+        run(library.path(), &["init", "-q", "-b", "main"]);
+        identify(library.path());
+        std::fs::write(library.path().join("f"), "one\n").unwrap();
+        run(library.path(), &["add", "f"]);
+        run(library.path(), &["commit", "-qm", "one"]);
+
+        let repo = tempfile::tempdir().unwrap();
+        let dir = repo.path();
+        run(dir, &["init", "-q", "-b", "main"]);
+        identify(dir);
+        let source = library.path().to_str().unwrap();
+        run(
+            dir,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "-q",
+                source,
+                "lib",
+            ],
+        );
+        run(dir, &["commit", "-qm", "base"]);
+        let base = run(dir, &["rev-parse", "HEAD"]).trim().to_owned();
+        run(dir, &["update-ref", "refs/remotes/origin/main", &base]);
+        run(
+            dir,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        );
+        let submodule = dir.join("lib");
+        identify(&submodule);
+        std::fs::write(submodule.join("f"), "one\ntwo\n").unwrap();
+        run(&submodule, &["commit", "-qam", "two"]);
+        run(dir, &["add", "lib"]);
+
+        // "log" drops the submodule's header, and "diff" inlines its files.
+        for setting in ["short", "log", "diff"] {
+            run(dir, &["config", "diff.submodule", setting]);
+            let changes = local_changes(dir, "origin", LocalSelection::Staged, None)
+                .await
+                .unwrap();
+            let headers: Vec<&str> = changes
+                .patch
+                .lines()
+                .filter(|line| line.starts_with("diff --git "))
+                .collect();
+            assert_eq!(headers, ["diff --git a/lib b/lib"], "{setting}");
+            assert!(changes.patch.contains("+Subproject commit "), "{setting}");
+            assert!(!changes.patch.contains("+two"), "{setting}");
+        }
     }
 }
