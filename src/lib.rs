@@ -8,6 +8,7 @@ pub mod api;
 mod config;
 mod coverage;
 pub mod credentials;
+mod debug;
 mod deploy;
 pub mod device;
 pub mod git;
@@ -80,6 +81,12 @@ pub struct Cli {
     /// roots, such as the root of a TLS-inspecting corporate proxy.
     #[arg(long, global = true, env = "PROOFLINE_CA_CERT", value_name = "FILE")]
     ca_cert: Option<PathBuf>,
+
+    /// Print each request to Proofline, its result and any retry to standard
+    /// error. Headers and bodies are never printed.
+    #[arg(long, global = true, env = "PROOFLINE_DEBUG",
+          value_parser = clap::builder::FalseyValueParser::new())]
+    debug: bool,
 
     #[command(subcommand)]
     command: Command,
@@ -431,6 +438,9 @@ pub enum Verdict {
 
 /// Runs one command. `token` is `PROOFLINE_TOKEN`, read by the caller.
 pub async fn run(cli: Cli, token: Option<SecretString>) -> anyhow::Result<Verdict> {
+    if cli.debug {
+        debug::enable();
+    }
     if let Some(path) = &cli.ca_cert {
         tls::trust(path)?;
     }

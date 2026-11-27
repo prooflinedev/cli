@@ -2,15 +2,16 @@
 //! timeouts, no redirects, and bounded retries for reads.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use reqwest::{Method, StatusCode, header};
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use url::Url;
+use url::{Position, Url};
 use uuid::Uuid;
 
+use crate::debug;
 use crate::github_actions::Renewal;
 use crate::model::{
     CommitDeployVerifications, CommitReviewRequest, CommitReviewResponse, CoverageUploadRequest,
@@ -249,8 +250,34 @@ impl Http {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<(Reply, Option<u64>), ApiError> {
-        let response = request
-            .send()
+        let (client, request) = request.build_split();
+        let request = request.map_err(|error| self.transport(&error))?;
+        debug::log(format_args!(
+            "→ {} {}",
+            request.method(),
+            &request.url()[Position::BeforePath..]
+        ));
+        let started = Instant::now();
+        let result = self.exchange(&client, request).await;
+        let elapsed = started.elapsed().as_millis();
+        match &result {
+            Ok((reply, _)) => debug::log(format_args!(
+                "← {} in {elapsed} ms ({} bytes)",
+                reply.status.as_u16(),
+                reply.body.len()
+            )),
+            Err(error) => debug::log(format_args!("← failed after {elapsed} ms: {error}")),
+        }
+        result
+    }
+
+    async fn exchange(
+        &self,
+        client: &reqwest::Client,
+        request: reqwest::Request,
+    ) -> Result<(Reply, Option<u64>), ApiError> {
+        let response = client
+            .execute(request)
             .await
             .map_err(|error| self.transport(&error))?;
         let status = response.status();
@@ -290,9 +317,31 @@ impl Http {
         protocol: Option<&str>,
         notification: bool,
     ) -> Result<Vec<u8>, McpHttpError> {
+        let url = self.origin.join(["mcp"]);
+        debug::log(format_args!("→ POST {}", &url[Position::BeforePath..]));
+        let started = Instant::now();
+        let result = self
+            .mcp_exchange(url, token, body, protocol, notification)
+            .await;
+        let elapsed = started.elapsed().as_millis();
+        match &result {
+            Ok(body) => debug::log(format_args!("← ok in {elapsed} ms ({} bytes)", body.len())),
+            Err(error) => debug::log(format_args!("← failed after {elapsed} ms: {error}")),
+        }
+        result
+    }
+
+    async fn mcp_exchange(
+        &self,
+        url: Url,
+        token: &SecretString,
+        body: Vec<u8>,
+        protocol: Option<&str>,
+        notification: bool,
+    ) -> Result<Vec<u8>, McpHttpError> {
         let mut request = self
             .client
-            .post(self.origin.join(["mcp"]))
+            .post(url)
             .bearer_auth(token.expose_secret())
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::ACCEPT, "application/json, text/event-stream")
@@ -464,6 +513,10 @@ impl Api {
             if !retryable || attempt == READ_ATTEMPTS || wait > MAX_RETRY_AFTER {
                 return Err(self.http.problem(&reply));
             }
+            debug::log(format_args!(
+                "retry {attempt} of {} in {wait} s",
+                READ_ATTEMPTS - 1
+            ));
             tokio::time::sleep(Duration::from_secs(wait)).await;
             delay = (delay * 2).min(MAX_RETRY_AFTER);
         }
