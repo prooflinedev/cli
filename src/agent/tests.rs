@@ -522,6 +522,10 @@ fn a_separate_writer_lock_refuses_without_replacement_and_retry_converges() {
     let lock_path = path.parent().unwrap().join(".proofline-agent-install.lock");
     let entered = Arc::new(Barrier::new(2));
     let release = Arc::new(Barrier::new(2));
+    #[cfg(unix)]
+    let thread_lock_path = lock_path.clone();
+    #[cfg(not(unix))]
+    let thread_lock_path = lock_path;
     let worker = {
         let entered = Arc::clone(&entered);
         let release = Arc::clone(&release);
@@ -530,7 +534,7 @@ fn a_separate_writer_lock_refuses_without_replacement_and_retry_converges() {
                 .read(true)
                 .write(true)
                 .create_new(true)
-                .open(&lock_path)
+                .open(&thread_lock_path)
                 .unwrap();
             lease.try_lock().unwrap();
             entered.wait();
