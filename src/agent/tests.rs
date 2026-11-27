@@ -19,12 +19,13 @@ use crate::origin::Origin;
 use crate::{Cli, Command as CliCommand};
 
 const PRIVATE: &str = "installer-private-config-canary";
-const CLIENTS: [Client; 5] = [
+const CLIENTS: [Client; 6] = [
     Client::ClaudeCode,
     Client::Codex,
     Client::Cursor,
     Client::Gemini,
     Client::Kiro,
+    Client::Windsurf,
 ];
 
 #[derive(Debug)]
@@ -95,7 +96,11 @@ fn configuration(client: Client) -> Vec<u8> {
         Client::Codex => format!(
             "# keep this comment\nmodel = \"chosen-model\"\nlabels = [\"one\", \"two\"]\n\n[mcp_servers.other]\ncommand = \"other-server\"\nargs = [\"a b\"]\n\n[mcp_servers.other.env]\nSECRET = \"{PRIVATE}\"\n"
         ).into_bytes(),
-        Client::ClaudeCode | Client::Cursor | Client::Gemini | Client::Kiro => serde_json::to_vec_pretty(&json!({
+        Client::ClaudeCode
+        | Client::Cursor
+        | Client::Gemini
+        | Client::Kiro
+        | Client::Windsurf => serde_json::to_vec_pretty(&json!({
             "theme": "chosen-theme",
             "policy": {"trust": false, "autoApprove": [], "excluded": ["untrusted"]},
             "mcpServers": {
@@ -191,7 +196,11 @@ fn all_clients_preserve_private_settings_and_add_only_the_launcher() {
                 assert_eq!(server.as_table().unwrap().len(), 2);
                 assert_eq!(parsed, expected);
             }
-            Client::ClaudeCode | Client::Cursor | Client::Gemini | Client::Kiro => {
+            Client::ClaudeCode
+            | Client::Cursor
+            | Client::Gemini
+            | Client::Kiro
+            | Client::Windsurf => {
                 let expected: Value = serde_json::from_slice(&original).unwrap();
                 let mut parsed: Value = serde_json::from_str(&actual).unwrap();
                 let server = parsed["mcpServers"]
@@ -308,7 +317,11 @@ fn custom_existing_entries_and_codex_home_are_never_overwritten() {
         let home = TempDir::new().unwrap();
         let original = match client {
             Client::Codex => format!("# {PRIVATE}\nmcp_servers.proofline = {{ command = \"custom-launcher\", args = [\"custom\"] }}\n").into_bytes(),
-            Client::ClaudeCode | Client::Cursor | Client::Gemini | Client::Kiro => format!("{{\"mcpServers\":{{\"proofline\":null}},\"private\":\"{PRIVATE}\"}}").into_bytes(),
+            Client::ClaudeCode
+            | Client::Cursor
+            | Client::Gemini
+            | Client::Kiro
+            | Client::Windsurf => format!("{{\"mcpServers\":{{\"proofline\":null}},\"private\":\"{PRIVATE}\"}}").into_bytes(),
         };
         let path = seed(home.path(), client, &original);
         let modified = fs::metadata(&path).unwrap().modified().unwrap();
@@ -416,6 +429,7 @@ fn toml_inline_tables_and_separate_arguments_round_trip_in_unicode_homes() {
         Client::Cursor,
         Client::Gemini,
         Client::Kiro,
+        Client::Windsurf,
     ] {
         let precision = "{\"mcpServers\":{\"other\":{\"value\":184467440737095516170}},\"precision\":1.2345678901234567890123456789}";
         seed(&home, client, precision.as_bytes());
@@ -698,7 +712,11 @@ fn invalid_duplicate_oversized_and_readonly_documents_stay_private_and_intact() 
                 "mcp_servers = 42\n".to_owned(),
                 "mcp_servers = []\nmcp_servers = {}\n".to_owned(),
             ],
-            Client::ClaudeCode | Client::Cursor | Client::Gemini | Client::Kiro => vec![
+            Client::ClaudeCode
+            | Client::Cursor
+            | Client::Gemini
+            | Client::Kiro
+            | Client::Windsurf => vec![
                 format!("{{\"private\":\"{PRIVATE}\", \"unfinished\": "),
                 "[]".to_owned(),
                 "{\"mcpServers\": []}".to_owned(),

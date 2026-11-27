@@ -46,7 +46,7 @@ pub(super) fn prepare(
 ) -> Result<Update, InstallError> {
     match client {
         Client::Codex => codex(original, origin),
-        Client::ClaudeCode | Client::Cursor | Client::Gemini | Client::Kiro => {
+        Client::ClaudeCode | Client::Cursor | Client::Gemini | Client::Kiro | Client::Windsurf => {
             json(client, original, origin)
         }
     }
