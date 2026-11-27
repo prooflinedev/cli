@@ -3647,3 +3647,383 @@ async fn config_proposal_targets_must_match_the_selected_organization() {
     assert_eq!(server.requests()[0]["arguments"]["organization_id"], ORG);
     assert_eq!(server.frames.load(Ordering::SeqCst), 3);
 }
+
+#[tokio::test]
+async fn diff_categorizes_findings_and_honors_fail_on_regression() {
+    let prefix = format!("/api/v1/organizations/{ORG}");
+    let run1_id = "0190f3a0-0000-7000-8000-000000000001";
+    let run2_id = "0190f3a0-0000-7000-8000-000000000002";
+    let run3_id = "0190f3a0-0000-7000-8000-000000000003";
+    let run_incomplete_id = "0190f3a0-0000-7000-8000-000000000004";
+
+    let finding_persist = json!({
+        "id": "0190f3a0-0000-7000-8000-000000000010",
+        "severity": "MEDIUM",
+        "risk_domain": "input_validation",
+        "claim": "missing length check",
+        "impact": "potential buffer overflow",
+        "lifecycle_state": "NEW",
+        "finding_fingerprint": "fp_persist",
+        "evidence_refs": []
+    });
+    let finding_persist_run2 = json!({
+        "id": "0190f3a0-0000-7000-8000-000000000020",
+        "severity": "MEDIUM",
+        "risk_domain": "input_validation",
+        "claim": "missing length check",
+        "impact": "potential buffer overflow",
+        "lifecycle_state": "NEW",
+        "finding_fingerprint": "fp_persist",
+        "evidence_refs": []
+    });
+    let finding_resolved = json!({
+        "id": "0190f3a0-0000-7000-8000-000000000011",
+        "severity": "HIGH",
+        "risk_domain": "resource_capacity",
+        "claim": "connection pool leak",
+        "impact": "exhausted connections",
+        "lifecycle_state": "NEW",
+        "finding_fingerprint": "fp_resolved",
+        "evidence_refs": []
+    });
+    let finding_regression = json!({
+        "id": "0190f3a0-0000-7000-8000-000000000012",
+        "severity": "SERIOUS",
+        "risk_domain": "data_integrity",
+        "claim": "unindexed foreign key",
+        "impact": "deadlocks under load",
+        "lifecycle_state": "NEW",
+        "finding_fingerprint": "fp_regression",
+        "evidence_refs": []
+    });
+    let finding_run3 = json!({
+        "id": "0190f3a0-0000-7000-8000-000000000013",
+        "severity": "LOW",
+        "risk_domain": "documentation",
+        "claim": "missing api doc",
+        "impact": "minor",
+        "lifecycle_state": "NEW",
+        "finding_fingerprint": "fp_run3_unique",
+        "evidence_refs": []
+    });
+
+    let app = Router::new().fallback(move |request: axum::extract::Request| {
+        let prefix = prefix.clone();
+        let finding_persist = finding_persist.clone();
+        let finding_persist_run2 = finding_persist_run2.clone();
+        let finding_resolved = finding_resolved.clone();
+        let finding_regression = finding_regression.clone();
+        let finding_run3 = finding_run3.clone();
+        async move {
+            let path = request.uri().path().to_owned();
+            if path == format!("{prefix}/reviews") {
+                return Json(json!({
+                    "items": [],
+                    "next_cursor": null,
+                    "truncated": false,
+                    "filters": {"repositories": [{"id": REPOSITORY, "name": "Owner/Repo"}]},
+                }));
+            }
+            if path == format!("{prefix}/reviews/pr/Repo/7") {
+                return Json(json!({
+                    "items": [
+                        {
+                            "run_number": 1,
+                            "id": run1_id,
+                            "kind": "PULL_REQUEST",
+                            "repository_id": REPOSITORY,
+                            "pull_request_number": 7,
+                            "status": "COMPLETED",
+                            "created_at": "2026-01-01T00:00:00Z"
+                        },
+                        {
+                            "run_number": 2,
+                            "id": run2_id,
+                            "kind": "PULL_REQUEST",
+                            "repository_id": REPOSITORY,
+                            "pull_request_number": 7,
+                            "status": "COMPLETED",
+                            "created_at": "2026-01-02T00:00:00Z"
+                        },
+                        {
+                            "run_number": 3,
+                            "id": run3_id,
+                            "kind": "PULL_REQUEST",
+                            "repository_id": REPOSITORY,
+                            "pull_request_number": 7,
+                            "status": "COMPLETED",
+                            "created_at": "2026-01-03T00:00:00Z"
+                        }
+                    ],
+                    "next_cursor": null,
+                    "truncated": false,
+                    "filters": {"repositories": []}
+                }));
+            }
+            if path == format!("{prefix}/reviews/{run1_id}") {
+                return Json(json!({
+                    "id": run1_id,
+                    "kind": "PULL_REQUEST",
+                    "status": "COMPLETED",
+                    "assessment_count": 0,
+                    "assessments": [],
+                    "code_assessment": {
+                        "id": "0190f3a0-0000-7000-8000-0000000000aa",
+                        "head_commit_sha": "89abcdef0123456789abcdef0123456789abcdef",
+                        "base_commit_sha": "0123456789abcdef0123456789abcdef01234567",
+                        "status": "COMPLETED",
+                        "findings": [finding_persist, finding_resolved]
+                    },
+                    "pull_request_number": 7,
+                    "run_number": 1,
+                    "repository_full_name": "owner/repo"
+                }));
+            }
+            if path == format!("{prefix}/reviews/{run2_id}") {
+                return Json(json!({
+                    "id": run2_id,
+                    "kind": "PULL_REQUEST",
+                    "status": "COMPLETED",
+                    "assessment_count": 0,
+                    "assessments": [],
+                    "code_assessment": {
+                        "id": "0190f3a0-0000-7000-8000-0000000000bb",
+                        "head_commit_sha": "89abcdef0123456789abcdef0123456789abcdef",
+                        "base_commit_sha": "0123456789abcdef0123456789abcdef01234567",
+                        "status": "COMPLETED",
+                        "findings": [finding_persist_run2, finding_regression]
+                    },
+                    "pull_request_number": 7,
+                    "run_number": 2,
+                    "repository_full_name": "owner/repo"
+                }));
+            }
+            if path == format!("{prefix}/reviews/{run3_id}") {
+                return Json(json!({
+                    "id": run3_id,
+                    "kind": "PULL_REQUEST",
+                    "status": "COMPLETED",
+                    "assessment_count": 0,
+                    "assessments": [],
+                    "code_assessment": {
+                        "id": "0190f3a0-0000-7000-8000-0000000000cc",
+                        "head_commit_sha": "89abcdef0123456789abcdef0123456789abcdef",
+                        "base_commit_sha": "0123456789abcdef0123456789abcdef01234567",
+                        "status": "COMPLETED",
+                        "findings": [finding_persist, finding_run3]
+                    },
+                    "pull_request_number": 7,
+                    "run_number": 3,
+                    "repository_full_name": "owner/repo"
+                }));
+            }
+            if path == format!("{prefix}/reviews/{run_incomplete_id}") {
+                return Json(json!({
+                    "id": run_incomplete_id,
+                    "kind": "PULL_REQUEST",
+                    "status": "IN_PROGRESS",
+                    "assessment_count": 0,
+                    "assessments": [],
+                    "code_assessment": null,
+                    "pull_request_number": 7,
+                    "run_number": 4,
+                    "repository_full_name": "owner/repo"
+                }));
+            }
+            Json(json!({}))
+        }
+    });
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    // 1. Text diff: PR run comparison with explicit non-default selectors (--base-run 1 --target-run 2)
+    let output = cli(
+        &origin,
+        &[
+            "diff",
+            "--repo",
+            "owner/repo",
+            "--pr",
+            "7",
+            "--base-run",
+            "1",
+            "--target-run",
+            "2",
+        ],
+    )
+    .await;
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("Finding diff: Owner/Repo #7 run 1 -> Owner/Repo #7 run 2"),
+        "{text}"
+    );
+    assert!(
+        text.contains("1 resolved, 1 persistent, 1 regressions"),
+        "{text}"
+    );
+    assert!(text.contains("Regressions (1):"), "{text}");
+    assert!(text.contains("Resolved (1):"), "{text}");
+    assert!(text.contains("Persistent (1):"), "{text}");
+    assert!(text.contains("unindexed foreign key"), "{text}");
+    assert!(text.contains("connection pool leak"), "{text}");
+    assert!(text.contains("missing length check"), "{text}");
+
+    // 2. JSON diff with explicit non-default selectors
+    let output_json = cli(
+        &origin,
+        &[
+            "diff",
+            "--repo",
+            "owner/repo",
+            "--pr",
+            "7",
+            "--base-run",
+            "1",
+            "--target-run",
+            "2",
+            "--json",
+        ],
+    )
+    .await;
+    assert!(output_json.status.success());
+    let parsed: Value = serde_json::from_slice(&output_json.stdout).unwrap();
+    assert_eq!(parsed["regressions"].as_array().unwrap().len(), 1);
+    assert_eq!(parsed["resolved"].as_array().unwrap().len(), 1);
+    assert_eq!(parsed["persistent"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        parsed["regressions"][0]["finding_fingerprint"],
+        "fp_regression"
+    );
+    assert_eq!(parsed["resolved"][0]["finding_fingerprint"], "fp_resolved");
+    assert_eq!(
+        parsed["persistent"][0]["id"],
+        "0190f3a0-0000-7000-8000-000000000020"
+    );
+
+    // Verify explicit --base-run 1 is honored when comparing against run 3
+    let output_run3 = cli(
+        &origin,
+        &[
+            "diff",
+            "--repo",
+            "owner/repo",
+            "--pr",
+            "7",
+            "--base-run",
+            "1",
+            "--target-run",
+            "3",
+            "--json",
+        ],
+    )
+    .await;
+    assert!(output_run3.status.success());
+    let parsed_run3: Value = serde_json::from_slice(&output_run3.stdout).unwrap();
+    assert_eq!(
+        parsed_run3["resolved"][0]["finding_fingerprint"],
+        "fp_resolved"
+    );
+
+    // 3. Fail on regression exits code 3 (Verdict::Regressed)
+    let output_fail = cli(
+        &origin,
+        &[
+            "diff",
+            "--repo",
+            "owner/repo",
+            "--pr",
+            "7",
+            "--base-run",
+            "1",
+            "--target-run",
+            "2",
+            "--fail-on-regression",
+        ],
+    )
+    .await;
+    assert_eq!(output_fail.status.code(), Some(3));
+
+    // 4. Direct review IDs comparison with --json verifying both fingerprint identities
+    let output_direct = cli(
+        &origin,
+        &[
+            "diff",
+            "--base-review",
+            run1_id,
+            "--target-review",
+            run2_id,
+            "--json",
+        ],
+    )
+    .await;
+    assert!(output_direct.status.success());
+    let direct_parsed: Value = serde_json::from_slice(&output_direct.stdout).unwrap();
+    assert_eq!(
+        direct_parsed["resolved"][0]["finding_fingerprint"],
+        "fp_resolved"
+    );
+    assert_eq!(
+        direct_parsed["regressions"][0]["finding_fingerprint"],
+        "fp_regression"
+    );
+
+    // 5. Fail on regression exits 0 when there are no regressions
+    let output_no_reg = cli(
+        &origin,
+        &[
+            "diff",
+            "--base-review",
+            run1_id,
+            "--target-review",
+            run1_id,
+            "--fail-on-regression",
+            "--json",
+        ],
+    )
+    .await;
+    assert!(output_no_reg.status.success());
+    assert_eq!(output_no_reg.status.code(), Some(0));
+    let parsed_no_reg: Value = serde_json::from_slice(&output_no_reg.stdout).unwrap();
+    assert!(parsed_no_reg["regressions"].as_array().unwrap().is_empty());
+
+    // 6. Fail on regression returns Verdict::NotComplete (exit 2) if target review is not completed
+    let output_incomplete = cli(
+        &origin,
+        &[
+            "diff",
+            "--base-review",
+            run1_id,
+            "--target-review",
+            run_incomplete_id,
+            "--fail-on-regression",
+        ],
+    )
+    .await;
+    assert_eq!(output_incomplete.status.code(), Some(2));
+
+    // 7. Fail on regression returns Verdict::NotComplete (exit 2) if baseline review is not completed
+    let output_incomplete_base = cli(
+        &origin,
+        &[
+            "diff",
+            "--base-review",
+            run_incomplete_id,
+            "--target-review",
+            run1_id,
+            "--fail-on-regression",
+        ],
+    )
+    .await;
+    assert_eq!(output_incomplete_base.status.code(), Some(2));
+
+    server.abort();
+}
