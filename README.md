@@ -10,6 +10,8 @@ On Linux and macOS, install the CLI with `curl -fsSL https://proofline.sh/cli | 
 
 A coding agent can continue setup from its shell without an MCP restart. `proofline setup guide` prints the instructions and needs no sign-in. `proofline setup status` prints the current setup step, readiness and blockers, and `proofline setup candidates [--query NAME]` lists the repositories and deployments an answer may name. Both print the hosted MCP tool result as JSON and need `setup:write`, like `proofline config get`. The agent saves answers with the [configuration commands](#configuration).
 
+The installer checks the archive against the release's `SHA256SUMS`, which comes from the same origin and so catches a damaged download but not a replaced release. To also check build provenance, run `curl -fsSL https://proofline.sh/cli | PROOFLINE_VERIFY_PROVENANCE=1 sh`. The installer then runs `gh attestation verify`, which needs the [GitHub CLI](https://cli.github.com/) signed in to github.com, and installs only an archive that GitHub signed for this repository's `release.yml` on a GitHub-hosted runner, at the requested version's `vX.Y.Z` tag or at `main`. Without `gh`, it downloads nothing. If the check fails, it installs nothing.
+
 `proofline completions SHELL` prints a completion script for `zsh`, `bash`, `fish`, `powershell`, or `elvish` without signing in or making a network call. For example, add `source <(proofline completions zsh)` to `~/.zshrc`.
 
 ### Windows installation
