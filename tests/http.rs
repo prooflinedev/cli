@@ -585,7 +585,7 @@ async fn device_sign_in_waits_for_approval_and_keeps_the_organization() {
         ..Fake::default()
     };
     let http = Http::new(serve(fake.clone()).await).unwrap();
-    let challenge = device::start(&http, &[]).await.unwrap();
+    let challenge = device::start(&http, &[], None).await.unwrap();
     assert_eq!(challenge.user_code.expose_secret(), "WDJB-MJHT");
     assert!(format!("{challenge:?}").contains("REDACTED"));
     assert!(!format!("{challenge:?}").contains("WDJB"));
@@ -603,14 +603,14 @@ async fn device_sign_in_waits_for_approval_and_keeps_the_organization() {
 #[tokio::test]
 async fn a_server_that_omits_the_organization_needs_one_named() {
     let http = Http::new(serve(Fake::default()).await).unwrap();
-    let challenge = device::start(&http, &["reviews:read".to_owned()])
+    let challenge = device::start(&http, &["reviews:read".to_owned()], None)
         .await
         .unwrap();
     assert!(matches!(
         device::finish(&http, &challenge, None).await,
         Err(DeviceError::OrganizationUnknown(_))
     ));
-    let challenge = device::start(&http, &[]).await.unwrap();
+    let challenge = device::start(&http, &[], None).await.unwrap();
     let named = device::finish(&http, &challenge, Some(org()))
         .await
         .unwrap();

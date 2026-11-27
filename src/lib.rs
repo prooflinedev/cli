@@ -257,6 +257,10 @@ struct LoginArgs {
     /// Print the approval address instead of opening a browser.
     #[arg(long)]
     no_browser: bool,
+    /// The organization to sign in to, as github/LOGIN. The approval then
+    /// grants only that organization, whichever one the browser last used.
+    #[arg(long, value_name = "github/LOGIN")]
+    organization: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -708,7 +712,7 @@ async fn login(
             http.origin().join(["account", "tokens"]),
         );
     }
-    let challenge = device::start(http, &args.scopes).await?;
+    let challenge = device::start(http, &args.scopes, args.organization.as_deref()).await?;
     let code = challenge.user_code.expose_secret();
     say(&format!("Your sign-in code is {code}."));
     let opened = !args.no_browser
@@ -731,7 +735,12 @@ async fn login(
             challenge.verification_uri
         ));
     }
-    say("Choose the organization, scopes and repositories there. Waiting for approval...");
+    say(&args.organization.as_ref().map_or_else(
+        || "Choose the organization, scopes and repositories there. Waiting for approval...".to_owned(),
+        |organization| {
+            format!("Approve it for {organization} there, and choose the scopes and repositories. Waiting for approval...")
+        },
+    ));
     let credential = device::finish(http, &challenge, org).await?;
     credentials::store(http.origin(), &credential).await?;
     say(&format!(

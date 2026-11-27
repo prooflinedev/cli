@@ -69,7 +69,15 @@ fn versions_cannot_inject_paths_or_notices_or_trigger_a_downgrade() {
         assert!(version(invalid).is_err(), "{invalid}");
         assert!(!newer(invalid));
     }
-    assert!(newer("0.10.0"));
+    // One major release above the build's own: the distribution bot raises
+    // the crate's version, so a fixed version goes stale (main was red from
+    // 2026-11-27 when it reached 0.10.0).
+    let major: u64 = env!("CARGO_PKG_VERSION")
+        .split('.')
+        .next()
+        .and_then(|major| major.parse().ok())
+        .unwrap();
+    assert!(newer(&format!("{}.0.0", major + 1)));
     assert!(!newer(env!("CARGO_PKG_VERSION")));
     assert!(!newer("0.0.9"));
 }

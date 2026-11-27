@@ -61,14 +61,22 @@ pub enum DeviceError {
     OrganizationUnknown(String),
 }
 
-/// Asks the server for a sign-in code with `scopes`, or its defaults when empty.
-pub async fn start(http: &Http, scopes: &[String]) -> Result<Challenge, DeviceError> {
+/// Asks the server for a sign-in code with `scopes`, or its defaults when
+/// empty. `organization`, as `github/<login>`, makes the approval grant only
+/// that organization.
+pub async fn start(
+    http: &Http,
+    scopes: &[String],
+    organization: Option<&str>,
+) -> Result<Challenge, DeviceError> {
     let url = http.origin().join(["auth", "device", "code"]);
-    let body = if scopes.is_empty() {
-        serde_json::json!({})
-    } else {
-        serde_json::json!({ "scopes": scopes })
-    };
+    let mut body = serde_json::Map::new();
+    if !scopes.is_empty() {
+        body.insert("scopes".to_owned(), serde_json::json!(scopes));
+    }
+    if let Some(organization) = organization {
+        body.insert("organization".to_owned(), serde_json::json!(organization));
+    }
     let (reply, _) = http.send(http.post(url).json(&body)).await?;
     if !reply.status.is_success() {
         return Err(http.problem(&reply).into());
