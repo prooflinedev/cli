@@ -42,7 +42,7 @@ Native knowledge, plan, fix and configuration commands send the selected organiz
 
 `proofline review --range BASE..HEAD --fail-on serious` exits 3 when a complete review has an unresolved finding at or above the threshold. PR reviews use the server’s effective open-item counts; other reviews count unresolved findings. Incomplete and unavailable results retain their nonzero exits. `--fail-on` cannot be combined with `--no-wait`.
 
-In GitHub Actions, `proofline ci review --annotations` prints unresolved findings as workflow annotations at verified cited lines. Findings without a verified head location appear on the job. The review link contains the full result.
+In GitHub Actions, `proofline ci review --annotations` prints unresolved findings as workflow annotations at verified cited lines. Findings without a verified head location appear on the job. A gap in the review, its code lane or an environment appears as an error annotation, and findings from an incomplete lane are marked partial. The review link contains the full result.
 
 For a CodePipeline execution or Amplify job, run `proofline ci deploy --commit SHA --aws-run ID` in a later pipeline. Add `--environment-id UUID` to select its Proofline environment. The output names the AWS provider and run ID. Proofline records a CodePipeline deploy only after the execution succeeds, so a reader inside that execution waits until its timeout and exits 2. On a GitHub `workflow_run` event, an explicit `--aws-run` disables the default Actions run and attempt filters.
 
