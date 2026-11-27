@@ -105,13 +105,13 @@ impl<'de> Deserialize<'de> for Envelope {
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
                 let mut object = serde_json::Map::new();
                 while let Some(key) = map.next_key::<String>()? {
-                    if matches!(key.as_str(), "jsonrpc" | "id" | "result" | "error")
-                        && object.contains_key(&key)
+                    if matches!(
+                        key.as_str(),
+                        "jsonrpc" | "id" | "method" | "params" | "result" | "error"
+                    ) && object.contains_key(&key)
                     {
                         return Err(A::Error::custom("duplicate JSON-RPC envelope field"));
                     }
-                    // Only reserved envelope fields need uniqueness here.
-                    // Tool results remain opaque JSON, without a local schema.
                     object.insert(key, map.next_value::<Value>()?);
                 }
                 Ok(Envelope(Value::Object(object)))
