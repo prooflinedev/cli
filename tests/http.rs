@@ -3532,6 +3532,35 @@ async fn native_mcp_commands_send_each_selected_organization() {
     }
     assert_eq!(server.requests().len(), 64);
     assert_eq!(server.frames.load(Ordering::SeqCst), 192);
+
+    // A personal token names no organization, and the console shows no ID to
+    // copy: the CLI asks the server for the token's only organization.
+    let listed = configuration_result(json!({"organizations":[{"organization_id":ORG}]}));
+    let server = ConfigServer::start(listed).await;
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        tokio::process::Command::new(env!("CARGO_BIN_EXE_proofline"))
+            .args(["--base-url", &server.origin, "setup", "status"])
+            .env("PROOFLINE_TOKEN", TOKEN)
+            .env_remove("PROOFLINE_ORGANIZATION_ID")
+            .env("PROOFLINE_NO_UPDATE_CHECK", "1")
+            .env("PATH", "")
+            .current_dir(directory.path())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let requests = server.requests();
+    assert_eq!(requests[0]["name"], "list_organizations");
+    assert_eq!(requests[1]["name"], "get_setup_status");
+    assert_eq!(requests[1]["arguments"]["organization_id"], ORG);
 }
 
 #[tokio::test]

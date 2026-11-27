@@ -385,6 +385,35 @@ pub(crate) async fn call(
         "organization_id".to_owned(),
         json!(credential.organization_id),
     );
+    exchange(http, &credential.token, name, arguments).await
+}
+
+/// The organization of a token that works in exactly one, such as a personal
+/// token, read from `list_organizations`; `None` when it lists several or none.
+pub(crate) async fn sole_organization(
+    http: &Http,
+    token: &SecretString,
+) -> Result<Option<Uuid>, McpError> {
+    let listed = exchange(http, token, "list_organizations", json!({})).await?;
+    let organizations = listed
+        .pointer("/structuredContent/data/organizations")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    Ok(match organizations {
+        [only] => only
+            .get("organization_id")
+            .and_then(|id| serde_json::from_value(id.clone()).ok()),
+        _ => None,
+    })
+}
+
+async fn exchange(
+    http: &Http,
+    token: &SecretString,
+    name: &str,
+    arguments: Value,
+) -> Result<Value, McpError> {
     let mut session = Session::New;
     let frames = [
         json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{
@@ -400,7 +429,7 @@ pub(crate) async fn call(
             return Err(McpError::TooLarge);
         }
         let message = Message::parse(&frame)?;
-        result = relay(http, &credential.token, &mut session, &message, frame).await?;
+        result = relay(http, token, &mut session, &message, frame).await?;
         if result.as_ref().is_some_and(|r| r.get("error").is_some()) {
             return Err(McpError::Response);
         }

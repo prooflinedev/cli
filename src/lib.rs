@@ -699,9 +699,15 @@ async fn login(
         bail!("PROOFLINE_TOKEN is set, and it takes precedence over a sign-in; unset it first");
     }
     // Refuse before the person approves anything if the token cannot be kept.
-    credentials::probe(http.origin())
-        .await
-        .context("could not read the OS keychain, so a sign-in could not be kept")?;
+    // A host without one, such as a coding agent's shell over SSH or in a
+    // container, signs in with a personal token instead; name where to make it.
+    if let Err(error) = credentials::probe(http.origin()).await {
+        bail!(
+            "no sign-in can be kept here: {error}. Create one with the scopes {} at\n{}",
+            args.scopes.join(", "),
+            http.origin().join(["account", "tokens"]),
+        );
+    }
     let challenge = device::start(http, &args.scopes).await?;
     let code = challenge.user_code.expose_secret();
     say(&format!("Your sign-in code is {code}."));

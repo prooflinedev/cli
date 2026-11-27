@@ -20,12 +20,17 @@ On Linux, coding agents that omit `DBUS_SESSION_BUS_ADDRESS` and `XDG_RUNTIME_DI
 can still use the stored sign-in when the standard `/run/user/<uid>/bus` socket
 is available. An explicit bus address or runtime directory keeps precedence.
 `PROOFLINE_TOKEN` continues to take precedence over the stored sign-in.
+A host with no keychain at all, such as a shell over SSH or in a container,
+cannot keep a sign-in: `proofline login` refuses before any approval and names
+`/account/tokens` in the console, where the person creates a personal token to
+set as `PROOFLINE_TOKEN`. A token that works in one organization needs no
+`--org`; the CLI reads its organization from the server.
 
 ### MCP agent registration
 
 To register MCP without a prompt, run `proofline agent install CLIENT --yes`. Supported clients include `claude-code` (or `claude`), `cursor`, `codex`, `gemini`, and `kiro`. Without `--yes`, the command previews the entry and asks for confirmation, while `--print` previews without writing. Existing Proofline entries remain unchanged. New entries use this executable's absolute path and store no credentials. Claude Code uses the top-level `mcpServers` in `~/.claude.json`; a custom `CLAUDE_CONFIG_DIR` requires manual configuration with `--print`.
 
-Native knowledge, plan, fix and configuration commands send the selected organization as `organization_id` in each MCP tool call. With `PROOFLINE_TOKEN`, select an authorized UUID using `--org ORGANIZATION_ID` or `PROOFLINE_ORGANIZATION_ID`; the flag takes precedence. A stored device sign-in uses its approved organization and refuses a different selection. For example, `proofline --org ORGANIZATION_ID wiki list --repo owner/name` and `proofline --org ORGANIZATION_ID config get` target that organization with a shared MCP OAuth credential. Selection grants no authority: the server checks each call, and a foreign target returns its refusal with a nonzero exit. MCP OAuth credentials remain limited to MCP and cannot use REST commands. The raw `proofline mcp` bridge preserves the caller's messages and per-call target unchanged.
+Native knowledge, plan, fix and configuration commands send the selected organization as `organization_id` in each MCP tool call. With a `PROOFLINE_TOKEN` that works in more than one organization, select an authorized UUID using `--org ORGANIZATION_ID` or `PROOFLINE_ORGANIZATION_ID`; the flag takes precedence. A token that works in exactly one, such as a personal token, needs neither. A stored device sign-in uses its approved organization and refuses a different selection. For example, `proofline --org ORGANIZATION_ID wiki list --repo owner/name` and `proofline --org ORGANIZATION_ID config get` target that organization with a shared MCP OAuth credential. Selection grants no authority: the server checks each call, and a foreign target returns its refusal with a nonzero exit. MCP OAuth credentials remain limited to MCP and cannot use REST commands. The raw `proofline mcp` bridge preserves the caller's messages and per-call target unchanged.
 
 ## Reviews, history, and reruns
 

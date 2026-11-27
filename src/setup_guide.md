@@ -37,6 +37,15 @@ and approve:
 proofline login --scope reviews:read --scope findings:read --scope guidance:read --scope reviews:request --scope setup:write --scope org:configure
 ```
 
+On a host with no operating system keychain, such as a shell over SSH or in a
+container, login refuses and names the console page for a personal token. Give
+the person that address as a full URL on its own line. Ask them to make the
+token available to your shell as `PROOFLINE_TOKEN`, for example in the
+environment the coding agent starts with, and to tell you when it is set; a
+variable set after the agent started may need a restart to reach its shell.
+Never ask them to paste the token into the chat. The commands find the token's
+organization themselves.
+
 Do not run login for the person unless they ask, and never approve in the browser
 for them. An organization administrator approves `setup:write` and `org:configure`
 in a browser signed in within the last 24 hours. The GitHub App installation

@@ -8,13 +8,15 @@ use secrecy::{ExposeSecret as _, SecretString};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::api::Http;
+use crate::mcp;
 use crate::origin::Origin;
 
 const SERVICE: &str = "proofline";
 
 /// A token and the organization it works in. A device token is bound to the
 /// organization approved in the browser; an environment token names its
-/// organization separately.
+/// organization separately, or works in only one, which the server lists.
 #[derive(Debug)]
 pub struct Credential {
     pub token: SecretString,
@@ -43,9 +45,13 @@ pub enum CredentialError {
     #[error("not signed in to {0}; run `proofline login`, or set PROOFLINE_TOKEN")]
     Missing(String),
     #[error(
-        "PROOFLINE_TOKEN is set, so name its organization with --org or PROOFLINE_ORGANIZATION_ID"
+        "PROOFLINE_TOKEN does not name a single organization, so name one with --org or PROOFLINE_ORGANIZATION_ID"
     )]
     OrganizationRequired,
+    #[error(
+        "could not read PROOFLINE_TOKEN's organization ({0}); name it with --org or PROOFLINE_ORGANIZATION_ID"
+    )]
+    OrganizationUnknown(String),
     #[error(
         "this sign-in works in organization {0}; run `proofline login` and choose the other organization"
     )]
@@ -100,7 +106,10 @@ pub async fn load(
     organization: Option<Uuid>,
 ) -> Result<Credential, CredentialError> {
     if let Some(token) = environment_token {
-        let organization_id = organization.ok_or(CredentialError::OrganizationRequired)?;
+        let organization_id = match organization {
+            Some(organization) => organization,
+            None => sole_organization(origin, &token).await?,
+        };
         return Ok(Credential {
             token,
             organization_id,
@@ -124,6 +133,17 @@ pub async fn load(
         expires_at: stored.expires_at,
         source: Source::Keychain,
     })
+}
+
+/// A personal token belongs to one organization, and the console shows no
+/// organization ID to copy, so the server names it.
+async fn sole_organization(origin: &Origin, token: &SecretString) -> Result<Uuid, CredentialError> {
+    let http = Http::new(origin.clone())
+        .map_err(|error| CredentialError::OrganizationUnknown(error.to_string()))?;
+    mcp::sole_organization(&http, token)
+        .await
+        .map_err(|error| CredentialError::OrganizationUnknown(error.to_string()))?
+        .ok_or(CredentialError::OrganizationRequired)
 }
 
 async fn read(origin: &Origin) -> Result<Option<Stored>, CredentialError> {

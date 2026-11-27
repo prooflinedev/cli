@@ -15,7 +15,7 @@
 set -eu
 
 PROOFLINE_CLI=https://proofline.sh/cli
-PROOFLINE_INSTALLER_VERSION=0.9.2
+PROOFLINE_INSTALLER_VERSION=0.9.3
 PROOFLINE_SETUP_MIN_VERSION=0.1.8
 
 say() {
@@ -169,8 +169,10 @@ main() {
     # reaches sign-in: the address is printed for the person to open.
     "$directory/proofline" setup ||
       say "no browser opened here; open https://proofline.sh/orgs in a browser to install the GitHub App"
+    # On a host with no OS keychain, login names the personal token page
+    # instead; rerunning the installer there would fail the same way.
     "$directory/proofline" login --scope reviews:read --scope findings:read --scope guidance:read --scope reviews:request --scope setup:write --scope org:configure ||
-      refuse "CLI sign-in did not finish; the CLI and MCP entries remain installed; rerun this command to sign in, then run '$directory/proofline setup guide' to continue setup"
+      refuse "CLI sign-in did not finish; the CLI and MCP entries remain installed; sign in as proofline's message above says, then run '$directory/proofline setup guide' to continue setup"
     say "signed in; to continue setup in this session, run this and follow what it prints:"
     say "  $directory/proofline setup guide"
     say "a coding agent can follow it from its shell now; restart the agent or reload MCP only to use Proofline's MCP tools"
