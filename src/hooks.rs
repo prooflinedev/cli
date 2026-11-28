@@ -10,6 +10,7 @@ use std::time::Duration;
 use anyhow::{Context as _, bail};
 use clap::{Args, Subcommand, ValueEnum};
 use secrecy::SecretString;
+use serde::Serialize;
 use tokio::io::AsyncReadExt as _;
 use url::Url;
 use uuid::Uuid;
@@ -104,6 +105,17 @@ enum HooksAction {
     Install(Selection),
     /// Remove the hook scripts `hooks install` wrote.
     Uninstall(Selection),
+    /// Show whether Proofline hooks are installed and their active configuration.
+    Status(StatusArgs),
+}
+
+#[derive(Debug, Args)]
+struct StatusArgs {
+    #[command(flatten)]
+    selection: Selection,
+    /// Print JSON instead of text.
+    #[arg(long)]
+    json: bool,
 }
 
 /// Which hooks to act on; neither flag means both.
@@ -170,6 +182,16 @@ pub(crate) async fn manage(args: HooksArgs) -> anyhow::Result<()> {
             let dir = git::hooks_dir(here).await?;
             for hook in selection.hooks() {
                 uninstall(&dir, hook).await?;
+            }
+        }
+        HooksAction::Status(status_args) => {
+            let report = collect_status(here, &status_args.selection).await?;
+            if status_args.json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                for line in render_status_text(&report) {
+                    say(&line);
+                }
             }
         }
     }
@@ -258,6 +280,139 @@ async fn uninstall(dir: &Path, hook: Hook) -> anyhow::Result<()> {
 enum Mode {
     Warn,
     Block,
+}
+
+impl Mode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Warn => "warn",
+            Self::Block => "block",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum HookState {
+    Installed,
+    Modified,
+    Other,
+    NotInstalled,
+}
+
+impl HookState {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Installed => "installed",
+            Self::Modified => "modified",
+            Self::Other => "other",
+            Self::NotInstalled => "not installed",
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct HookConfigStatus {
+    mode: String,
+    fail_on: String,
+    on_incomplete: String,
+    timeout_seconds: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct HookStatus {
+    hook: String,
+    path: String,
+    state: HookState,
+    config: Option<HookConfigStatus>,
+    config_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct HooksStatusReport {
+    hooks_dir: String,
+    core_hooks_path: Option<String>,
+    hooks: Vec<HookStatus>,
+}
+
+async fn inspect_hook_file(path: &Path, hook: Hook) -> anyhow::Result<HookState> {
+    match tokio::fs::read(path).await {
+        Ok(existing) if existing == hook.script().as_bytes() => Ok(HookState::Installed),
+        Ok(existing) => {
+            let text = String::from_utf8_lossy(&existing);
+            if text.contains(MARKER) || text.contains(&hook.line()) {
+                Ok(HookState::Modified)
+            } else {
+                Ok(HookState::Other)
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HookState::NotInstalled),
+        Err(error) => Err(error).with_context(|| format!("could not read {}", path.display())),
+    }
+}
+
+async fn collect_status(here: &Path, selection: &Selection) -> anyhow::Result<HooksStatusReport> {
+    let core_hooks_path = git::config(here, "core.hooksPath").await?;
+    let dir = git::hooks_dir(here).await?;
+    let mut hooks = Vec::new();
+    for hook in selection.hooks() {
+        let path = dir.join(hook.name());
+        let state = inspect_hook_file(&path, hook).await?;
+        let (config, config_error) = match settings(here, hook).await {
+            Ok(parsed) => (
+                Some(HookConfigStatus {
+                    mode: parsed.mode.as_str().to_owned(),
+                    fail_on: parsed.fail_on.as_str().to_owned(),
+                    on_incomplete: parsed.on_incomplete.as_str().to_owned(),
+                    timeout_seconds: parsed.timeout.as_secs(),
+                }),
+                None,
+            ),
+            Err(error) => (None, Some(one_line(&format!("{error:#}")))),
+        };
+        hooks.push(HookStatus {
+            hook: hook.name().to_owned(),
+            path: path.display().to_string(),
+            state,
+            config,
+            config_error,
+        });
+    }
+    Ok(HooksStatusReport {
+        hooks_dir: dir.display().to_string(),
+        core_hooks_path,
+        hooks,
+    })
+}
+
+fn render_status_text(report: &HooksStatusReport) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(path) = &report.core_hooks_path {
+        lines.push(format!(
+            "Hooks directory: {} (core.hooksPath = {})",
+            report.hooks_dir,
+            one_line(path)
+        ));
+    } else {
+        lines.push(format!("Hooks directory: {}", report.hooks_dir));
+    }
+    for entry in &report.hooks {
+        let detail = match (&entry.config, &entry.config_error) {
+            (Some(cfg), _) => format!(
+                "mode={}, failOn={}, onIncomplete={}, timeout={}s",
+                cfg.mode, cfg.fail_on, cfg.on_incomplete, cfg.timeout_seconds
+            ),
+            (None, Some(err)) => format!("invalid config: {err}"),
+            (None, None) => "config unavailable".to_owned(),
+        };
+        lines.push(format!(
+            "  {:<10} {:<13} {} ({detail})",
+            entry.hook,
+            entry.state.label(),
+            entry.path
+        ));
+    }
+    lines
 }
 
 /// The developer's choices for one hook, from `git config`.
@@ -855,5 +1010,77 @@ mod tests {
             ]
         );
         assert!(pushed_refs("refs/heads/main abc\n").is_err());
+    }
+
+    #[tokio::test]
+    async fn inspect_hook_file_distinguishes_installed_modified_other_and_missing() {
+        let dir = std::env::temp_dir().join(format!("proofline-hooks-test-{}", std::process::id()));
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let path = dir.join("pre-commit");
+
+        assert_eq!(
+            inspect_hook_file(&path, Hook::PreCommit).await.unwrap(),
+            HookState::NotInstalled
+        );
+
+        tokio::fs::write(&path, Hook::PreCommit.script())
+            .await
+            .unwrap();
+        assert_eq!(
+            inspect_hook_file(&path, Hook::PreCommit).await.unwrap(),
+            HookState::Installed
+        );
+
+        tokio::fs::write(&path, format!("#!/bin/sh\n{}\n", Hook::PreCommit.line()))
+            .await
+            .unwrap();
+        assert_eq!(
+            inspect_hook_file(&path, Hook::PreCommit).await.unwrap(),
+            HookState::Modified
+        );
+
+        tokio::fs::write(&path, "#!/bin/sh\necho custom\n")
+            .await
+            .unwrap();
+        assert_eq!(
+            inspect_hook_file(&path, Hook::PreCommit).await.unwrap(),
+            HookState::Other
+        );
+
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[test]
+    fn render_status_text_formats_core_hooks_path_and_config_errors() {
+        let report = HooksStatusReport {
+            hooks_dir: "/repo/.husky".to_owned(),
+            core_hooks_path: Some(".husky".to_owned()),
+            hooks: vec![
+                HookStatus {
+                    hook: "pre-commit".to_owned(),
+                    path: "/repo/.husky/pre-commit".to_owned(),
+                    state: HookState::Installed,
+                    config: Some(HookConfigStatus {
+                        mode: "block".to_owned(),
+                        fail_on: "SERIOUS".to_owned(),
+                        on_incomplete: "warn".to_owned(),
+                        timeout_seconds: 60,
+                    }),
+                    config_error: None,
+                },
+                HookStatus {
+                    hook: "pre-push".to_owned(),
+                    path: "/repo/.husky/pre-push".to_owned(),
+                    state: HookState::NotInstalled,
+                    config: None,
+                    config_error: Some("proofline.hook.pre-push.mode is \"bad\"".to_owned()),
+                },
+            ],
+        };
+        let lines = render_status_text(&report);
+        assert_eq!(lines.len(), 3);
+        assert!(lines[0].contains("core.hooksPath = .husky"));
+        assert!(lines[1].contains("installed") && lines[1].contains("mode=block"));
+        assert!(lines[2].contains("not installed") && lines[2].contains("invalid config:"));
     }
 }
