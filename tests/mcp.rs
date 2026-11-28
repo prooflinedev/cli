@@ -310,7 +310,8 @@ struct Finished {
 
 impl Bridge {
     fn start(origin: &str, organization: &str) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_proofline"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_proofline"));
+        command
             .env_clear()
             .env("PROOFLINE_TOKEN", TOKEN)
             .env("PROOFLINE_ORGANIZATION_ID", organization)
@@ -320,9 +321,11 @@ impl Bridge {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
+            .kill_on_drop(true);
+        if let Some(system_root) = std::env::var_os("SYSTEMROOT") {
+            command.env("SYSTEMROOT", system_root);
+        }
+        let mut child = command.spawn().unwrap();
         Self {
             input: child.stdin.take(),
             output: child.stdout.take().map(BufReader::new),
