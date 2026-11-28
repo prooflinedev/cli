@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context as _, anyhow, bail};
+use anyhow::{Context as _, bail};
 use secrecy::{ExposeSecret as _, SecretString};
 use serde::Deserialize;
 use uuid::Uuid;
@@ -48,7 +48,7 @@ impl Issuer {
     }
 
     /// A newly issued OIDC token whose audience is this origin's CI routes.
-    async fn token(&self, http: &Http) -> anyhow::Result<SecretString> {
+    async fn token(&self, http: &Http) -> Result<SecretString, ApiError> {
         let mut request_url = self.url.clone();
         request_url
             .query_pairs_mut()
@@ -59,21 +59,15 @@ impl Issuer {
                     .bearer_auth(self.token.expose_secret()),
             )
             .await
-            .map_err(|error| {
-                let reason = match error {
-                    ApiError::Transport { reason, .. } => reason,
-                    other => other.to_string(),
-                };
-                anyhow!("GitHub Actions could not issue the job's OIDC token: {reason}")
-            })?;
+            .map_err(|error| error.with_origin("GitHub Actions"))?;
         if !reply.status.is_success() {
-            bail!(
-                "GitHub Actions refused to issue the job's OIDC token with HTTP {}",
-                reply.status
-            );
+            return Err(http.problem(&reply).with_origin("GitHub Actions"));
         }
-        let issued: IssuedToken = serde_json::from_slice(&reply.body)
-            .map_err(|_| anyhow!("GitHub Actions sent a malformed OIDC token response"))?;
+        let issued: IssuedToken =
+            serde_json::from_slice(&reply.body).map_err(|_| ApiError::Protocol {
+                origin: "GitHub Actions".to_owned(),
+                reason: "the OIDC token response is malformed".to_owned(),
+            })?;
         Ok(SecretString::from(issued.value))
     }
 }
@@ -210,6 +204,10 @@ struct Exchanged {
 /// lifetime when that is shorter.
 const RENEW_BEFORE: Duration = Duration::from_secs(5 * 60);
 
+/// Minimum delay before renewing when clock skew makes `expires_at <= now`,
+/// preventing a tight OIDC re-issuance loop on every poll.
+const SKEWED_RENEW_FLOOR: Duration = Duration::from_secs(30);
+
 /// Exchanges a runner-issued `identity` for a read credential. A
 /// `pull_request_head` is exchanged only if it is the pull request's live
 /// head; otherwise the exchange refuses and names the head to rerun at.
@@ -236,9 +234,18 @@ async fn exchange(
     let exchanged: Exchanged = serde_json::from_slice(&reply.body).map_err(|_| malformed())?;
     let expires_at = unix_seconds(&exchanged.expires_at).ok_or_else(malformed)?;
     let now = i64::try_from(crate::device::now()).map_err(|_| malformed())?;
-    let lifetime = Duration::from_secs(u64::try_from(expires_at - now).unwrap_or(0));
+    let seconds = expires_at
+        .checked_sub(now)
+        .and_then(|remaining| u64::try_from(remaining).ok())
+        .unwrap_or(0);
+    let lifetime = Duration::from_secs(seconds);
+    let renew_after = if lifetime.is_zero() {
+        SKEWED_RENEW_FLOOR
+    } else {
+        lifetime.saturating_sub(RENEW_BEFORE.min(lifetime / 2))
+    };
     let renew_at = tokio::time::Instant::now()
-        .checked_add(lifetime.saturating_sub(RENEW_BEFORE.min(lifetime / 2)))
+        .checked_add(renew_after)
         .ok_or_else(malformed)?;
     let lease = Lease {
         token: SecretString::from(exchanged.token),
@@ -298,8 +305,9 @@ pub struct Renewal {
 
 impl Renewal {
     /// The current credential, exchanged again once it is due for renewal.
-    /// A refused renewal, or one that names another organization, ends the
-    /// caller's request with [`ApiError::Renewal`] or the exchange's own error.
+    /// A failed renewal, or one that names another organization, ends the
+    /// caller's request with [`ApiError::Renewal`] or the exchange's own error;
+    /// transient issuer failures stay transient.
     pub(crate) async fn token(&self) -> Result<SecretString, ApiError> {
         let mut lease = self.lease.lock().await;
         if tokio::time::Instant::now() >= lease.renew_at {
@@ -308,12 +316,14 @@ impl Renewal {
                     .token(&self.http)
                     .await
                     .map_err(|error| ApiError::Renewal {
+                        transient: error.transient(),
                         reason: format!("{error:#}"),
                     })?;
             let (organization_id, renewed) =
                 exchange(&self.http, &identity, self.pull_request_head.as_deref()).await?;
             if organization_id != self.organization_id {
                 return Err(ApiError::Renewal {
+                    transient: false,
                     reason: format!(
                         "the exchange named organization {organization_id}, not {}",
                         self.organization_id
@@ -405,5 +415,63 @@ impl ReviewRequest {
                 .protocol("the review request response is malformed")
         })?;
         Ok(requested.review_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::routing::{get, post};
+    use axum::{Json, Router};
+    use serde_json::json;
+
+    use super::*;
+    use crate::origin::Origin;
+
+    #[tokio::test]
+    async fn exchange_clamps_past_expiry_without_overflow_or_immediate_renewal() {
+        for expires_at in ["1970-01-01T00:00:00Z", "0000-01-01T00:00:00Z"] {
+            let app = Router::new()
+                .route(
+                    "/github/token",
+                    get(|| async { Json(json!({ "value": "job-identity" })) }),
+                )
+                .route(
+                    "/api/v1/ci/github-actions/credentials",
+                    post(move || async move {
+                        Json(json!({
+                            "organization_id": "0190f3a0-0000-7000-8000-000000000001",
+                            "token": "plj_skewed",
+                            "expires_at": expires_at,
+                        }))
+                    }),
+                );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let origin = format!("http://{}", listener.local_addr().unwrap());
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let http = Http::new(Origin::parse(&origin).unwrap()).unwrap();
+            let (_, lease) = exchange(&http, &SecretString::from("job-identity"), None)
+                .await
+                .unwrap();
+            assert!(
+                lease.renew_at > tokio::time::Instant::now(),
+                "{expires_at} should delay renewal rather than tight-looping"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_oidc_response_names_github_actions_and_is_not_transient() {
+        let app = Router::new().route("/github/token", get(|| async { "not json" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let http = Http::new(Origin::parse(&origin).unwrap()).unwrap();
+        let issuer = Issuer::new(
+            format!("{origin}/github/token").parse().unwrap(),
+            SecretString::from("runner-secret"),
+        );
+        let error = issuer.token(&http).await.unwrap_err();
+        assert!(!error.transient(), "{error:#}");
+        assert!(error.to_string().contains("GitHub Actions"), "{error:#}");
     }
 }

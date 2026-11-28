@@ -45,19 +45,20 @@ pub enum ApiError {
     /// A CI job's credential could not be renewed before a request: the
     /// runner issued no identity, or the exchange named another organization.
     #[error("could not renew this job's credential: {reason}")]
-    Renewal { reason: String },
+    Renewal { transient: bool, reason: String },
 }
 
 impl ApiError {
     /// Whether another read could succeed: the request did not reach
-    /// Proofline or timed out, or Proofline answered with a 5xx status. A
-    /// refusal, an unreadable answer and a credential that could not be
-    /// renewed are not.
+    /// Proofline or timed out, Proofline answered with a 5xx status, or the
+    /// runner's OIDC issuer failed transiently during renewal. A refusal, an
+    /// unreadable answer and a permanent renewal failure are not.
     pub(crate) const fn transient(&self) -> bool {
         match self {
             Self::Transport { .. } => true,
             Self::Problem { status, .. } => *status >= 500,
-            Self::Protocol { .. } | Self::Renewal { .. } => false,
+            Self::Renewal { transient, .. } => *transient,
+            Self::Protocol { .. } => false,
         }
     }
 }
@@ -142,6 +143,27 @@ impl ApiError {
         match self {
             Self::Problem { code, .. } => code.as_deref(),
             Self::Transport { .. } | Self::Protocol { .. } | Self::Renewal { .. } => None,
+        }
+    }
+
+    /// Reattributes an error from a non-Proofline upstream such as GitHub Actions.
+    pub(crate) fn with_origin(self, upstream: impl Into<String>) -> Self {
+        let origin = upstream.into();
+        match self {
+            Self::Problem {
+                status,
+                detail,
+                code,
+                ..
+            } => Self::Problem {
+                origin,
+                status,
+                detail,
+                code,
+            },
+            Self::Transport { reason, .. } => Self::Transport { origin, reason },
+            Self::Protocol { reason, .. } => Self::Protocol { origin, reason },
+            Self::Renewal { .. } => self,
         }
     }
 }
