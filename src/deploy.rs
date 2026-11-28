@@ -353,7 +353,9 @@ pub(crate) async fn wait(
 ) -> anyhow::Result<Verdict> {
     let started = tokio::time::Instant::now();
     let started_unix = i64::try_from(crate::device::now()).unwrap_or(i64::MAX);
-    let mut deadline = poll_deadline(args.timeout_minutes()?)?;
+    let timeout_minutes = args.timeout_minutes()?;
+    let one_read = timeout_minutes == 0;
+    let mut deadline = poll_deadline(timeout_minutes)?;
     let unsuccessful = match args.unsuccessful_run() {
         Some(conclusion) => Some((conclusion, poll_deadline(UNSUCCESSFUL_RUN_MINUTES)?)),
         None => None,
@@ -361,22 +363,33 @@ pub(crate) async fn wait(
     let (name, repository_id) = connected_repository(api, &args.repository).await?;
     let checkpoint = args.until.api_name();
     let mut delay = FIRST_POLL_SECONDS;
-    // Reads that failed in a row since the last one that answered; `None`
-    // before any answered, so the first read fails at once.
-    let mut failed: Option<u32> = None;
+    let mut ends_at = deadline;
+    let mut last = None;
+    let mut failures = 0;
     loop {
-        let (raw, read) = match api.commit_deploy_verifications(repository_id, commit).await {
-            Ok(read) => {
-                failed = Some(0);
-                read
+        let read = api.commit_deploy_verifications(repository_id, commit);
+        let response = if one_read {
+            Some(read.await)
+        } else if tokio::time::Instant::now() >= ends_at {
+            None
+        } else {
+            match tokio::time::timeout_at(ends_at, read).await {
+                Ok(response) if tokio::time::Instant::now() < ends_at => Some(response),
+                Ok(_) | Err(_) => None,
             }
-            Err(error) => {
-                let Some(before) = failed else {
+        };
+        let timed_out = response.is_none();
+        match response {
+            Some(Ok(read)) => {
+                last = Some(read);
+                failures = 0;
+            }
+            Some(Err(error)) => {
+                if last.is_none() {
                     return Err(error.into());
-                };
-                let failures = before + 1;
-                let now = tokio::time::Instant::now();
-                if !error.transient() || failures >= FAILED_READS || now >= deadline {
+                }
+                failures += 1;
+                if !error.transient() || failures >= FAILED_READS {
                     let error = anyhow::Error::from(error);
                     return Err(if failures > 1 {
                         error.context(format!("{failures} reads in a row failed"))
@@ -384,13 +397,19 @@ pub(crate) async fn wait(
                         error
                     });
                 }
-                failed = Some(failures);
                 say(&format!(
                     "Reading the deploys of {name} at {commit} failed: {error}; checking again in {delay} seconds."
                 ));
-                delay = pause(delay, deadline, now).await;
+                delay = pause(delay, ends_at, tokio::time::Instant::now()).await;
                 continue;
             }
+            None => {}
+        }
+        let Some((raw, read)) = last.as_ref() else {
+            say(&format!(
+                "Proofline did not answer a verification read for {name} at {commit} within {timeout_minutes} minutes. The result is not established."
+            ));
+            return Ok(Verdict::NotComplete);
         };
         let selected: Vec<&CommitDeploy> = read
             .deploys
@@ -409,9 +428,9 @@ pub(crate) async fn wait(
         let ended_run = unsuccessful
             .filter(|_| selected.is_empty())
             .map(|(conclusion, short)| (conclusion, deadline.min(short)));
-        let ends_at = ended_run.map_or(deadline, |(_, short)| short);
+        ends_at = ended_run.map_or(deadline, |(_, short)| short);
         let now = tokio::time::Instant::now();
-        let verdict = conclude(&readings, now >= ends_at);
+        let verdict = conclude(&readings, one_read || timed_out || now >= ends_at);
         if let Some(id) = reader_run
             && verdict != Some(Verdict::Regressed)
             && selected.iter().zip(&readings).any(|(deploy, reading)| {
@@ -423,7 +442,7 @@ pub(crate) async fn wait(
         if let Some(verdict) = verdict {
             let mut stdout = std::io::stdout().lock();
             if args.json {
-                writeln!(stdout, "{}", serde_json::to_string_pretty(&raw)?)?;
+                writeln!(stdout, "{}", serde_json::to_string_pretty(raw)?)?;
             } else {
                 for deploy in &selected {
                     write_lines(&mut stdout, deploy, args.until)?;
@@ -478,8 +497,7 @@ pub(crate) async fn wait(
 /// Sleeps `delay` seconds from `now`, or until `deadline` if that is sooner,
 /// and returns the next poll's delay.
 async fn pause(delay: u64, deadline: tokio::time::Instant, now: tokio::time::Instant) -> u64 {
-    let pause = Duration::from_secs(delay).min(deadline.saturating_duration_since(now));
-    tokio::time::sleep(pause).await;
+    tokio::time::sleep_until(deadline.min(now + Duration::from_secs(delay))).await;
     (delay * 2).min(LONGEST_POLL_SECONDS)
 }
 
@@ -842,7 +860,10 @@ mod tests {
     /// Serves the repository and, on each read of the commit's deploys, the
     /// next of `answers`, repeating the last. Returns the origin and a count
     /// of the reads.
-    async fn console(answers: Vec<(u16, Value)>) -> (String, Arc<Mutex<usize>>) {
+    async fn console(
+        answers: Vec<(u16, Value)>,
+        last_delay: Duration,
+    ) -> (String, Arc<Mutex<usize>>) {
         let reads = Arc::new(Mutex::new(0_usize));
         let counted = Arc::clone(&reads);
         let app = Router::new()
@@ -865,6 +886,9 @@ mod tests {
                             *reads += 1;
                             *reads - 1
                         };
+                        if index >= answers.len() - 1 && !last_delay.is_zero() {
+                            tokio::time::sleep(last_delay).await;
+                        }
                         let (status, body) = answers[index.min(answers.len() - 1)].clone();
                         let status = axum::http::StatusCode::from_u16(status).unwrap();
                         (status, Json(body)).into_response()
@@ -894,6 +918,15 @@ mod tests {
         args: &CiDeployArgs,
         answers: Vec<(u16, Value)>,
     ) -> (anyhow::Result<Verdict>, usize, Duration) {
+        run_args_with_delay(reader_run, args, answers, Duration::ZERO).await
+    }
+
+    async fn run_args_with_delay(
+        reader_run: Option<i64>,
+        args: &CiDeployArgs,
+        answers: Vec<(u16, Value)>,
+        last_delay: Duration,
+    ) -> (anyhow::Result<Verdict>, usize, Duration) {
         // A paused clock jumps to the next timer whenever the runtime waits,
         // even on a loopback socket about to answer, which would fire the
         // client's request timeout. A 10 ms ticker bounds each jump.
@@ -902,7 +935,7 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         });
-        let (origin, reads) = console(answers).await;
+        let (origin, reads) = console(answers, last_delay).await;
         let http = Http::new(Origin::parse(&origin).unwrap()).unwrap();
         let organization: Uuid = ORG.parse().unwrap();
         let api = Api::new(http, SecretString::from("plp_stored"), organization);
@@ -1278,6 +1311,21 @@ mod tests {
         assert_eq!(reads, 3);
         assert!(took < Duration::from_secs(60), "{took:?}");
 
+        // The fourth read begins about 35 seconds into the wait. Its healthy
+        // answer arrives after the minute has ended, within the HTTP timeout.
+        let healthy = recorded(&[deploy("deploy", &[1], &["HEALTHY", "HEALTHY"], &[])]);
+        let (verdict, reads, took) = run_args_with_delay(
+            None,
+            &args(&["--until", "20m", "--timeout", "1"]),
+            vec![none.clone(), none.clone(), landed.clone(), healthy],
+            Duration::from_secs(28),
+        )
+        .await;
+        assert_eq!(verdict.unwrap(), Verdict::NotComplete);
+        assert_eq!(reads, 4);
+        assert!(took >= Duration::from_secs(60), "{took:?}");
+        assert!(took < Duration::from_secs(61), "{took:?}");
+
         let (verdict, reads, _) = run(Some(7), &["--until", "20m"], vec![landed.clone()]).await;
         assert!(verdict.is_err());
         assert_eq!(reads, 1);
@@ -1329,7 +1377,7 @@ mod tests {
         }
 
         // A reader following a run that did not succeed stops waiting for a
-        // deploy after 5 minutes, at the 9th read. A deploy that run landed
+        // deploy after 5 minutes, with eight reads. A deploy that run landed
         // is read as from any run, and once it is recorded its check gets
         // the whole wait. A run that succeeded, a payload without its
         // conclusion and an explicit --run wait the whole 30 minutes.
@@ -1354,7 +1402,7 @@ mod tests {
                 &[][..],
                 vec![none.clone()],
                 Verdict::NotComplete,
-                9,
+                8,
                 5,
             ),
             (
@@ -1367,7 +1415,7 @@ mod tests {
                     other
                 }])],
                 Verdict::NotComplete,
-                9,
+                8,
                 5,
             ),
             (
@@ -1385,7 +1433,7 @@ mod tests {
                 &[][..],
                 vec![unchecked.clone()],
                 Verdict::NotComplete,
-                34,
+                33,
                 30,
             ),
             (
@@ -1394,7 +1442,7 @@ mod tests {
                 &[][..],
                 vec![none.clone()],
                 Verdict::NotComplete,
-                34,
+                33,
                 30,
             ),
             (
@@ -1403,7 +1451,7 @@ mod tests {
                 &[][..],
                 vec![none.clone()],
                 Verdict::NotComplete,
-                34,
+                33,
                 30,
             ),
             (
@@ -1412,7 +1460,7 @@ mod tests {
                 &["--run", "7"][..],
                 vec![none.clone()],
                 Verdict::NotComplete,
-                34,
+                33,
                 30,
             ),
         ] {
