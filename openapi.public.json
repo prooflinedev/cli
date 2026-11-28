@@ -2699,7 +2699,7 @@
           },
           {
             "const": "RUNTIME_INVENTORY_UNAVAILABLE",
-            "description": "The check could not read an inventory of the connection's Cloud Run\n services or ECS tasks: Kian retains none, or the read failed or timed\n out. Nothing shows what runs.",
+            "description": "The check could not read an inventory of the connection's Cloud Run\n services or ECS tasks. Kian may retain none. When opening the evidence\n database or reading its workspace failed, or the read exceeded its\n deadline, the report records `runtime_read_cause`.",
             "type": "string"
           },
           {

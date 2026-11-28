@@ -400,6 +400,11 @@ async fn diff(
         "--no-ext-diff",
         "--no-textconv",
         "--no-color",
+        // A changed gitlink stays in the patch for the server to refuse,
+        // rendered as its commit pair whatever the configuration hides or
+        // expands.
+        "--ignore-submodules=none",
+        "--submodule=short",
         "--src-prefix=a/",
         "--dst-prefix=b/",
         &base_commit_sha,
@@ -667,9 +672,21 @@ mod tests {
             // The server refuses copies and prefix-less paths.
             ("diff.renames", "copies"),
             ("diff.noprefix", "true"),
+            // Hidden or expanded gitlinks would slip past the server's
+            // submodule refusal.
+            ("diff.ignoreSubmodules", "all"),
+            ("diff.submodule", "diff"),
         ] {
             run(dir, &["config", key, value]);
         }
+        let sub = dir.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        run(&sub, &["init", "-q", "-b", "main"]);
+        run(&sub, &["config", "user.email", "dev@example.com"]);
+        run(&sub, &["config", "user.name", "dev"]);
+        std::fs::write(sub.join("inner.txt"), "pinned\n").unwrap();
+        run(&sub, &["add", "."]);
+        run(&sub, &["commit", "-qm", "pinned"]);
         let body = "one\ntwo\nthree\nfour\nfive\n";
         std::fs::write(dir.join("kept.txt"), body).unwrap();
         std::fs::write(dir.join("moved.txt"), "alpha\nbeta\ngamma\n").unwrap();
@@ -696,6 +713,10 @@ mod tests {
             (base.as_str(), "")
         );
 
+        std::fs::write(sub.join("inner.txt"), "repinned\n").unwrap();
+        run(&sub, &["commit", "-qam", "repinned"]);
+        run(dir, &["add", "sub"]);
+        std::fs::write(sub.join("inner.txt"), "unpinned edit\n").unwrap();
         std::fs::write(dir.join("committed.txt"), "unpushed commit\n").unwrap();
         run(dir, &["add", "committed.txt"]);
         run(dir, &["commit", "-qm", "local commit"]);
@@ -735,6 +756,7 @@ mod tests {
                 "diff --git a/kept.txt b/kept.txt",
                 "diff --git a/moved.txt b/renamed.txt",
                 "diff --git a/staged.txt b/staged.txt",
+                "diff --git a/sub b/sub",
                 "rename from moved.txt",
                 "rename to renamed.txt",
             ];
@@ -748,6 +770,8 @@ mod tests {
             headers.sort_unstable();
             assert_eq!(headers, expected, "{selection:?}");
             assert!(changes.patch.contains("+unpushed commit\n"));
+            assert!(changes.patch.contains("+Subproject commit "));
+            assert!(!changes.patch.contains("inner.txt"));
             match selection {
                 LocalSelection::Staged => {
                     assert!(changes.patch.contains("+original index\n"));
