@@ -82,6 +82,41 @@ fn write_cache(path: &Path, cache: &Cache) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn subcommand(args: &[std::ffi::OsString]) -> Option<&std::ffi::OsStr> {
+    let mut index = 0;
+    while let Some(arg) = args.get(index) {
+        if arg == "--base-url" || arg == "--org" || arg == "--ca-cert" {
+            let value = args.get(index + 1)?;
+            if matches!(value.as_encoded_bytes(), [b'-', _, ..]) {
+                return None;
+            }
+            index += 2;
+            continue;
+        }
+        let bytes = arg.as_encoded_bytes();
+        if bytes.starts_with(b"--base-url=")
+            || bytes.starts_with(b"--org=")
+            || bytes.starts_with(b"--ca-cert=")
+        {
+            index += 1;
+            continue;
+        }
+        if bytes.first().is_some_and(|byte| *byte == b'-') {
+            return None;
+        }
+        return Some(arg.as_os_str());
+    }
+    None
+}
+
+fn is_exempt(args: &[std::ffi::OsString]) -> bool {
+    args.iter()
+        // A shell evaluates `completions` at every start-up; keep it offline.
+        .any(|arg| arg == "update" || arg == "__update-check" || arg == "completions")
+        // `preflight` promises offline inspection only when invoked as the subcommand.
+        || subcommand(args).is_some_and(|cmd| cmd == "preflight")
+}
+
 /// Reads only local state; discovery continues in a child with closed streams.
 /// Call before starting the runtime, including for help and version invocations.
 pub fn on_invocation() {
@@ -89,11 +124,7 @@ pub fn on_invocation() {
         return;
     }
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    if args
-        .iter()
-        // A shell evaluates `completions` at every start-up; keep it offline.
-        .any(|arg| arg == "update" || arg == "__update-check" || arg == "completions")
-    {
+    if is_exempt(&args) {
         return;
     }
     let Some(path) = cache_path() else {

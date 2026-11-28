@@ -165,10 +165,36 @@ async fn git(args: &[&str]) -> Result<String, GitError> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+/// Controls whether Git subprocesses may lazily fetch missing objects from a
+/// promisor remote in a partial clone.
+#[derive(Debug, Clone, Copy)]
+enum FetchPolicy {
+    AllowLazy,
+    Offline,
+}
+
 /// Runs git in `dir` and returns its standard output untouched.
 async fn git_in(dir: &Path, index: Option<&Path>, args: &[&str]) -> Result<Vec<u8>, GitError> {
+    git_in_with_policy(dir, index, FetchPolicy::AllowLazy, args).await
+}
+
+async fn git_in_with_policy(
+    dir: &Path,
+    index: Option<&Path>,
+    policy: FetchPolicy,
+    args: &[&str],
+) -> Result<Vec<u8>, GitError> {
     let mut command = Command::new("git");
-    command.arg("-C").arg(dir).args(args);
+    command.arg("-C").arg(dir);
+    if matches!(policy, FetchPolicy::Offline) {
+        // Empty `core.fsmonitor=` disables fsmonitor on both Git <= 2.35.1
+        // (which treated `false` as a hook path) and newer releases.
+        command
+            .args(["-c", "core.fsmonitor="])
+            .env("GIT_NO_LAZY_FETCH", "1")
+            .env("GIT_ALLOW_PROTOCOL", "");
+    }
+    command.args(args);
     if let Some(index) = index {
         command.env("GIT_INDEX_FILE", index);
     }
@@ -186,7 +212,15 @@ async fn git_in(dir: &Path, index: Option<&Path>, args: &[&str]) -> Result<Vec<u
 }
 
 async fn line_in(dir: &Path, args: &[&str]) -> Result<String, GitError> {
-    let output = git_in(dir, None, args).await?;
+    line_in_with_policy(dir, FetchPolicy::AllowLazy, args).await
+}
+
+async fn line_in_with_policy(
+    dir: &Path,
+    policy: FetchPolicy,
+    args: &[&str],
+) -> Result<String, GitError> {
+    let output = git_in_with_policy(dir, None, policy, args).await?;
     Ok(String::from_utf8_lossy(&output).trim().to_owned())
 }
 
@@ -220,13 +254,16 @@ async fn merge_base(
     remote: &str,
     commit: &str,
     targets: &[&str],
+    policy: FetchPolicy,
 ) -> Result<String, GitError> {
     for target in targets {
-        if line_in(dir, &["rev-parse", "--verify", "--quiet", target])
+        if line_in_with_policy(dir, policy, &["rev-parse", "--verify", "--quiet", target])
             .await
             .is_ok()
         {
-            return commit_sha(&line_in(dir, &["merge-base", commit, target]).await?);
+            return commit_sha(
+                &line_in_with_policy(dir, policy, &["merge-base", commit, target]).await?,
+            );
         }
     }
     Err(GitError::NoBase(remote.to_owned()))
@@ -234,9 +271,16 @@ async fn merge_base(
 
 /// The merge-base of `HEAD` with its upstream branch, or with `remote`'s
 /// default branch when there is no upstream.
-async fn base(dir: &Path, remote: &str) -> Result<String, GitError> {
+async fn base(dir: &Path, remote: &str, policy: FetchPolicy) -> Result<String, GitError> {
     let default = format!("refs/remotes/{remote}/HEAD");
-    merge_base(dir, remote, "HEAD", &["@{upstream}", default.as_str()]).await
+    merge_base(
+        dir,
+        remote,
+        "HEAD",
+        &["@{upstream}", default.as_str()],
+        policy,
+    )
+    .await
 }
 
 /// Which local bytes contribute to the patch against its pinned base.
@@ -258,37 +302,67 @@ pub async fn local_changes(
     selection: LocalSelection,
     path: Option<&str>,
 ) -> Result<LocalChanges, GitError> {
-    let root = line_in(dir, &["rev-parse", "--show-toplevel"]).await?;
+    local_changes_with_policy(dir, remote, selection, path, FetchPolicy::AllowLazy).await
+}
+
+/// Same as [`local_changes`], but forbids lazy promisor fetches in partial
+/// clones so offline preflight never initiates Git network traffic.
+pub async fn local_changes_offline(
+    dir: &Path,
+    remote: &str,
+    selection: LocalSelection,
+    path: Option<&str>,
+) -> Result<LocalChanges, GitError> {
+    local_changes_with_policy(dir, remote, selection, path, FetchPolicy::Offline).await
+}
+
+async fn local_changes_with_policy(
+    dir: &Path,
+    remote: &str,
+    selection: LocalSelection,
+    path: Option<&str>,
+    policy: FetchPolicy,
+) -> Result<LocalChanges, GitError> {
+    let root = line_in_with_policy(dir, policy, &["rev-parse", "--show-toplevel"]).await?;
     let root = Path::new(&root);
-    let base_commit_sha = base(root, remote).await?;
+    let base_commit_sha = base(root, remote, policy).await?;
     let scratch = tempfile::tempdir()
         .map_err(|error| GitError::Unavailable(format!("no temporary directory: {error}")))?;
     let index = scratch.path().join("index");
-    copy_index(root, &index).await?;
+    copy_index(root, &index, policy).await?;
     let add = match selection {
         LocalSelection::Tracked => Some("--update"),
         LocalSelection::Staged => None,
         LocalSelection::IncludeUntracked => Some("--all"),
     };
     if let Some(add) = add {
-        git_in(
-            root,
-            Some(&index),
-            &["-c", "advice.addEmbeddedRepo=false", "add", add],
-        )
-        .await?;
+        let mut add_args = vec!["-c", "advice.addEmbeddedRepo=false"];
+        let hooks_config;
+        if matches!(policy, FetchPolicy::Offline) {
+            let empty_hooks = scratch.path().join("hooks");
+            tokio::fs::create_dir_all(&empty_hooks)
+                .await
+                .map_err(|error| {
+                    GitError::Unavailable(format!("could not isolate hooks: {error}"))
+                })?;
+            hooks_config = format!("core.hooksPath={}", empty_hooks.display());
+            add_args.extend(["-c", hooks_config.as_str()]);
+        }
+        add_args.extend(["add", add]);
+        git_in_with_policy(root, Some(&index), policy, &add_args).await?;
     }
     if let Some(path) = path {
-        check_one_path(root, &index, &base_commit_sha, path).await?;
+        check_one_path(root, &index, &base_commit_sha, path, policy).await?;
     }
-    diff(root, Some(&index), base_commit_sha, None, path).await
+    diff(root, Some(&index), base_commit_sha, None, path, policy).await
 }
 
 /// Copies the repository's index to `index`. A repository with nothing
 /// staged yet has no index, which leaves `index` absent too.
-async fn copy_index(root: &Path, index: &Path) -> Result<(), GitError> {
-    let current = line_in(
+async fn copy_index(root: &Path, index: &Path, policy: FetchPolicy) -> Result<(), GitError> {
+    let current = line_in_with_policy(
         root,
+        policy,
         &["rev-parse", "--path-format=absolute", "--git-path", "index"],
     )
     .await?;
@@ -308,19 +382,22 @@ async fn check_one_path(
     index: &Path,
     base_commit_sha: &str,
     path: &str,
+    policy: FetchPolicy,
 ) -> Result<(), GitError> {
     if path.contains('\0') || path.split('/').any(|part| matches!(part, "" | "." | "..")) {
         return Err(GitError::InvalidLocalPath(path.to_owned()));
     }
-    let indexed = git_in(
+    let indexed = git_in_with_policy(
         root,
         Some(index),
+        policy,
         &["--literal-pathspecs", "ls-files", "-z", "--", path],
     )
     .await?;
-    let base_paths = git_in(
+    let base_paths = git_in_with_policy(
         root,
         None,
+        policy,
         &[
             "--literal-pathspecs",
             "ls-tree",
@@ -355,14 +432,29 @@ async fn check_one_path(
 pub async fn range_changes(dir: &Path, base: &str, head: &str) -> Result<LocalChanges, GitError> {
     let root = line_in(dir, &["rev-parse", "--show-toplevel"]).await?;
     let head = commit_sha(head)?;
-    diff(Path::new(&root), None, commit_sha(base)?, Some(&head), None).await
+    diff(
+        Path::new(&root),
+        None,
+        commit_sha(base)?,
+        Some(&head),
+        None,
+        FetchPolicy::AllowLazy,
+    )
+    .await
 }
 
 /// The base of a branch the remote does not have yet: its merge-base with
 /// `remote`'s default branch.
 pub async fn new_branch_base(dir: &Path, remote: &str, head: &str) -> Result<String, GitError> {
     let default = format!("refs/remotes/{remote}/HEAD");
-    merge_base(dir, remote, &commit_sha(head)?, &[default.as_str()]).await
+    merge_base(
+        dir,
+        remote,
+        &commit_sha(head)?,
+        &[default.as_str()],
+        FetchPolicy::AllowLazy,
+    )
+    .await
 }
 
 /// The patch from `base_commit_sha` to `head`, or to `index` when `head` is
@@ -373,6 +465,7 @@ async fn diff(
     base_commit_sha: String,
     head: Option<&str>,
     path: Option<&str>,
+    policy: FetchPolicy,
 ) -> Result<LocalChanges, GitError> {
     let mut args = vec![
         "--literal-pathspecs",
@@ -412,7 +505,7 @@ async fn diff(
     args.extend(head);
     args.push("--");
     args.extend(path);
-    let output = git_in(root, index, &args).await?;
+    let output = git_in_with_policy(root, index, policy, &args).await?;
     let (paths, patch) = diff_paths(&output)?;
     if patch.len() > MAX_PATCH_BYTES {
         return Err(GitError::TooLarge(patch.len().div_ceil(1 << 20)));
