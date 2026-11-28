@@ -313,6 +313,16 @@ struct ReviewArgs {
     pr: Option<u64>,
     #[command(flatten)]
     local_selection: LocalSelectionArgs,
+    /// Review the local changes against the merge-base of HEAD and this
+    /// revision instead of the upstream or default branch, including commits
+    /// already pushed. The name is resolved once in the checkout; a
+    /// remote-tracking branch must contain the merge-base, so GitHub has it.
+    #[arg(
+        long,
+        value_name = "REVISION",
+        conflicts_with_all = ["pr", "commit", "range", "files"]
+    )]
+    base: Option<String>,
     /// Review the change this pushed commit makes against its first parent.
     /// The name is resolved once in the checkout; GitHub must have both commits.
     /// With --files, review complete selected files at that commit instead.
@@ -1068,8 +1078,9 @@ async fn review(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
     finish(api, requested.review_id, args).await
 }
 
-/// Reviews the checkout's local changes against the commit they build on.
-/// Nothing is pushed: GitHub needs only the base commit.
+/// Reviews the checkout's local changes against the commit they build on, or
+/// against the merge-base with `--base`. Nothing is pushed: GitHub needs only
+/// the base commit.
 async fn review_local(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
     let selection = if args.local_selection.staged {
         git::LocalSelection::Staged
@@ -1081,6 +1092,7 @@ async fn review_local(api: &Api, args: &ReviewArgs) -> anyhow::Result<Verdict> {
     let changes = git::local_changes(
         std::path::Path::new("."),
         &args.repository.remote,
+        args.base.as_deref(),
         selection,
         args.path.as_deref(),
     )

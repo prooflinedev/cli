@@ -23,6 +23,12 @@ pub enum GitError {
         "the checkout has no base to review against: set an upstream branch with `git branch --set-upstream-to`, or run `git remote set-head {0} --auto`"
     )]
     NoBase(String),
+    #[error(
+        "the merge-base {base} of HEAD and {revision:?} is on no remote-tracking branch, so GitHub may not have it; push {revision:?}, or pass --base a revision that is already pushed"
+    )]
+    UnpushedBase { base: String, revision: String },
+    #[error("HEAD and {0:?} have no commit in common, so there is no base to review against")]
+    NoCommonBase(String),
     #[error("the local changes include text that is not UTF-8, which Proofline cannot review")]
     NotUtf8,
     #[error("the local changes make a {0} MiB patch; Proofline reviews patches up to 5 MiB")]
@@ -239,6 +245,40 @@ async fn base(dir: &Path, remote: &str) -> Result<String, GitError> {
     merge_base(dir, remote, "HEAD", &["@{upstream}", default.as_str()]).await
 }
 
+/// The merge-base of `HEAD` with the commit `revision` names, the base a
+/// pull request from `HEAD` into it would have. GitHub must have the base,
+/// so one that no remote-tracking branch contains is refused here, before
+/// anything is sent.
+async fn named_base(dir: &Path, revision: &str) -> Result<String, GitError> {
+    let commit = resolve(dir, revision).await?;
+    let base = line_in(dir, &["merge-base", "HEAD", &commit])
+        .await
+        .map_err(|error| match error {
+            GitError::Failed { .. } => GitError::NoCommonBase(revision.to_owned()),
+            error => error,
+        })?;
+    let base = commit_sha(&base)?;
+    let pushed = line_in(
+        dir,
+        &[
+            "for-each-ref",
+            "--count=1",
+            "--format=%(refname)",
+            "--contains",
+            &base,
+            "refs/remotes/",
+        ],
+    )
+    .await?;
+    if pushed.is_empty() {
+        return Err(GitError::UnpushedBase {
+            base,
+            revision: revision.to_owned(),
+        });
+    }
+    Ok(base)
+}
+
 /// Which local bytes contribute to the patch against its pinned base.
 #[derive(Debug, Clone, Copy)]
 pub enum LocalSelection {
@@ -250,17 +290,22 @@ pub enum LocalSelection {
     IncludeUntracked,
 }
 
-/// Local changes against one merge-base. A copied index collects the selected
-/// bytes, so the person's index is untouched.
+/// Local changes against one merge-base: with `base_revision` when the person
+/// names one, otherwise with the upstream or default branch. A copied index
+/// collects the selected bytes, so the person's index is untouched.
 pub async fn local_changes(
     dir: &Path,
     remote: &str,
+    base_revision: Option<&str>,
     selection: LocalSelection,
     path: Option<&str>,
 ) -> Result<LocalChanges, GitError> {
     let root = line_in(dir, &["rev-parse", "--show-toplevel"]).await?;
     let root = Path::new(&root);
-    let base_commit_sha = base(root, remote).await?;
+    let base_commit_sha = match base_revision {
+        Some(revision) => named_base(root, revision).await?,
+        None => base(root, remote).await?,
+    };
     let scratch = tempfile::tempdir()
         .map_err(|error| GitError::Unavailable(format!("no temporary directory: {error}")))?;
     let index = scratch.path().join("index");
@@ -705,7 +750,7 @@ mod tests {
             ],
         );
 
-        let unchanged = local_changes(dir, "origin", LocalSelection::Tracked, None)
+        let unchanged = local_changes(dir, "origin", None, LocalSelection::Tracked, None)
             .await
             .unwrap();
         assert_eq!(
@@ -749,7 +794,9 @@ mod tests {
                 ],
             ),
         ] {
-            let changes = local_changes(dir, "origin", selection, None).await.unwrap();
+            let changes = local_changes(dir, "origin", None, selection, None)
+                .await
+                .unwrap();
             assert_eq!(changes.base_commit_sha, base);
             let mut expected = vec![
                 "diff --git a/committed.txt b/committed.txt",
