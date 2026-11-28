@@ -621,10 +621,14 @@ async fn negotiated_stdio_forwards_exact_messages_headers_and_machine_status_wit
         // launch credential was resolved with a different local organization.
         call["params"]["arguments"]["organization_id"] = json!(OTHER_ORG);
         let status = status_result(call["id"].clone(), "INCOMPLETE");
-        assert_eq!(
-            status["result"]["structuredContent"]["data"]["assessments"][0]["status"],
-            "INCOMPLETE"
-        );
+        let assessments = status["result"]["structuredContent"]["data"]["assessments"]
+            .as_array()
+            .expect("review assessments");
+        let production = assessments
+            .iter()
+            .find(|assessment| assessment["id"] == "0199abcd-1000-7000-8000-000000000004")
+            .expect("production assessment");
+        assert_eq!(production["status"], "INCOMPLETE");
         assert_eq!(
             status["result"]["structuredContent"]["data"]["exact_change"]["subjects"][0]["artifact_digest"],
             Value::Null

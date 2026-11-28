@@ -21,18 +21,40 @@
         "workflow_run_id": null,
         "workflow_attempt": null,
         "artifact_digest": null,
-        "payload_json": {"credential": "SUBJECT_SECRET_CANARY"}
+        "payload_json": {
+          "credential": "SUBJECT_SECRET_CANARY"
+        }
+      }
+    ],
+    "environments": [
+      {
+        "id": "0199abcd-1000-7000-8000-000000000010",
+        "external_key": "mcp-env",
+        "display_name": "Production",
+        "world_workspace_key": "world-workspace-canary"
+      },
+      {
+        "id": "0199abcd-1000-7000-8000-000000000011",
+        "external_key": "mcp-staging",
+        "display_name": "Staging ya29.synthetic",
+        "world_workspace_key": "world-workspace-mcp-staging"
       }
     ],
     "assessments": [
       {
         "id": "0199abcd-1000-7000-8000-000000000004",
         "status": "INCOMPLETE",
-        "reason_codes": ["WORLD_UNAVAILABLE"],
+        "reason_codes": [
+          "WORLD_UNAVAILABLE"
+        ],
         "incompleteness_kind": "EVIDENCE_UNAVAILABLE",
-        "environment_display_name": "ENVIRONMENT_NAME_CANARY",
+        "environment_id": "0199abcd-1000-7000-8000-000000000010",
         "status_detail": "WORLD_ENDPOINT_CANARY",
-        "findings": [{"claim": "FINDING_PROSE_CANARY"}],
+        "findings": [
+          {
+            "claim": "FINDING_PROSE_CANARY"
+          }
+        ],
         "checks": {
           "receipt_recorded": true,
           "status": "UNAVAILABLE",
@@ -44,11 +66,24 @@
               "unresolved_reason": null,
               "detail": "WORLD_VALUE_CANARY",
               "evaluated_at": "EVALUATED_AT_CANARY",
-              "change_attribution": {"summary": "ATTRIBUTION_CANARY"}
+              "change_attribution": {
+                "summary": "ATTRIBUTION_CANARY"
+              }
             }
           ]
         },
         "diagnostics": "DIAGNOSTIC_CANARY"
+      },
+      {
+        "id": "0199abcd-0fff-7000-8000-000000000005",
+        "environment_id": "0199abcd-1000-7000-8000-000000000011",
+        "status": "COMPLETED",
+        "findings": [],
+        "checks": {
+          "receipt_recorded": true,
+          "status": "NOT_APPLICABLE",
+          "families": []
+        }
       }
     ]
   },
@@ -78,9 +113,25 @@
     },
     "assessments": [
       {
+        "id": "0199abcd-0fff-7000-8000-000000000005",
+        "environment_id": "0199abcd-1000-7000-8000-000000000011",
+        "environment": "Staging <REDACTED:google-oauth-access-token>",
+        "status": "COMPLETED",
+        "reason_codes": null,
+        "incompleteness_kind": null,
+        "checks": {
+          "status": "NOT_APPLICABLE",
+          "families": []
+        }
+      },
+      {
         "id": "0199abcd-1000-7000-8000-000000000004",
+        "environment_id": "0199abcd-1000-7000-8000-000000000010",
+        "environment": "Production",
         "status": "INCOMPLETE",
-        "reason_codes": ["WORLD_UNAVAILABLE"],
+        "reason_codes": [
+          "WORLD_UNAVAILABLE"
+        ],
         "incompleteness_kind": "EVIDENCE_UNAVAILABLE",
         "checks": {
           "status": "UNAVAILABLE",
