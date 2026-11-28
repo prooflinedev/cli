@@ -300,6 +300,21 @@ impl Checkout {
             .unwrap()
     }
 
+    async fn sha(&self, revision: &str) -> String {
+        String::from_utf8(self.git(&["rev-parse", "--verify", revision]).await)
+            .unwrap()
+            .trim()
+            .to_owned()
+    }
+
+    /// Commits `text` at `path` and returns the new commit.
+    async fn commit(&self, path: &str, text: &str) -> String {
+        self.write(path, text).await;
+        self.git(&["add", path]).await;
+        self.git(&["commit", "-qm", path]).await;
+        self.sha("HEAD").await
+    }
+
     async fn review(&self, server: &Server, allowed: &[&str], flags: &[&str]) -> Output {
         let mut flags = flags.to_vec();
         flags.push("--no-wait");
@@ -359,6 +374,37 @@ impl Checkout {
         )
         .unwrap()
     }
+}
+
+/// Reviews with `flags` and checks the one upload: its base, and which
+/// texts its patch has and lacks.
+async fn assert_upload(
+    checkout: &Checkout,
+    flags: &[&str],
+    base: &str,
+    included: &[&str],
+    excluded: &[&str],
+) {
+    let server = Server::start(true).await;
+    let output = checkout.review(&server, &[], flags).await;
+    assert!(
+        output.status.success(),
+        "{flags:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    {
+        let uploads = server.fixture.uploads.lock().unwrap();
+        assert_eq!(uploads.len(), 1, "{flags:?}");
+        assert_eq!(uploads[0]["base_commit_sha"], base, "{flags:?}");
+        let patch = uploads[0]["patch"].as_str().unwrap();
+        for text in included {
+            assert!(patch.contains(text), "{flags:?}: {patch}");
+        }
+        for text in excluded {
+            assert!(!patch.contains(text), "{flags:?}: {patch}");
+        }
+    }
+    server.close().await;
 }
 
 fn assert_refusal(output: &Output, diagnostic: &str, secret: &str) {
@@ -976,5 +1022,192 @@ async fn local_path_never_expands_a_file_replaced_by_a_directory() {
     assert!(!output.status.success());
     server.assert_no_requests();
     assert_eq!(checkout.index().await, index);
+    server.close().await;
+}
+
+/// Once a branch is pushed its upstream is its head, so the default base
+/// leaves its pushed commits out. `--base` names the branch it builds on and
+/// reviews those commits with the selected local changes.
+#[tokio::test]
+async fn a_named_base_reviews_the_pushed_commits_an_upstream_leaves_out() {
+    let checkout = Checkout::new(&[("kept.txt", "base\n")]).await;
+    checkout.git(&["switch", "-qc", "feature"]).await;
+    let pushed = checkout.commit("pushed.txt", "pushed commit\n").await;
+    checkout
+        .git(&["update-ref", "refs/remotes/origin/feature", &pushed])
+        .await;
+    checkout
+        .git(&["remote", "add", "origin", "https://github.com/acme/web.git"])
+        .await;
+    checkout
+        .git(&["branch", "--set-upstream-to=origin/feature"])
+        .await;
+    checkout.write("kept.txt", "staged\n").await;
+    checkout.git(&["add", "kept.txt"]).await;
+    checkout.write("kept.txt", "working tree\n").await;
+    let index = checkout.index().await;
+
+    assert_upload(&checkout, &[], &pushed, &["+working tree"], &["pushed.txt"]).await;
+    for (flags, included, excluded) in [
+        (
+            vec!["--base", "main"],
+            vec!["+pushed commit", "+working tree"],
+            vec!["+staged"],
+        ),
+        (
+            vec!["--base", "origin/main", "--verify", FINDING],
+            vec!["+pushed commit", "+working tree"],
+            vec!["+staged"],
+        ),
+        (
+            vec!["--base", "main", "--staged"],
+            vec!["+pushed commit", "+staged"],
+            vec!["+working tree"],
+        ),
+        (
+            vec!["--base", "main", "--path", "pushed.txt"],
+            vec!["+pushed commit"],
+            vec!["kept.txt"],
+        ),
+    ] {
+        assert_upload(&checkout, &flags, &checkout.base, &included, &excluded).await;
+    }
+    assert_eq!(checkout.index().await, index);
+}
+
+/// A branch stacked on another names its parent, and only its own commits
+/// are reviewed: against the merge-base, so later parent commits do not
+/// show up as reverted.
+#[tokio::test]
+async fn a_stacked_branch_reviews_only_its_own_commits_against_its_parent() {
+    let checkout = Checkout::new(&[("kept.txt", "base\n")]).await;
+    checkout.git(&["switch", "-qc", "parent"]).await;
+    let fork = checkout.commit("parent.txt", "parent commit\n").await;
+    checkout.git(&["switch", "-qc", "child"]).await;
+    checkout.commit("child.txt", "child commit\n").await;
+    checkout.git(&["switch", "-q", "parent"]).await;
+    let moved = checkout.commit("later.txt", "later parent commit\n").await;
+    checkout
+        .git(&["update-ref", "refs/remotes/origin/parent", &moved])
+        .await;
+    checkout.git(&["switch", "-q", "child"]).await;
+
+    // Without an upstream, the default branch is the base and the parent's
+    // commit is reviewed again.
+    assert_upload(
+        &checkout,
+        &[],
+        &checkout.base,
+        &["+parent commit", "+child commit"],
+        &["later.txt"],
+    )
+    .await;
+    for base in ["parent", "origin/parent"] {
+        assert_upload(
+            &checkout,
+            &["--base", base],
+            &fork,
+            &["+child commit"],
+            &["parent.txt", "later.txt"],
+        )
+        .await;
+    }
+}
+
+/// GitHub must have the base, so a merge-base that no remote-tracking branch
+/// contains, or none at all, is refused before any request.
+#[tokio::test]
+async fn a_named_base_github_may_not_have_is_refused_before_http() {
+    let checkout = Checkout::new(&[("kept.txt", "base\n")]).await;
+    checkout.git(&["switch", "-qc", "parent"]).await;
+    let unpushed = checkout.commit("parent.txt", "parent commit\n").await;
+    checkout.git(&["switch", "-qc", "child"]).await;
+    checkout.commit("child.txt", "child commit\n").await;
+    let unrelated = String::from_utf8(
+        checkout
+            .git(&["commit-tree", "HEAD^{tree}", "-m", "unrelated"])
+            .await,
+    )
+    .unwrap()
+    .trim()
+    .to_owned();
+    let index = checkout.index().await;
+    let server = Server::start(true).await;
+    for (base, diagnostic) in [
+        (
+            "parent",
+            format!(
+                "the merge-base {unpushed} of HEAD and \"parent\" is on no remote-tracking branch, so GitHub may not have it; push \"parent\""
+            ),
+        ),
+        (
+            unrelated.as_str(),
+            format!("HEAD and \"{unrelated}\" have no commit in common"),
+        ),
+    ] {
+        let output = checkout.review(&server, &[], &["--base", base]).await;
+        assert_eq!(output.status.code(), Some(1), "{base}");
+        assert!(output.stdout.is_empty(), "{base}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(&diagnostic), "{stderr}");
+        server.assert_no_requests();
+        assert_eq!(checkout.index().await, index);
+    }
+    server.close().await;
+
+    checkout
+        .git(&["update-ref", "refs/remotes/origin/parent", &unpushed])
+        .await;
+    assert_upload(
+        &checkout,
+        &["--base", "parent"],
+        &unpushed,
+        &["+child commit"],
+        &["parent.txt"],
+    )
+    .await;
+}
+
+/// `--base` names one commit for a local review: a name the checkout cannot
+/// resolve, one Git would read as an option, or another review selection is
+/// refused before any request.
+#[tokio::test]
+async fn a_named_base_refuses_unknown_names_options_and_other_selections() {
+    let checkout = Checkout::new(&[("kept.txt", "base\n")]).await;
+    checkout.write("kept.txt", "changed\n").await;
+    let server = Server::start(true).await;
+    for (flags, diagnostic) in [
+        (
+            vec!["--base", "no-such-branch"],
+            "\"no-such-branch\" names no commit in this checkout",
+        ),
+        (
+            vec!["--base=--all"],
+            "\"--all\" names no commit in this checkout",
+        ),
+        (
+            vec!["--base", "main", "--pr", "7"],
+            "'--base <REVISION>' cannot be used with '--pr",
+        ),
+        (
+            vec!["--base", "main", "--commit", "HEAD"],
+            "'--base <REVISION>' cannot be used with '--commit",
+        ),
+        (
+            vec!["--base", "main", "--range", "main..main"],
+            "'--base <REVISION>' cannot be used with '--range",
+        ),
+        (
+            vec!["--base", "main", "--files", "kept.txt"],
+            "'--base <REVISION>' cannot be used with '--files",
+        ),
+    ] {
+        let output = checkout.review(&server, &[], &flags).await;
+        assert_eq!(output.status.code(), Some(1), "{flags:?}");
+        assert!(output.stdout.is_empty(), "{flags:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(diagnostic), "{flags:?}: {stderr}");
+        server.assert_no_requests();
+    }
     server.close().await;
 }
