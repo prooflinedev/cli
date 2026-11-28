@@ -1248,39 +1248,67 @@ fn poll_deadline(minutes: u64) -> Result<tokio::time::Instant, PollTimeoutTooLar
         .ok_or(PollTimeoutTooLarge { minutes })
 }
 
+/// A review read: the server's answer, its parsed detail and its outcome.
+type ReviewRead = (serde_json::Value, ReviewDetail, Option<Outcome>);
+
 /// Reads the review, polling until it finishes or `deadline` passes. Without
-/// a deadline it reads once. Every read confirms the server's answer is of
-/// the review requested, not a cache or routing mix-up that would otherwise
-/// let a result for a different review decide this one's outcome.
+/// a deadline, or with one already passed (`--timeout 0`), it reads once.
+/// Otherwise no read starts at or after the deadline, and a read still
+/// pending then is dropped, whatever the HTTP client's own timeout, so the
+/// last answer before the deadline decides. `None` means no read answered
+/// before the deadline. Every read confirms the server's answer is of the
+/// review requested, not a cache or routing mix-up that would otherwise let
+/// a result for a different review decide this one's outcome.
 async fn read_review(
     api: &Api,
     review_id: Uuid,
     deadline: Option<tokio::time::Instant>,
     sarif: bool,
-) -> anyhow::Result<(serde_json::Value, ReviewDetail, Option<Outcome>)> {
+) -> anyhow::Result<Option<ReviewRead>> {
+    let deadline = match deadline {
+        Some(deadline) if tokio::time::Instant::now() < deadline => deadline,
+        _ => return read_review_once(api, review_id, sarif).await.map(Some),
+    };
     let mut delay = FIRST_POLL_SECONDS;
     loop {
-        let (raw, detail) = api.review(review_id).await?;
-        outcome::same_review(&detail, review_id)?;
-        if sarif {
-            sarif::validate_subject(&detail, review_id)?;
-        }
-        let state = outcome::terminal(&detail);
-        let Some(deadline) = deadline else {
-            return Ok((raw, detail, state));
+        let Ok(read) =
+            tokio::time::timeout_at(deadline, read_review_once(api, review_id, sarif)).await
+        else {
+            return Ok(None);
         };
+        let read = read?;
         let now = tokio::time::Instant::now();
-        if state.is_some() || now >= deadline {
-            return Ok((raw, detail, state));
+        if read.2.is_some() || now >= deadline {
+            return Ok(Some(read));
         }
         say(&format!(
             "Review is {}; checking again in {delay} seconds.",
-            text::one_line(&detail.status)
+            text::one_line(&read.1.status)
         ));
-        let pause = Duration::from_secs(delay).min(deadline.saturating_duration_since(now));
-        tokio::time::sleep(pause).await;
+        tokio::time::sleep_until(deadline.min(now + Duration::from_secs(delay))).await;
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(Some(read));
+        }
         delay = (delay * 2).min(LONGEST_POLL_SECONDS);
     }
+}
+
+async fn read_review_once(api: &Api, review_id: Uuid, sarif: bool) -> anyhow::Result<ReviewRead> {
+    let (raw, detail) = api.review(review_id).await?;
+    outcome::same_review(&detail, review_id)?;
+    if sarif {
+        sarif::validate_subject(&detail, review_id)?;
+    }
+    let state = outcome::terminal(&detail);
+    Ok((raw, detail, state))
+}
+
+/// Said when no read of the review answered before the deadline.
+fn say_not_established(api: &Api, review_id: Uuid, timeout_minutes: u64) {
+    say(&format!(
+        "Proofline did not answer a read of the review within {timeout_minutes} minutes, so its result could not be established; it continues at {}",
+        api.review_url(review_id)
+    ));
 }
 
 /// Prints the review, after waiting for it to finish when `wait` is set.
@@ -1298,7 +1326,10 @@ async fn show(
         None
     };
     let sarif = matches!(format, OutputFormat::Sarif);
-    let (raw, detail, state) = read_review(api, review_id, deadline, sarif).await?;
+    let Some((raw, detail, state)) = read_review(api, review_id, deadline, sarif).await? else {
+        say_not_established(api, review_id, output.timeout);
+        return Ok(Verdict::Unavailable);
+    };
     // `audit_mode` marks an audit, as on a listed review (`ReviewSummary`).
     if raw.get("audit_mode").is_some_and(|mode| !mode.is_null()) {
         print_audit(api, raw, &detail, format)?;
@@ -1479,8 +1510,12 @@ async fn ci_review(
         return Ok(Verdict::Unavailable);
     };
     let sarif_path = args.sarif.as_deref();
-    let (raw, detail, state) =
-        read_review(api, review_id, Some(deadline), sarif_path.is_some()).await?;
+    let Some((raw, detail, state)) =
+        read_review(api, review_id, Some(deadline), sarif_path.is_some()).await?
+    else {
+        say_not_established(api, review_id, args.timeout);
+        return Ok(Verdict::Unavailable);
+    };
     confirm_ci_subject(&detail, commit, repository_id)?;
     if let Some(path) = sarif_path {
         write_sarif(api, review_id, &detail, path).await?;
@@ -1782,6 +1817,9 @@ mod tests {
         StaysRunning,
         /// It refuses the request.
         Refused,
+        /// It starts the review. Each read answers after 20 seconds, still
+        /// running the first two times and complete after that.
+        AnswersSlowly,
     }
 
     /// How the stand-in console answers a job's credential exchanges.
@@ -1832,6 +1870,7 @@ mod tests {
     ) -> (String, Arc<Mutex<Vec<Received>>>) {
         let issued = Arc::new(Mutex::new(0_u32));
         let exchanged = Arc::new(Mutex::new(0_u32));
+        let reads = Arc::new(Mutex::new(0_u32));
         let app = Router::new()
             .route(
                 "/github/token",
@@ -1914,9 +1953,20 @@ mod tests {
             )
             .route(
                 &format!("/api/v1/organizations/{ORG}/reviews/{REQUESTED}"),
-                get(move || async move {
+                get(move || {
+                    let reads = Arc::clone(&reads);
+                    async move {
+                    let read = {
+                        let mut reads = reads.lock().unwrap();
+                        *reads += 1;
+                        *reads
+                    };
                     let status = match grant {
                         Grant::StaysRunning => "RUNNING",
+                        Grant::AnswersSlowly => {
+                            tokio::time::sleep(Duration::from_secs(20)).await;
+                            if read <= 2 { "RUNNING" } else { "COMPLETED" }
+                        }
                         Grant::Completes | Grant::Refused => "COMPLETED",
                     };
                     Json(json!({
@@ -1939,6 +1989,7 @@ mod tests {
                             "checks": { "receipt_recorded": true, "status": "READY", "families": [] },
                         }],
                     }))
+                    }
                 }),
             );
         let received = Arc::new(Mutex::new(Vec::new()));
@@ -2105,21 +2156,37 @@ mod tests {
         assert!(last >= Duration::from_secs(180), "{last:?}");
     }
 
-    /// The requested review is read until the deadline; a review that is
-    /// still running then has no result, which is never a pass.
+    /// The requested review is read until the deadline, and no read starts
+    /// at or after it; a review that is still running then has no result,
+    /// which is never a pass. A read still pending at the deadline is
+    /// dropped, though it is within the HTTP client's 30-second timeout:
+    /// with reads that take 20 seconds, the third starts before the deadline
+    /// and would answer complete after it, so the second read's running
+    /// review decides.
     #[tokio::test(start_paused = true)]
     async fn a_review_still_running_at_the_deadline_is_unavailable() {
-        let (verdict, received) = pull_request_job(Grant::StaysRunning, HOURLY).await;
-        assert_eq!(verdict.unwrap(), Verdict::Unavailable);
-        assert_eq!(review_requests(&received), 1, "{received:?}");
         let read = format!("GET /api/v1/organizations/{ORG}/reviews/{REQUESTED}");
-        let last_read = received
-            .iter()
-            .filter(|(request, ..)| *request == read)
-            .map(|(_, at, ..)| *at)
-            .max()
-            .unwrap();
-        assert!(last_read >= Duration::from_secs(180), "{last_read:?}");
+        let deadline = Duration::from_secs(180);
+        for grant in [Grant::StaysRunning, Grant::AnswersSlowly] {
+            let start = tokio::time::Instant::now();
+            let (verdict, received) = pull_request_job(grant, HOURLY).await;
+            let ended = tokio::time::Instant::now().duration_since(start);
+            assert_eq!(verdict.unwrap(), Verdict::Unavailable, "{received:?}");
+            assert_eq!(review_requests(&received), 1, "{received:?}");
+            let reads: Vec<Duration> = received
+                .iter()
+                .filter(|(request, ..)| *request == read)
+                .map(|(_, at, ..)| *at)
+                .collect();
+            assert!(reads.iter().all(|at| *at < deadline), "{reads:?}");
+            if matches!(grant, Grant::AnswersSlowly) {
+                assert_eq!(reads.len(), 3, "{reads:?}");
+            }
+            assert!(
+                ended >= deadline && ended < deadline + Duration::from_secs(1),
+                "{ended:?}"
+            );
+        }
     }
 
     /// A credential granted for 100 seconds is renewed at the first read past

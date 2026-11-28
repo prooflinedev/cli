@@ -495,8 +495,9 @@ async fn request(
             verify_finding_ids: Vec::new(),
         };
         let requested = api.request_patch_review(repository_id, &request).await?;
-        let (_, detail, state) =
-            read_review(api, requested.review_id, Some(deadline), false).await?;
+        let (_, detail, state) = read_review(api, requested.review_id, Some(deadline), false)
+            .await?
+            .context("Proofline did not answer a read of the review before the deadline")?;
         anyhow::Ok((requested.review_id, detail, state))
     };
     match requested.await {
