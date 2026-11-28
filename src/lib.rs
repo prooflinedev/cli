@@ -1309,9 +1309,7 @@ async fn show(
         Some(Outcome::Completed) => {
             let verdict = review_verdict(&detail, fail_on);
             match verdict {
-                Verdict::ThresholdReached => {
-                    say("The review has an open finding at or above the --fail-on severity.");
-                }
+                Verdict::ThresholdReached => say(&threshold_reached(measured_by(&detail))),
                 Verdict::Unavailable => say(
                     "Proofline returned the completed review without `open_items`, so --fail-on could not be measured. It is not a pass.",
                 ),
@@ -1615,9 +1613,7 @@ fn say_ci_ending(
             api.review_url(review_id)
         )),
         Some(Outcome::Completed) => match verdict {
-            Verdict::ThresholdReached => {
-                say("The review has an open finding at or above the --fail-on severity.");
-            }
+            Verdict::ThresholdReached => say(&threshold_reached(measured_by(detail))),
             Verdict::Unavailable => say(
                 "Proofline returned the completed review without `open_items`, so --fail-on could not be measured. It is not a pass.",
             ),
@@ -1625,6 +1621,29 @@ fn say_ci_ending(
         },
         Some(ended) => say_not_complete(ended),
     }
+}
+
+/// The counts `review_verdict` measured: a pull-request review's open items.
+/// Any other review is measured by its own findings.
+fn measured_by(detail: &ReviewDetail) -> Option<&OpenItems> {
+    detail
+        .open_items
+        .as_ref()
+        .filter(|_| detail.kind == "PULL_REQUEST")
+}
+
+/// Why `--fail-on` failed, with the server's counts when they measured it.
+fn threshold_reached(measured: Option<&OpenItems>) -> String {
+    let reason = "The review has an open finding at or above the --fail-on severity.";
+    measured.map_or_else(
+        || reason.to_owned(),
+        |open| {
+            format!(
+                "{reason} Proofline counts {} open findings, {} of them SERIOUS.",
+                open.open_findings, open.serious_findings
+            )
+        },
+    )
 }
 
 /// How `ci review` ends for a review read as `state`. Completeness decides
@@ -2258,6 +2277,25 @@ mod tests {
         let unmeasured = detail("PULL_REQUEST", serde_json::Value::Null);
         assert_eq!(review_verdict(&unmeasured, serious), Verdict::Unavailable);
         assert_eq!(review_verdict(&unmeasured, None), Verdict::Done);
+        // Only the counts that measured the verdict are reported with it.
+        assert!(measured_by(&open).is_some());
+        let counted = json!({ "open_findings": 1, "serious_findings": 1 });
+        assert!(measured_by(&detail("COMMIT", counted)).is_none());
+    }
+
+    #[test]
+    fn a_reached_threshold_names_the_counts_only_when_they_measured_it() {
+        let reason = "The review has an open finding at or above the --fail-on severity.";
+        assert_eq!(threshold_reached(None), reason);
+        let open = OpenItems {
+            open_findings: 3,
+            serious_findings: 1,
+            earlier_findings: Vec::new(),
+        };
+        assert_eq!(
+            threshold_reached(Some(&open)),
+            format!("{reason} Proofline counts 3 open findings, 1 of them SERIOUS.")
+        );
     }
 
     #[test]
@@ -2265,6 +2303,7 @@ mod tests {
         let open = |open_findings, serious_findings| OpenItems {
             open_findings,
             serious_findings,
+            earlier_findings: Vec::new(),
         };
         let (warning, serious) = (Some(Severity::Warning), Some(Severity::Serious));
         let complete = Some(Outcome::Completed);

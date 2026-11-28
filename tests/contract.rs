@@ -5,10 +5,11 @@ use std::process::Command;
 use proofline_cli::model::{
     Assessment, Check, Checks, CodeAssessment, CommitDeploy, CommitDeployVerifications,
     CommitReviewRequest, CommitReviewResponse, CoverageUploadRequest, CoverageUploadResponse,
-    DeployCheckpoint, EvidenceRef, FileReviewRequest, FileReviewResponse, FileScope, FilterChoice,
-    Finding, OpenItems, PatchReviewRequest, PatchReviewResponse, RepositoryName, RepositoryNames,
-    ReviewDetail, ReviewFilters, ReviewPage, ReviewSubject, ReviewSummary, RunNowMode,
-    RunNowRequest, RunNowResponse, StopResponse, UploadedReport,
+    DeployCheckpoint, EarlierFinding, EvidenceRef, FileReviewRequest, FileReviewResponse,
+    FileScope, FilterChoice, Finding, FindingDecision, InvestigationFinding, OpenItems,
+    PatchReviewRequest, PatchReviewResponse, RepositoryName, RepositoryNames, ReviewDetail,
+    ReviewFilters, ReviewPage, ReviewSubject, ReviewSummary, RunNowMode, RunNowRequest,
+    RunNowResponse, StopResponse, UploadedReport,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -156,11 +157,14 @@ fn types_match_the_public_contract() {
     holds::<ReviewSummary>("ReviewSummary");
     holds::<ReviewDetail>("CustomerReviewDetail");
     holds::<OpenItems>("OpenItemsView");
+    holds::<EarlierFinding>("EarlierOpenFinding");
+    holds::<InvestigationFinding>("ReviewInvestigationFinding");
     holds::<Assessment>("CustomerAssessment");
     holds::<CodeAssessment>("CustomerCodeAssessment");
     holds::<Checks>("CustomerChecks");
     holds::<Check>("CustomerCheck");
     holds::<Finding>("CustomerFinding");
+    holds::<FindingDecision>("CustomerFindingValidation");
     holds::<EvidenceRef>("CustomerEvidenceRef");
     holds::<RunNowRequest>("RunNowRequest");
     holds::<RunNowResponse>("RunNowResponse");

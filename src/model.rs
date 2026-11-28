@@ -94,6 +94,10 @@ pub struct ReviewDetail {
     pub run_number: Option<i64>,
     #[serde(default)]
     pub subjects: Vec<ReviewSubject>,
+    /// Environment findings with no severity, by assessment. They are counted
+    /// in `open_items` but listed in no assessment's findings.
+    #[serde(default)]
+    pub investigation_findings: Vec<InvestigationFinding>,
     /// The findings a `--verify` patch review re-verified locally. Absent on
     /// every other review.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -216,6 +220,43 @@ pub struct OpenItems {
     pub open_findings: u64,
     /// The `SERIOUS` findings among `open_findings`.
     pub serious_findings: u64,
+    /// The open findings of earlier runs that this review did not find again.
+    /// They are counted in `open_findings` but listed in no assessment.
+    #[serde(default)]
+    pub earlier_findings: Vec<EarlierFinding>,
+}
+
+/// One earlier run's finding that is still open, as its first published
+/// review recorded it.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct EarlierFinding {
+    pub review_id: Uuid,
+    pub run_number: i64,
+    /// The severity the open count uses, which may exceed this occurrence's.
+    pub severity: String,
+    /// Absent when the occurrence has none or its review withheld it.
+    pub title: Option<String>,
+}
+
+/// An environment finding with no severity, published by a violated gate
+/// requirement, the environment investigation or a shared identity's narrowed
+/// grant. It is counted in `open_findings` but listed in no assessment's
+/// findings.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct InvestigationFinding {
+    pub assessment_id: Uuid,
+    pub area: String,
+    pub title: String,
+    /// `CONFIRMED_REQUIREMENT`, `INVESTIGATION` or `SHARED_IDENTITY`.
+    pub source: Option<String>,
+}
+
+impl InvestigationFinding {
+    /// What published the finding, or `ENVIRONMENT` when the server names
+    /// nothing.
+    pub fn published_by(&self) -> &str {
+        self.source.as_deref().unwrap_or("ENVIRONMENT")
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -260,6 +301,24 @@ pub struct Finding {
     pub lifecycle_state: String,
     pub remediation: Option<String>,
     pub evidence_refs: Vec<EvidenceRef>,
+    /// The latest decision on the finding's series. A dismissal or risk
+    /// acceptance can expire, and nothing here says whether it has, so the
+    /// decision labels a finding and never hides it.
+    #[serde(default)]
+    pub latest_validation: Option<FindingDecision>,
+}
+
+/// Who decided what about a finding, and where.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct FindingDecision {
+    /// `CONFIRMED`, `DISMISSED`, `FIXED`, `ACCEPTED_RISK` or `ALREADY_COVERED`.
+    pub validation: String,
+    /// `UI`, `GITHUB_COMMENT` or `PROOFLINE`.
+    pub source: String,
+    pub recorded_at: String,
+    /// Null for an automatic decision, as is `actor_login`.
+    pub actor_name: Option<String>,
+    pub actor_login: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

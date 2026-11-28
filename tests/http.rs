@@ -1976,6 +1976,11 @@ async fn ci_review_fail_on_exits_three_for_an_open_finding_of_a_complete_review(
                 code == 3,
                 "{case}"
             );
+            if let (3, Some([open, serious])) = (code, open) {
+                let counts =
+                    format!("Proofline counts {open} open findings, {serious} of them SERIOUS.");
+                assert!(stderr.contains(&counts), "{case}");
+            }
             assert_eq!(stderr.contains("without `open_items`"), code == 4, "{case}");
             // The flag changes the exit code only: the result keeps its shape,
             // and `outcome` still reads completeness.
@@ -2442,7 +2447,7 @@ async fn ci_review_annotations_put_open_findings_on_the_diff_as_escaped_workflow
             "companion_repository": null,
         }])
     };
-    let findings = json!([
+    let mut findings = json!([
         // Model text that tries to end its command and start another.
         finding(
             "0190f3a0-0000-7000-8000-0000000000a1",
@@ -2467,6 +2472,14 @@ async fn ci_review_annotations_put_open_findings_on_the_diff_as_escaped_workflow
             json!([]),
         ),
     ]);
+    // A dismissal can expire unseen, so the finding stays annotated, labelled.
+    findings[1]["latest_validation"] = json!({
+        "validation": "DISMISSED",
+        "source": "GITHUB_COMMENT",
+        "recorded_at": "2026-10-01T00:00:00Z",
+        "actor_name": null,
+        "actor_login": "ada",
+    });
     let app = Router::new()
         .route(
             &format!("/api/v1/organizations/{ORG}/repository-names"),
@@ -2508,11 +2521,27 @@ async fn ci_review_annotations_put_open_findings_on_the_diff_as_escaped_workflow
                         "run_number": 1,
                         "assessment_count": 1,
                         "open_items": {
-                            "open_findings": 2,
-                            "serious_findings": 1,
+                            "open_findings": 4,
+                            "serious_findings": 2,
                             "accepted_risks": 0,
                             "not_assessed": [],
+                            "earlier_findings": [{
+                                "finding_series_id": "0190f3a0-0000-7000-8000-0000000000e1",
+                                "finding_id": "0190f3a0-0000-7000-8000-0000000000e2",
+                                "review_id": "0190f3a0-0000-7000-8000-0000000000e3",
+                                "run_number": 1,
+                                "severity": "SERIOUS",
+                                "title": "Pool exhausts connections",
+                            }],
                         },
+                        "investigation_findings": [{
+                            "assessment_id": "0190f3a0-0000-7000-8000-0000000000f2",
+                            "area": "iam",
+                            "title": "The role cannot read the bucket",
+                            "detail": "s3:GetObject is not granted.",
+                            "citations": [],
+                            "source": "INVESTIGATION",
+                        }],
                         "assessments": [{
                             "id": "0190f3a0-0000-7000-8000-0000000000f2",
                             "environment_display_name": "production",
@@ -2549,12 +2578,26 @@ async fn ci_review_annotations_put_open_findings_on_the_diff_as_escaped_workflow
         commands(&annotated),
         [
             "::error file=src/app.rs,line=3,endLine=5,title=Proofline production%3A data_integrity::Retries drop 100%25 of orders, then%0A::add-mask::secret%0A%0Aorders are lost",
-            "::warning title=Proofline production%3A data_integrity::Stale cache.%0A%0Aorders are lost",
+            "::warning title=Proofline production%3A data_integrity (DISMISSED)::Stale cache.%0A%0Aorders are lost",
+            "::notice title=Proofline production%3A iam (INVESTIGATION)::The role cannot read the bucket",
+            "::error title=Proofline earlier run 1::Pool exhausts connections",
         ]
     );
     // Annotations go to stderr, so the result on stdout keeps its shape.
     let result: Value = serde_json::from_slice(&annotated.stdout).unwrap();
     assert_eq!(result["outcome"], "COMPLETED");
+
+    // The job's last line says what --fail-on measured.
+    args.extend(["--fail-on", "serious"]);
+    let failed = cli(&origin, &args).await;
+    assert_eq!(failed.status.code(), Some(3));
+    assert!(
+        String::from_utf8_lossy(&failed.stderr).contains(
+            "The review has an open finding at or above the --fail-on severity. Proofline counts 4 open findings, 2 of them SERIOUS."
+        ),
+        "{}",
+        String::from_utf8_lossy(&failed.stderr)
+    );
 }
 
 #[tokio::test]
